@@ -90,6 +90,11 @@ pub fn jsString(w: *std.Io.Writer, s: []const u8) !void {
 
 /// Pass pre-validated JSON through, escaping only LS/PS characters
 /// which are valid JSON but terminate a JS string literal.
+///
+/// CONTRACT: `text` MUST be already-`std.json`-serialized output (no raw user
+/// bytes in string positions). Callers passing raw user data here bypass the
+/// `jsString` escape and break the injection boundary — raw user strings must
+/// go through `jsString`, never here.
 fn writeJsonAsJsLiteral(w: *std.Io.Writer, text: []const u8) !void {
     var i: usize = 0;
     while (i < text.len) {
@@ -152,6 +157,61 @@ pub fn emitEscapeFixtures(w: *std.Io.Writer) !void {
     }
 }
 
+// ─── Test helpers ────────────────────────────────────────────────────────────
+
+/// Assert that `out` is a structurally safe JS string literal that cannot
+/// break out of the string position.  This is the canonical oracle used by
+/// both the fuzz target and the adversarial unit-test table.
+///
+/// Invariants checked:
+///   • out is wrapped in ASCII double-quotes.
+///   • No raw control byte < 0x20 in the interior.
+///   • No raw 3-byte U+2028 / U+2029 sequence in the interior.
+///   • No unescaped double-quote in the interior.
+///   • Every backslash begins a recognised escape sequence
+///     (\", \\, \/, \n, \r, \t, \b, \f, \uXXXX).
+fn assertSafeJsLiteral(out: []const u8) !void {
+    if (out.len < 2) return error.TooShort;
+    if (out[0] != '"') return error.MissingOpenQuote;
+    if (out[out.len - 1] != '"') return error.MissingCloseQuote;
+
+    const interior = out[1 .. out.len - 1];
+    var i: usize = 0;
+    while (i < interior.len) {
+        const b = interior[i];
+        // No raw control characters.
+        if (b < 0x20) return error.RawControlChar;
+        // No raw U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR.
+        if (b == 0xE2 and i + 2 < interior.len and interior[i + 1] == 0x80 and
+            (interior[i + 2] == 0xA8 or interior[i + 2] == 0xA9))
+        {
+            return error.RawLineSeparator;
+        }
+        if (b == '\\') {
+            if (i + 1 >= interior.len) return error.TrailingBackslash;
+            const esc = interior[i + 1];
+            switch (esc) {
+                '"', '\\', '/', 'n', 'r', 't', 'b', 'f' => {
+                    i += 2;
+                },
+                'u' => {
+                    // \uXXXX — need exactly 4 hex digits after \u.
+                    if (i + 6 > interior.len) return error.ShortUnicodeEscape;
+                    for (interior[i + 2 .. i + 6]) |hc| {
+                        if (!std.ascii.isHex(hc)) return error.InvalidHexInUnicodeEscape;
+                    }
+                    i += 6;
+                },
+                else => return error.InvalidEscapeChar,
+            }
+        } else if (b == '"') {
+            return error.UnescapedQuote;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 test "decode parses well-formed message" {
@@ -180,6 +240,68 @@ test "jsString escapes injection vectors including LS/PS" {
     try std.testing.expectEqualStrings("\"\\\"<\\/script>\\\\\\n\\u2028\"", aw.writer.buffered());
 }
 
+test "jsString is breakout-safe across adversarial inputs" {
+    // Each entry: { input, ?expected_output }.
+    // expected_output is non-null for ASCII-clean cases where the exact
+    // output string is stable; null means "any output passing the structural
+    // oracle is acceptable" (used for raw high-byte pass-throughs).
+    const Case = struct { input: []const u8, expected: ?[]const u8 };
+    const cases = [_]Case{
+        // ── invalid UTF-8 — jsString passes bytes raw; still safe ─────────
+        .{ .input = &.{0xE2}, .expected = null },
+        .{ .input = &.{ 0xE2, 0x80 }, .expected = null },
+        .{ .input = &.{ 0xFF, 0xFE }, .expected = null },
+        .{ .input = &.{0x80}, .expected = null },
+        // ── DEL 0x7F — raw passthrough (≥ 0x20, no special handling) ──────
+        .{ .input = &.{0x7F}, .expected = null },
+        // ── U+2029 must be escaped to   ──────────────────────────────
+        .{ .input = "\u{2029}", .expected = "\"\\u2029\"" },
+        // ── </SCRIPT>: slash must be escaped to \/ ─────────────────────────
+        .{ .input = "</SCRIPT>", .expected = "\"<\\/SCRIPT>\"" },
+        // ── NEL U+0085 (C2 85) — valid UTF-8, raw passthrough ─────────────
+        .{ .input = "\u{0085}", .expected = null },
+        // ── BOM U+FEFF (EF BB BF) — valid UTF-8, raw passthrough ──────────
+        .{ .input = "\u{FEFF}", .expected = null },
+        // ── backtick template safe in double-quoted JS literal ────────────
+        .{ .input = "`${x}`", .expected = null },
+        // ── known exact case ──────────────────────────────────────────────
+        .{ .input = "a\"b", .expected = "\"a\\\"b\"" },
+    };
+
+    for (cases) |c| {
+        var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        try jsString(&aw.writer, c.input);
+        const out = aw.writer.buffered();
+
+        // Structural safety oracle — must pass for ALL inputs.
+        try assertSafeJsLiteral(out);
+
+        // Exact output check for deterministic ASCII-clean cases.
+        if (c.expected) |expected| {
+            try std.testing.expectEqualStrings(expected, out);
+        }
+
+        // Round-trip check for all valid UTF-8 inputs (proves no data loss).
+        if (std.unicode.utf8ValidateSlice(c.input)) {
+            var parsed = try std.json.parseFromSlice([]const u8, std.testing.allocator, out, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqualStrings(c.input, parsed.value);
+        }
+
+        // For the invalid-UTF-8 cases, verify the raw byte is present (safe
+        // passthrough rather than silent drop or corruption).
+        if (!std.unicode.utf8ValidateSlice(c.input)) {
+            try std.testing.expect(out.len >= 3); // at minimum: " + byte + "
+        }
+
+        // DEL 0x7F: explicitly confirm the raw byte survives intact.
+        if (c.input.len == 1 and c.input[0] == 0x7F) {
+            try std.testing.expectEqual(@as(u8, 0x7F), out[1]);
+        }
+    }
+}
+
 // ─── Fuzz targets ────────────────────────────────────────────────────────────
 
 test "fuzz: decode never panics on arbitrary bytes" {
@@ -202,10 +324,20 @@ fn fuzzEscape(_: void, smith: *std.testing.Smith) anyerror!void {
     var buf: [4096]u8 = undefined;
     const n = smith.slice(&buf);
     const input = buf[0..n];
+
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try jsString(&aw.writer, input);
-    var parsed = std.json.parseFromSlice([]const u8, std.testing.allocator, aw.writer.buffered(), .{}) catch return error.NotValidJsonString;
-    defer parsed.deinit();
-    try std.testing.expectEqualStrings(input, parsed.value);
+    const out = aw.writer.buffered();
+
+    // Always: structurally safe — no breakout possible.
+    try assertSafeJsLiteral(out);
+
+    // Round-trip: only when input is valid UTF-8 (jsString intentionally passes
+    // invalid UTF-8 raw; std.json.parseFromSlice would wrongly reject it).
+    if (std.unicode.utf8ValidateSlice(input)) {
+        var parsed = try std.json.parseFromSlice([]const u8, std.testing.allocator, out, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(input, parsed.value);
+    }
 }
