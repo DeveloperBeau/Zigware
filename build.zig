@@ -41,6 +41,7 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
     addLogicTest(b, test_step, target, optimize, "src/commands/sha256.zig");
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
+    addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
 
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
