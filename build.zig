@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
     }.add;
-    _ = &addLogicTest; // exported for later tasks
+    addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
 
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
