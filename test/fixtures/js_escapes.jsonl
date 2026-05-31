@@ -1,0 +1,7 @@
+{"in":"","out":"\"\""}
+{"in":"hello","out":"\"hello\""}
+{"in":"\"quoted\"","out":"\"\\\"quoted\\\"\""}
+{"in":"<\/script><script>alert(1)<\/script>","out":"\"<\\\/script><script>alert(1)<\\\/script>\""}
+{"in":"\u2028\u2029","out":"\"\\u2028\\u2029\""}
+{"in":"a\\b\nc\td","out":"\"a\\\\b\\nc\\td\""}
+{"in":"ßünîçødé","out":"\"ßünîçødé\""}

@@ -48,6 +48,22 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
 
+    const protocol_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const fixture_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/emit_escapes.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_mod.addImport("protocol", protocol_mod);
+    const fixture_exe = b.addExecutable(.{ .name = "emit_escapes", .root_module = fixture_mod });
+    const fixture_run = b.addRunArtifact(fixture_exe);
+    const escapes_step = b.step("escapes", "Emit test/fixtures/js_escapes.jsonl");
+    escapes_step.dependOn(&fixture_run.step);
+
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
