@@ -74,4 +74,17 @@ pub fn build(b: *std.Build) void {
     scaffold_mod.linkFramework("WebKit", .{});
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
+
+    // ── coverage-exe: standalone test binary for kcov wrapping ────────────────
+    // Roots at bridge.zig which transitively imports protocol, allowlist, jobs,
+    // commands — the full pure-Zig logic surface (no Cocoa/WebKit needed).
+    const cov_mod = b.createModule(.{
+        .root_source_file = b.path("src/bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
+    const cov_install = b.addInstallArtifact(cov_tests, .{});
+    const cov_step = b.step("coverage-exe", "Build the logic-tests binary for kcov");
+    cov_step.dependOn(&cov_install.step);
 }

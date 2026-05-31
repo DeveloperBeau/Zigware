@@ -1,0 +1,20 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.16.0"
+      - uses: oven-sh/setup-bun@v2
+      # Logic + integration tests (the gate). NOTE: `--fuzz` is intentionally NOT run:
+      # corpus-driven fuzzing is broken in the Zig 0.16.0_1 test runner; fuzz bodies
+      # still execute once here under plain `test`.
+      - name: zig tests
+        run: zig build test --summary all
+      - name: regenerate escape fixtures
+        run: zig build escapes
+      - name: bun shim tests
+        run: bun test
