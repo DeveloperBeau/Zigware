@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.linkFramework("Cocoa", .{});
     exe_mod.linkFramework("WebKit", .{});
+    // Embedded frontend assets live outside src/ (the package root), so expose
+    // them as anonymous imports that @embedFile can reference by name.
+    exe_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    exe_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
     b.installArtifact(exe);
 
