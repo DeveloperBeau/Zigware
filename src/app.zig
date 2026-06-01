@@ -4,6 +4,7 @@ const assets = @import("assets.zig");
 const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
 
+const zigware_js = @embedFile("frontend/zigware.js");
 const app_js = @embedFile("frontend/app.js");
 
 /// A process-lifetime static the fail-closed sentinel callbacks read as their
@@ -44,7 +45,7 @@ pub fn App(comptime B: type) type {
             // will move URL selection into init options so it flips by build mode.
             const window = try backend.createWindow(.{
                 .url = "app://localhost/index.html",
-                .user_scripts = &.{app_js},
+                .user_scripts = &.{ zigware_js, app_js },
             });
             // If a later init step fails, tear the window back down (M12).
             // destroyWindow must be safe on a window whose webview/handler were

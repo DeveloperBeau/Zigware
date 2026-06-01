@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
     // them as anonymous imports that @embedFile can reference by name.
     exe_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     exe_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    exe_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
     b.installArtifact(exe);
 
@@ -85,6 +86,7 @@ pub fn build(b: *std.Build) void {
             });
             m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
             m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
@@ -120,6 +122,7 @@ pub fn build(b: *std.Build) void {
     scaffold_mod.linkFramework("WebKit", .{});
     scaffold_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     scaffold_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    scaffold_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
@@ -138,6 +141,7 @@ pub fn build(b: *std.Build) void {
     });
     cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    cov_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     cov_mod.addImport("objc", objc_mod);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});
