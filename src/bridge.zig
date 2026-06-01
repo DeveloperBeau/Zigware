@@ -204,7 +204,9 @@ pub fn Bridge(comptime B: type) type {
         }
 
         /// Parse the optional `megabytes` integer from the args JSON via a
-        /// targeted Scanner (no full Value parse, per H2). Absent -> default
+        /// bounded Value parse on the per-message arena; JSON_PARSE_OPTIONS caps
+        /// value length and the depth pre-scan in decode bounds nesting (H2).
+        /// Absent -> default
         /// 256 (matches the PoC and keeps the 300 MB smoke demo and its hash
         /// oracle valid). Present-but-malformed -> default (the job still runs).
         /// Clamps to MAX_MEGABYTES so a hostile page cannot drive gigabyte
@@ -237,9 +239,9 @@ pub fn Bridge(comptime B: type) type {
         }
 
         /// Emit a minimal reject from a fixed stack buffer that CANNOT OOM, so
-        /// every id always settles even under allocator failure (H5). The
-        /// message is truncated to fit; correctness only needs the id and the
-        /// reject channel.
+        /// every id always settles even under allocator failure (H5). Emits a
+        /// constant `"error"` reason (there is no caller-supplied message);
+        /// correctness only needs the id and the reject channel.
         fn emitFixedReject(self: *Self, id: u64) void {
             var buf: [256]u8 = undefined;
             const js = std.fmt.bufPrint(&buf, "window.zig._reject({d}, \"error\");", .{id}) catch {
@@ -262,6 +264,11 @@ pub fn Bridge(comptime B: type) type {
             self.emit(aw.writer.buffered());
         }
 
+        /// Emit a non-terminal progress update for `id`. Progress-before-terminal
+        /// ordering for a given id is guaranteed by jobs.zig's serial per-job
+        /// callback sequencing: onProgress is called synchronously before
+        /// onResolve within a job, so a future jobs.zig change that parallelizes
+        /// per-job callbacks would break this invariant.
         fn onProgress(ctx: *anyopaque, id: u64, pct: u8) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
