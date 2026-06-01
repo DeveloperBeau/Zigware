@@ -2,11 +2,20 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     if (target.result.os.tag != .macos) {
         std.debug.print("zigware PoC targets macOS only\n", .{});
     }
+
+    // The objc helper exposed as a named module so files rooted as standalone
+    // logic-test modules (e.g. src/platform/macos/origin.zig) can import it
+    // without a relative path that would escape their module root.
+    const objc_mod = b.createModule(.{
+        .root_source_file = b.path("src/objc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -14,6 +23,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.addImport("objc", objc_mod);
     exe_mod.linkFramework("Cocoa", .{});
     exe_mod.linkFramework("WebKit", .{});
     // Embedded frontend assets live outside src/ (the package root), so expose
@@ -47,6 +57,39 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
+
+    // origin.zig imports the `objc` module; wire it on the standalone test.
+    {
+        const m = b.createModule(.{
+            .root_source_file = b.path("src/platform/macos/origin.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        m.addImport("objc", objc_mod);
+        const tt = b.addTest(.{ .root_module = m });
+        test_step.dependOn(&b.addRunArtifact(tt).step);
+    }
+
+    // Logic test that needs the embedded frontend assets (assets.zig, app.zig).
+    const addEmbedTest = struct {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, src: []const u8) void {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path(src),
+                .target = t,
+                .optimize = o,
+            });
+            m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
+            m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            const tt = bb.addTest(.{ .root_module = m });
+            ts.dependOn(&bb.addRunArtifact(tt).step);
+        }
+    }.add;
+    addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/app.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/sec_regression.zig");
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
@@ -70,19 +113,30 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    scaffold_mod.addImport("objc", objc_mod);
     scaffold_mod.linkFramework("Cocoa", .{});
     scaffold_mod.linkFramework("WebKit", .{});
+    scaffold_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    scaffold_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
-    // ── coverage-exe: standalone test binary for kcov wrapping ────────────────
-    // Roots at bridge.zig which transitively imports protocol, allowlist, jobs,
-    // commands — the full pure-Zig logic surface (no Cocoa/WebKit needed).
+    // coverage-exe: the full headless logic surface. Rooted at app.zig, which
+    // transitively imports bridge, null backend, assets, backend contract,
+    // protocol, allowlist, jobs, and commands. The pure macOS helpers
+    // (origin.zig, scheme_logic.zig) are pulled in by reference so their tests
+    // run in this binary too and kcov reports their coverage; they are reached
+    // only through the objc backend, which app.zig does not import, so without
+    // the explicit reference below they would never appear in the report.
+    // No Cocoa/WebKit needed.
     const cov_mod = b.createModule(.{
-        .root_source_file = b.path("src/bridge.zig"),
+        .root_source_file = b.path("src/coverage_root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    cov_mod.addImport("objc", objc_mod);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});
     const cov_step = b.step("coverage-exe", "Build the logic-tests binary for kcov");

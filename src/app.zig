@@ -1,138 +1,311 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const objc = @import("objc.zig");
-const c = objc;
+const backend_mod = @import("platform/backend.zig");
+const assets = @import("assets.zig");
 const Bridge = @import("bridge.zig").Bridge;
-const scheme = @import("scheme.zig");
-const PlatformSink = @import("platform_macos.zig").PlatformSink;
 
 const app_js = @embedFile("frontend/app.js");
 
-const Rect = extern struct { x: f64, y: f64, w: f64, h: f64 };
+/// A process-lifetime static the fail-closed sentinel callbacks read as their
+/// ctx. It is never dereferenced as an App; it exists only so the sentinel ctx
+/// pointer is a valid, owned address rather than a dangling App.
+// const, not var: its address is a unique opaque ctx pointer that the dead
+// callbacks never dereference, and it can never be mutated (L2).
+const dead_sentinel: u8 = 0;
 
-/// File-scope globals so the C-callconv IMPs (message handler, app delegate)
-/// can reach the bridge/sink without per-call context plumbing.
-var g: struct {
-    alloc: std.mem.Allocator,
-    bridge: ?*Bridge = null,
-    psink: ?*PlatformSink = null,
-} = .{ .alloc = undefined };
+/// The application orchestrator, generic over a platform backend `B`.
+/// Constructs the one window with the bridge shim injected before the page
+/// loads, wires the bridge, registers inbound callbacks, and runs the platform
+/// loop. Tests instantiate App(NullBackend) and drive it with the backend's
+/// simulate* methods.
+///
+/// Lifecycle contract: `shutdown` (and `deinit`) are INFALLIBLE. Any future
+/// fallible cleanup goes through a separate `flush()` before deinit (M18).
+pub fn App(comptime B: type) type {
+    backend_mod.assertBackend(B);
+    return struct {
+        const Self = @This();
 
-/// WKScriptMessageHandler callback: forward NSString message bodies (only) to
-/// the bridge. Non-string bodies are dropped — the protocol is JSON text.
-fn onMessage(self: c.id, _cmd: c.SEL, ucc: c.id, message: c.id) callconv(.c) void {
-    _ = self;
-    _ = _cmd;
-    _ = ucc;
-    const body = c.msgSend(*const fn (c.id, c.SEL) callconv(.c) c.id)(message, c.sel("body"));
-    if (!c.isKindOf(body, c.class("NSString"))) return;
-    const text = c.utf8(body) orelse return;
-    const bridge = g.bridge orelse return;
-    bridge.handleMessage(std.mem.span(text));
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        backend: *B,
+        bridge: *Bridge(B),
+        window: B.WindowHandle,
+        shutdown_done: std.atomic.Value(bool) = .init(false),
+
+        pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
+            const self = try alloc.create(Self);
+            errdefer alloc.destroy(self);
+
+            // v0.1.0 hardcodes the prod URL; F (dev server) and D (manifest)
+            // will move URL selection into init options so it flips by build mode.
+            const window = try backend.createWindow(.{
+                .url = "app://localhost/index.html",
+                .user_scripts = &.{app_js},
+            });
+            // If a later init step fails, tear the window back down (M12).
+            // destroyWindow must be safe on a window whose webview/handler were
+            // wired but whose App never finished init.
+            errdefer backend.destroyWindow(window);
+
+            const bridge = try Bridge(B).init(alloc, io, backend, window, .{});
+            errdefer bridge.deinit();
+
+            self.* = .{
+                .alloc = alloc,
+                .io = io,
+                .backend = backend,
+                .bridge = bridge,
+                .window = window,
+            };
+
+            backend.setCallbacks(.{
+                .ctx = self,
+                .onSchemeRequest = onSchemeRequest,
+                .onMessage = onMessage,
+                .onLifecycle = onLifecycle,
+                .onNavigation = onNavigation,
+            });
+
+            return self;
+        }
+
+        /// Deinit order is documented in main.zig: app.deinit() runs before
+        /// backend.deinit() (LIFO). deinit does NOT touch the backend after
+        /// shutdown; it only frees the App allocation, so the order is safe.
+        pub fn deinit(self: *Self) void {
+            self.shutdown();
+            self.alloc.destroy(self);
+        }
+
+        /// Ordered, exactly-once, infallible shutdown:
+        ///   1. terminate the backend (queued evals drop on pump),
+        ///   2. install the fail-closed sentinel callbacks FIRST, so any inbound
+        ///      IMP that fires during the join/drain window (delayed scheme task,
+        ///      queued message, late lifecycle) hits the sentinel rather than the
+        ///      bridge that is mid-teardown or the App that is about to be freed
+        ///      (B3, M14),
+        ///   3. join the worker pool by deiniting the bridge,
+        ///   4. drain the main-thread queue.
+        /// Idempotent via an atomic swap so concurrent will_terminate + deinit
+        /// run the body exactly once (M5).
+        fn shutdown(self: *Self) void {
+            if (self.shutdown_done.swap(true, .acq_rel)) return;
+            // Step order is load-bearing: the sentinel must be installed before
+            // bridge.deinit/join so inbound IMPs during the drain hit the
+            // sentinel, not torn-down state. Guarded indirectly by the M5/B3
+            // tests and the leak detector.
+            self.backend.terminate();
+            self.backend.setCallbacks(deadCallbacks()); // sentinel live during the drain (M14)
+            self.bridge.deinit(); // joins the worker pool
+            self.backend.markJoined(); // App owns the join handshake: every
+            // App(B) teardown satisfies backend.deinit's joined assert without
+            // per-test markJoined. Bridge-only tests (TestBridge) call it manually.
+            self.backend.pumpMain();
+        }
+
+        pub fn run(self: *Self) void {
+            self.backend.run();
+        }
+
+        /// Fail-closed callback set installed after shutdown. ctx is the static
+        /// dead_sentinel, never an App. Scheme -> 404, message/lifecycle no-op,
+        /// navigation -> cancel.
+        fn deadCallbacks() backend_mod.Callbacks {
+            return .{
+                .ctx = @constCast(&dead_sentinel), // ctx is *anyopaque; sentinel is never dereferenced
+                .onSchemeRequest = deadScheme,
+                .onMessage = deadMessage,
+                .onLifecycle = deadLifecycle,
+                .onNavigation = deadNavigation,
+            };
+        }
+
+        fn deadScheme(_: *anyopaque, _: backend_mod.Request) backend_mod.Response {
+            return .{ .status = 404, .mime = "text/plain", .body = "" };
+        }
+        fn deadMessage(_: *anyopaque, _: u64, _: []const u8, _: []const u8) void {}
+        fn deadLifecycle(_: *anyopaque, _: backend_mod.LifecycleEvent) void {}
+        fn deadNavigation(_: *anyopaque, _: []const u8) backend_mod.NavigationDecision {
+            return .cancel;
+        }
+
+        // ── Inbound callbacks (C-free; plain fn ptrs over *anyopaque ctx) ──────
+
+        /// A owns only the asset scheme. Any other source (B's streaming
+        /// scheme) is 404 at the seam, so a future second handler that forgets
+        /// deny-by-default cannot route attacker paths through serveAsset (M7).
+        fn onSchemeRequest(_: *anyopaque, req: backend_mod.Request) backend_mod.Response {
+            if (req.source != .asset_scheme) {
+                return .{ .status = 404, .mime = "text/plain", .body = "" };
+            }
+            return assets.serveAsset(req.path);
+        }
+
+        fn onMessage(ctx: *anyopaque, window_id: u64, origin: []const u8, text: []const u8) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.bridge.handleMessage(window_id, origin, text);
+        }
+
+        /// Both window_all_closed and will_terminate run the FULL shutdown so a
+        /// force-quit that never delivers will_terminate still joins workers (M5).
+        fn onLifecycle(ctx: *anyopaque, event: backend_mod.LifecycleEvent) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            switch (event) {
+                .window_all_closed, .will_terminate => self.shutdown(),
+                .did_launch, .reopen => {},
+            }
+        }
+
+        /// Deny-by-default (M6): allow only the app://localhost origin; cancel
+        /// everything else. C tightens this to capability-aware per-origin
+        /// policy. startsWith("app://") would let any host under the scheme
+        /// through (app://evil/, app://localhost.attacker.com/), so we match the
+        /// origin exactly: the localhost host followed by a path separator, or
+        /// the bare origin with no path.
+        fn onNavigation(_: *anyopaque, url: []const u8) backend_mod.NavigationDecision {
+            if (std.mem.startsWith(u8, url, "app://localhost/") or
+                std.mem.eql(u8, url, "app://localhost"))
+            {
+                return .allow;
+            }
+            return .cancel;
+        }
+    };
 }
 
-/// applicationWillTerminate: ordered shutdown — stop emitting, join workers,
-/// flush pending main-thread hops, then free the sink.
-fn onWillTerminate(self: c.id, _cmd: c.SEL, notification: c.id) callconv(.c) void {
-    _ = self;
-    _ = _cmd;
-    _ = notification;
-    if (g.psink) |ps| ps.alive.store(false, .release);
-    if (g.bridge) |b| {
-        b.deinit();
-        g.bridge = null;
-    }
-    if (g.psink) |ps| {
-        ps.drainOnMain();
-        g.alloc.destroy(ps);
-        g.psink = null;
-    }
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+const NullBackend = @import("platform/null.zig").NullBackend;
+
+fn makeApp() !struct { backend: *NullBackend, app: *App(NullBackend) } {
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
+    return .{ .backend = backend, .app = app };
 }
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io) !void {
-    g = .{ .alloc = alloc };
+fn teardown(backend: *NullBackend, app: *App(NullBackend)) void {
+    app.deinit(); // shutdown: terminate -> bridge.deinit (joins) -> pump -> sentinel
+    backend.markJoined();
+    backend.deinit();
+}
 
-    const NSApplication = c.class("NSApplication");
-    const app = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(NSApplication, c.sel("sharedApplication"));
-    _ = c.msgSend(*const fn (c.id, c.SEL, i64) callconv(.c) void)(app, c.sel("setActivationPolicy:"), 0);
+test "end to end: simulated invoke resolves through the real pool into eval_log" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = h.backend.windowId(h.app.window);
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.app.bridge.drainForTest();
+    h.backend.pumpMain();
+    var buf: [64]u8 = undefined;
+    const needle = try std.fmt.bufPrint(&buf, "window.zig._resolve(1, ", .{});
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countContaining(needle));
+}
 
-    // ── App delegate for ordered shutdown ──────────────────────────────────
-    const NSObject = c.class("NSObject");
-    const delegateCls = c.objc_allocateClassPair(NSObject, "ZWAppDelegate", 0);
-    _ = c.class_addMethod(delegateCls, c.sel("applicationWillTerminate:"), @ptrCast(&onWillTerminate), "v@:@");
-    c.objc_registerClassPair(delegateCls);
-    const delegateAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(delegateCls, c.sel("alloc"));
-    const delegate = c.msgSend(*const fn (c.id, c.SEL) callconv(.c) c.id)(delegateAlloc, c.sel("init"));
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) void)(app, c.sel("setDelegate:"), delegate);
+test "scheme request routes through serveAsset" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const ok = h.backend.simulateSchemeRequest("/index.html");
+    try std.testing.expectEqual(@as(u16, 200), ok.status);
+    const miss = h.backend.simulateSchemeRequest("/nope");
+    try std.testing.expectEqual(@as(u16, 404), miss.status);
+    const reserved = h.backend.simulateSchemeRequest("/__zigware_stream/1/0");
+    try std.testing.expectEqual(@as(u16, 404), reserved.status);
+}
 
-    // ── Window ──────────────────────────────────────────────────────────────
-    const NSWindow = c.class("NSWindow");
-    const win = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(NSWindow, c.sel("alloc"));
-    const frame = Rect{ .x = 100, .y = 100, .w = 800, .h = 600 };
-    const styleMask: u64 = 1 | 2 | 4 | 8;
-    const initWin = c.msgSend(*const fn (c.id, c.SEL, Rect, u64, i64, bool) callconv(.c) c.id);
-    const window = initWin(win, c.sel("initWithContentRect:styleMask:backing:defer:"), frame, styleMask, 2, false);
+test "M7: a non-asset scheme source is 404 at the seam" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    // simulateSchemeRequestSource lets a test set Request.source explicitly.
+    const r = h.backend.simulateSchemeRequestSource(.stream_scheme, "/index.html");
+    try std.testing.expectEqual(@as(u16, 404), r.status);
+}
 
-    // ── WKUserContentController: message handler + injected shim ────────────
-    const WKUCC = c.class("WKUserContentController");
-    const uccAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(WKUCC, c.sel("alloc"));
-    const ucc = c.msgSend(*const fn (c.id, c.SEL) callconv(.c) c.id)(uccAlloc, c.sel("init"));
+test "M6: navigation denies by default, allows only the app://localhost origin" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("https://evil.example/"));
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("javascript:alert(1)"));
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("https://x/"));
+    // A bare "app://" host other than localhost must not slip through.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://evil/"));
+    // A host that merely begins with "localhost" is a different origin.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://localhost.attacker.com/"));
+    // The scheme match is case-sensitive.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("APP://localhost/"));
+    try std.testing.expectEqual(backend_mod.NavigationDecision.allow, h.backend.simulateNavigation("app://localhost/index.html"));
+}
 
-    const handlerCls = c.objc_allocateClassPair(NSObject, "ZWHandler", 0);
-    _ = c.class_addMethod(handlerCls, c.sel("userContentController:didReceiveScriptMessage:"), @ptrCast(&onMessage), "v@:@@");
-    c.objc_registerClassPair(handlerCls);
-    const handlerAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(handlerCls, c.sel("alloc"));
-    const handler = c.msgSend(*const fn (c.id, c.SEL) callconv(.c) c.id)(handlerAlloc, c.sel("init"));
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id, c.id) callconv(.c) void)(ucc, c.sel("addScriptMessageHandler:name:"), handler, c.nsString("zig"));
+test "L10: window_all_closed runs full shutdown (observed via post-event message drop)" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = h.backend.windowId(h.app.window);
+    h.backend.simulateLifecycle(.window_all_closed); // full shutdown: joins + terminates
+    // Observe the downstream effect rather than reading terminated directly (L10):
+    // a message after shutdown delivers nothing.
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
+}
 
-    // Inject app.js at document start so the JS-side bridge shim exists before
-    // page scripts run. injectionTime 0 = atDocumentStart; mainFrameOnly = true.
-    const WKUserScript = c.class("WKUserScript");
-    const scriptAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(WKUserScript, c.sel("alloc"));
-    const userScript = c.msgSend(*const fn (c.id, c.SEL, c.id, i64, bool) callconv(.c) c.id)(scriptAlloc, c.sel("initWithSource:injectionTime:forMainFrameOnly:"), c.nsString(app_js.ptr), 0, true);
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) void)(ucc, c.sel("addUserScript:"), userScript);
+test "M5: window_all_closed WITHOUT will_terminate still joins the pool (no leak)" {
+    // The teardown helper's markJoined + backend.deinit assert the pool joined.
+    // If window_all_closed did not run the full shutdown, the bridge would not
+    // be deinit'd and std.testing.allocator would flag a leak at test exit.
+    const h = try makeApp();
+    h.backend.simulateLifecycle(.window_all_closed);
+    // No will_terminate. deinit's shutdown is a no-op (already done).
+    teardown(h.backend, h.app);
+}
 
-    // ── WKWebViewConfiguration: ucc + app:// scheme handler ─────────────────
-    const WKCfg = c.class("WKWebViewConfiguration");
-    const cfgAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(WKCfg, c.sel("alloc"));
-    const cfg = c.msgSend(*const fn (c.id, c.SEL) callconv(.c) c.id)(cfgAlloc, c.sel("init"));
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) void)(cfg, c.sel("setUserContentController:"), ucc);
+test "windowId of the main window matches the inbound id" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    try std.testing.expectEqual(@as(u64, 0), h.backend.windowId(h.app.window));
+}
 
-    const schemeHandler = scheme.makeHandler();
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id, c.id) callconv(.c) void)(cfg, c.sel("setURLSchemeHandler:forURLScheme:"), schemeHandler, c.nsString("app"));
-
-    // ── WKWebView ───────────────────────────────────────────────────────────
-    const WKWebView = c.class("WKWebView");
-    const wvAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(WKWebView, c.sel("alloc"));
-    const initWV = c.msgSend(*const fn (c.id, c.SEL, Rect, c.id) callconv(.c) c.id);
-    const webview = initWV(wvAlloc, c.sel("initWithFrame:configuration:"), frame, cfg);
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) void)(window, c.sel("setContentView:"), webview);
-
-    // Dev affordance gated to debug builds only; never leak Web Inspector into release.
-    if (builtin.mode == .Debug) {
-        _ = c.msgSend(*const fn (c.id, c.SEL, bool) callconv(.c) void)(webview, c.sel("setInspectable:"), true);
+test "ordered shutdown under load drops in-flight emissions cleanly" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = h.backend.windowId(h.app.window);
+    var i: u64 = 0;
+    while (i < 50) : (i += 1) {
+        var buf: [128]u8 = undefined;
+        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":1}}}}", .{i});
+        h.backend.simulateMessage(main_id, "app://localhost", text);
     }
+    h.backend.simulateLifecycle(.will_terminate); // App.shutdown joins workers and pumps
+}
 
-    // ── Sink + Bridge ─────────────────────────────────────────────────────────
-    const psink = try alloc.create(PlatformSink);
-    errdefer alloc.destroy(psink);
-    psink.* = .{ .alloc = alloc, .webview = webview };
-    g.psink = psink;
+test "App.shutdown is exactly-once across deinit and lifecycle paths" {
+    const h = try makeApp();
+    h.backend.simulateLifecycle(.will_terminate); // first shutdown
+    h.app.deinit(); // second shutdown; swap returns true, body no-ops
+    h.backend.markJoined();
+    h.backend.deinit();
+}
 
-    const bridge = try Bridge.init(alloc, io, psink.sink());
-    g.bridge = bridge;
+test "B3: simulate* after shutdown reaches the fail-closed sentinel, never the App" {
+    const h = try makeApp();
+    h.backend.simulateLifecycle(.will_terminate); // shutdown installs the sentinel
+    // These would crash if they reached the freed App; the sentinel + the
+    // backend's terminated no-op make them safe.
+    h.backend.simulateMessage(99, "app://localhost", "{\"id\":99,\"cmd\":\"sha256\",\"args\":{}}");
+    const r = h.backend.simulateSchemeRequest("/index.html");
+    try std.testing.expectEqual(@as(u16, 404), r.status); // sentinel returns 404
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://localhost/x"));
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
+    h.app.deinit();
+    h.backend.markJoined();
+    h.backend.deinit();
+}
 
-    // ── Load app://localhost/index.html ─────────────────────────────────────
-    const NSURL = c.class("NSURL");
-    const url = c.msgSend(*const fn (c.Class, c.SEL, c.id) callconv(.c) c.id)(NSURL, c.sel("URLWithString:"), c.nsString("app://localhost/index.html"));
-    const NSURLRequest = c.class("NSURLRequest");
-    const reqAlloc = c.msgSend(*const fn (c.Class, c.SEL) callconv(.c) c.id)(NSURLRequest, c.sel("alloc"));
-    const request = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) c.id)(reqAlloc, c.sel("initWithURL:"), url);
-    _ = c.msgSend(*const fn (c.id, c.SEL, c.id) callconv(.c) c.id)(webview, c.sel("loadRequest:"), request);
-
-    // ── Show + run ──────────────────────────────────────────────────────────
-    _ = c.msgSend(*const fn (c.id, c.SEL, bool) callconv(.c) void)(window, c.sel("makeKeyAndOrderFront:"), true);
-    _ = c.msgSend(*const fn (c.id, c.SEL, bool) callconv(.c) void)(app, c.sel("activateIgnoringOtherApps:"), true);
-
-    c.msgSend(*const fn (c.id, c.SEL) callconv(.c) void)(app, c.sel("run"));
+test "inbound message after terminate is a no-op" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = h.backend.windowId(h.app.window);
+    h.backend.simulateLifecycle(.window_all_closed); // full shutdown
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
 }

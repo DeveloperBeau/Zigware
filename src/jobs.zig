@@ -44,17 +44,32 @@ pub const Pool = struct {
 
     pub fn init(alloc: std.mem.Allocator, opts: PoolOptions, events: Events) !*Pool {
         const self = try alloc.create(Pool);
+        errdefer alloc.destroy(self);
+        const threads = try alloc.alloc(std.Thread, opts.workers);
+        errdefer alloc.free(threads);
         self.* = .{
             .alloc = alloc,
             .io = opts.io,
             .events = events,
-            .threads = try alloc.alloc(std.Thread, opts.workers),
+            .threads = threads,
             .max_queue = opts.max_queue,
         };
         // Spawn workers after the struct is fully initialised so they see a
-        // consistent view immediately.
-        for (self.threads) |*t| {
-            t.* = try std.Thread.spawn(.{}, worker, .{self});
+        // consistent view immediately. If a later spawn fails, signal shutdown
+        // and join the workers already spawned so no thread is orphaned and the
+        // Pool/threads allocations unwind cleanly (no leak, no double-join).
+        var spawned: usize = 0;
+        errdefer {
+            self.mutex.lockUncancelable(self.io);
+            self.shutdown = true;
+            self.cancel_all.store(true, .release);
+            self.cond.broadcast(self.io);
+            self.mutex.unlock(self.io);
+            for (self.threads[0..spawned]) |t| t.join();
+            self.queue.deinit(self.alloc);
+        }
+        while (spawned < self.threads.len) : (spawned += 1) {
+            self.threads[spawned] = try std.Thread.spawn(.{}, worker, .{self});
         }
         return self;
     }
@@ -243,7 +258,9 @@ const TestEvents = struct {
     lastPct: u8 = 0,
     alloc: std.mem.Allocator,
 
-    fn init(a: std.mem.Allocator) TestEvents { return .{ .alloc = a }; }
+    fn init(a: std.mem.Allocator) TestEvents {
+        return .{ .alloc = a };
+    }
     fn deinit(_: *TestEvents) void {}
 
     fn acquire(self: *TestEvents) void {
@@ -256,11 +273,14 @@ const TestEvents = struct {
     }
 
     fn onProgress(self: *TestEvents, _: u64, pct: u8) void {
-        self.acquire(); defer self.release();
-        self.progressCalls += 1; self.lastPct = pct;
+        self.acquire();
+        defer self.release();
+        self.progressCalls += 1;
+        self.lastPct = pct;
     }
     fn onResolve(self: *TestEvents, _: u64, _: []const u8) void {
-        self.acquire(); defer self.release();
+        self.acquire();
+        defer self.release();
         self.resolves += 1;
     }
     fn onReject(_: *TestEvents, _: u64, _: []const u8) void {}

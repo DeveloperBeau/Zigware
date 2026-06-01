@@ -1,22 +1,35 @@
-# Manual Smoke Checklist (Zigware PoC)
+# Manual Smoke Checklist (Zigware)
 
-The objc/WKWebView glue (objc.zig, platform_macos.zig, app.zig, scheme.zig) has no unit tests; it needs a live AppKit GUI session. Run these by hand on a Mac at a desktop session:
+The macOS objc/WKWebView glue needs a live AppKit GUI session and has no unit tests. The files in scope are `src/objc.zig` and the six objc files under `src/platform/macos/` (everything except `origin.zig` and `scheme_logic.zig`, which are pure and tested headless). The bridge, app orchestration, asset serving, lifecycle shutdown ordering, shutdown idempotency, post-terminate message drops, window identity, navigation policy, the origin formatter, and the scheme path extractor are all covered headless through `App(NullBackend)`, `platform/macos/origin.zig`, and `platform/macos/scheme_logic.zig` under `zig build test`. Run the steps below by hand on a Mac at a desktop session.
 
-1. `zig build run`: a window opens showing the Zigware PoC UI, served from `app://localhost/index.html`.
+1. `zig build run`: a window opens showing the Zigware UI, served from `app://localhost/index.html`.
 2. Open Web Inspector (Develop > Web Inspector; debug builds set `inspectable`). The Console shows no Content-Security-Policy violations.
 3. Click "Hash 300 MB in Zig". The progress bar advances 0 to 100%.
 4. While the bar advances, drag the window around. It keeps responding, which proves the hash runs off the main thread.
-5. On completion the page shows `SHA-256: <64 hex chars>`.
-6. Check correctness: the deterministic 300 MB buffer (byte[i] = i & 0xff) hashes to the same value the unit tests assert for the chunked path.
-7. Quit with Cmd-Q mid-hash. Expect a clean exit, no crash report in Console.app, and no allocator leak warnings on stderr. This exercises the applicationWillTerminate shutdown: flip alive off, join workers, drain the main queue, free.
+5. On completion the page shows `SHA-256: <64 hex chars>`, matching the value the unit tests assert for the chunked path.
+6. Quit with Cmd-Q mid-hash. Expect a clean exit. There must be no crash report in Console.app and no allocator-leak warnings on stderr. This exercises `applicationWillTerminate:` mapping to `onLifecycle(.will_terminate)` and the App's ordered shutdown (terminate, join workers, drain the main queue).
+7. Run the app under Instruments (Leaks template) and repeat steps 3 through 6 a few times. Expect zero leaks from the scheme handler and the evalJS hop path.
 
 Failure triage:
-- CSP errors at step 2: JS leaked into index.html and must move back into app.js.
-- Freeze at step 4: the worker-to-main hop is wrong (check dispatch_async_f / PlatformSink).
-- Hash mismatch at step 6: a chunked-hash or hex bug the unit tests should have caught.
-- Crash or leak at step 7: a shutdown-ordering bug.
+- CSP errors at step 2: JS leaked into index.html; move it back into app.js.
+- Freeze at step 4: the worker-to-main hop is wrong; check `platform/macos/webview.zig` and `platform/macos/dispatch.zig`.
+- Missing shim at step 3 (invoke undefined): user-script injection ordering broke. The boot shim must go in via `WindowOpts.user_scripts` and be added to the UCC before `loadRequest:` in `MacOSBackend.createWindow`.
+- Hash mismatch at step 5: a chunked-hash or hex bug the unit tests should have caught. The 300 MB demo stays valid because `MAX_MEGABYTES` is 512, so 300 is not clamped and the smoke hash oracle still matches.
+- Crash or leak at step 6: a shutdown-ordering bug in `App.shutdown`.
+
+## Memory-safety runtime checks (GUI only)
+
+These cover the macOS backend paths a memory-safety review flagged as having no automated coverage. They need a live GUI session, so run them here.
+
+8. Run under Instruments Allocations, or set `MallocStackLogging=1`. Open a window, then close it. Confirm there is no net growth in NSString, NSURL, or NSError instances across the cycle. This checks the autorelease-pool fix in init and createWindow.
+9. Build or launch with `NSZombieEnabled=YES`. Repeat the open/close cycle. Confirm no zombie messages. This catches any over-release of the objects the backend releases explicitly: cfg, ucc, handler, request, response, nsjs, and userScript.
+10. Use an Address-Sanitizer build, or keep `NSZombieEnabled=YES`. From a worker thread, fire a burst of evalJS while you trigger window-close or quit at the same time. Confirm no crash and no zombie webview access. This exercises the worker-to-main Hop alive-recheck plus its retain/release pairing.
+11. Open a window at a non-default size and toggle `setContentSize:`. Confirm the geometry is correct. A wrong NSRect or NSSize struct-ABI cast would garble the frame.
+12. Launch with a deliberately malformed initial URL. Confirm the nil-URL guard logs and skips the load instead of crashing. There must be no ObjC exception and no crash. To find the guard log line, run the app with stderr captured and `grep -F 'createWindow: malformed url, skipping initial loadRequest:'` over the output.
 
 ## Automated coverage
-- `zig build test` runs the logic unit + integration tests.
-- `bun test` runs the JS shim contract + hardening + JS-eval round-trip over Zig-emitted escapes.
-- `zig build test --fuzz` (corpus fuzzing) does not work on the Zig 0.16.0_1 toolchain, a test-runner compiler bug. The fuzz bodies still run once under plain `zig build test`, and explicit table-driven unit tests carry the adversarial coverage (see protocol.zig).
+- `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.
+- `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.
+
+## Fuzz contract
+`zig build test --fuzz` (corpus-guided fuzzing) does not work on the Zig 0.16.0 toolchain because of a known test-runner compiler bug. To compensate, every fuzz body ships a manual driver. Each manual driver runs at least 10000 iterations per `zig build test`, seeding `std.Random.DefaultPrng` from `std.testing.random_seed`, and also replays every seed file in `test/fuzz/corpus/`. The enforced contract is: each fuzz body runs >= 10000 iterations per `zig build test`. When the toolchain bug is fixed, the drivers stay and `--fuzz` is re-enabled to run the same corpus under coverage guidance.
