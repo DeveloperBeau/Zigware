@@ -90,6 +90,10 @@ pub fn App(comptime B: type) type {
         /// run the body exactly once (M5).
         fn shutdown(self: *Self) void {
             if (self.shutdown_done.swap(true, .acq_rel)) return;
+            // Step order is load-bearing: the sentinel must be installed before
+            // bridge.deinit/join so inbound IMPs during the drain hit the
+            // sentinel, not torn-down state. Guarded indirectly by the M5/B3
+            // tests and the leak detector.
             self.backend.terminate();
             self.backend.setCallbacks(deadCallbacks()); // sentinel live during the drain (M14)
             self.bridge.deinit(); // joins the worker pool
@@ -152,10 +156,18 @@ pub fn App(comptime B: type) type {
             }
         }
 
-        /// Deny-by-default (M6): allow only the app:// prod origin; cancel
-        /// everything else. C replaces this with capability-aware policy.
+        /// Deny-by-default (M6): allow only the app://localhost origin; cancel
+        /// everything else. C tightens this to capability-aware per-origin
+        /// policy. startsWith("app://") would let any host under the scheme
+        /// through (app://evil/, app://localhost.attacker.com/), so we match the
+        /// origin exactly: the localhost host followed by a path separator, or
+        /// the bare origin with no path.
         fn onNavigation(_: *anyopaque, url: []const u8) backend_mod.NavigationDecision {
-            if (std.mem.startsWith(u8, url, "app://")) return .allow;
+            if (std.mem.startsWith(u8, url, "app://localhost/") or
+                std.mem.eql(u8, url, "app://localhost"))
+            {
+                return .allow;
+            }
             return .cancel;
         }
     };
@@ -208,11 +220,18 @@ test "M7: a non-asset scheme source is 404 at the seam" {
     try std.testing.expectEqual(@as(u16, 404), r.status);
 }
 
-test "M6: navigation denies by default, allows only app://" {
+test "M6: navigation denies by default, allows only the app://localhost origin" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("https://evil.example/"));
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("javascript:alert(1)"));
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("https://x/"));
+    // A bare "app://" host other than localhost must not slip through.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://evil/"));
+    // A host that merely begins with "localhost" is a different origin.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://localhost.attacker.com/"));
+    // The scheme match is case-sensitive.
+    try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("APP://localhost/"));
     try std.testing.expectEqual(backend_mod.NavigationDecision.allow, h.backend.simulateNavigation("app://localhost/index.html"));
 }
 

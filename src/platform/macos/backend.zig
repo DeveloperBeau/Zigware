@@ -21,7 +21,10 @@ pub const MacOSBackend = struct {
         self.alloc.destroy(self);
     }
     pub fn createWindow(_: *MacOSBackend, _: seam.WindowOpts) seam.CreateWindowError!WindowHandle {
-        return error.OutOfMemory; // stub: real impl in Task 7
+        // Panic rather than fake an OOM: a loud crash on this unreachable-in-prod
+        // path is more honest than silently shipping a degraded app. Task 7 fills
+        // this in. Do NOT ship this stub.
+        @panic("MacOSBackend.createWindow: stub, implemented in Task 7");
     }
     pub fn destroyWindow(_: *MacOSBackend, _: WindowHandle) void {}
     pub fn setTitle(_: *MacOSBackend, _: WindowHandle, _: [:0]const u8) seam.SetTitleError!void {}
