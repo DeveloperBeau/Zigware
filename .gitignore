@@ -1,0 +1,9 @@
+# Build artifacts
+.zig-cache/
+zig-out/
+
+# Coverage reports
+coverage/
+
+# Local-only, per-clone rules
+CLAUDE.local.md
