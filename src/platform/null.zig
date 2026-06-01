@@ -10,7 +10,7 @@ pub const NullBackend = struct {
     pub const SetTitleError = seam.SetTitleError;
     pub const LifecycleEvent = seam.LifecycleEvent;
 
-    const Eval = struct { window_id: u64, js: []u8 };
+    const Eval = struct { window_id: u64, js: []const u8 };
     const FakeWindow = struct {
         id: u64, // monotonic attested id (finding H8/M14); NOT a pointer
         url: []u8,
@@ -25,10 +25,18 @@ pub const NullBackend = struct {
     io: std.Io,
     mutex: std.Io.Mutex = .init,
     next_window_id: u64 = 0, // monotonic counter; first window gets 0
+    /// THREADING INVARIANT: `windows` is mutated (createWindow/setTitle/setSize/
+    /// showWindow/setFullscreen) only by the setup/test thread, strictly before
+    /// any worker thread calls evalJS. It is never resized concurrently with a
+    /// worker. evalJS (which may run on a worker) reads `windows` under the lock
+    /// solely to snapshot `.id` via windowId(); that lock does NOT make resizing
+    /// safe and is not intended to. Holds because all window mutation happens
+    /// before the worker pool starts.
+    // TODO(Task 5): assert no window mutation after the worker pool starts.
     windows: std.ArrayList(FakeWindow) = .empty,
     pending: std.ArrayList(Eval) = .empty, // enqueued by evalJS, drained by pumpMain
     eval_log: std.ArrayList(Eval) = .empty, // record, read by tests on the test thread
-    injected_scripts: std.ArrayList([]u8) = .empty,
+    injected_scripts: std.ArrayList([]const u8) = .empty,
     lifecycle_calls: std.ArrayList(LifecycleEvent) = .empty,
     eval_drops: usize = 0, // count of evalJS payloads dropped on OOM (finding H9)
     post_terminate_drops: usize = 0, // pending entries pumpMain dropped after terminate (H11 accounting)
@@ -97,7 +105,7 @@ pub const NullBackend = struct {
         // the copies into the reserved slots. This avoids the
         // half-initialized-window double-free.
         try self.injected_scripts.ensureUnusedCapacity(self.alloc, opts.user_scripts.len);
-        var local: std.ArrayList([]u8) = .empty;
+        var local: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (local.items) |c| self.alloc.free(c);
             local.deinit(self.alloc);
@@ -258,7 +266,9 @@ pub const NullBackend = struct {
 
     pub fn simulateLifecycle(self: *NullBackend, event: LifecycleEvent) void {
         if (self.terminated.load(.acquire)) return;
-        self.lifecycle_calls.append(self.alloc, event) catch {};
+        self.lifecycle_calls.append(self.alloc, event) catch {
+            std.log.warn("NullBackend.simulateLifecycle: dropped lifecycle event on OOM", .{});
+        };
         const cb = self.cb orelse return;
         cb.onLifecycle(cb.ctx, event);
     }
@@ -462,7 +472,7 @@ test "FailingAllocator: createWindow OOM on the Nth script dupe leaks nothing" {
     }
 }
 
-test "FailingAllocator: pumpMain reservation OOM leaves entries queued (no loss)" {
+test "pumpMain reserve-then-drain ordering (reservation-OOM path documented, exercised out-of-band)" {
     // First fill pending with a backend on the real allocator, then fault the
     // eval_log reservation: pending must stay intact, no double-free.
     const b = try NullBackend.init(std.testing.allocator, std.testing.io);
