@@ -1,9 +1,19 @@
-# Build artifacts
+# Build artifacts (Zig)
 .zig-cache/
+zig-cache/
 zig-out/
 
 # Coverage reports
 coverage/
+
+# Bun / Node (lockfile bun.lock is committed on purpose — do not ignore)
+node_modules/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
 
 # Local-only, per-clone rules
 CLAUDE.local.md
