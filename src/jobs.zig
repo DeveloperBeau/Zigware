@@ -1,17 +1,19 @@
 const std = @import("std");
-const demo = @import("commands/demo.zig");
-const sha = @import("commands/sha256.zig");
 
-// ─── Public API types ─────────────────────────────────────────────────────────
-
-pub const Events = struct {
+/// A unit of work. The pool owns nothing inside `ctx`; the submitter heap-allocates
+/// it and the thunk frees it (the thunk is the only code that knows ctx's real type).
+/// `run` is called on a worker thread with the pool's shared cancel flag. The thunk
+/// must perform its own resolve/reject by calling back into the submitter's state,
+/// which it captured inside `ctx`.
+pub const Job = struct {
+    /// Caller-side correlation/diagnostics handle. The pool does NOT read it
+    /// (the worker only invokes `run`); callers that need to tie a job back to
+    /// a request id set it here. The bridge also captures its own id inside the
+    /// thunk's ctx, so this is purely for the submitter's own bookkeeping.
+    id: u64,
     ctx: *anyopaque,
-    onProgress: *const fn (ctx: *anyopaque, id: u64, pct: u8) void,
-    onResolve: *const fn (ctx: *anyopaque, id: u64, hex: []const u8) void,
-    onReject: *const fn (ctx: *anyopaque, id: u64, msg: []const u8) void,
+    run: *const fn (ctx: *anyopaque, cancel: *std.atomic.Value(bool)) void,
 };
-
-pub const Job = struct { id: u64, megabytes: usize };
 
 pub const PoolOptions = struct {
     workers: usize,
@@ -21,12 +23,9 @@ pub const PoolOptions = struct {
     io: std.Io,
 };
 
-// ─── Pool ─────────────────────────────────────────────────────────────────────
-
 pub const Pool = struct {
     alloc: std.mem.Allocator,
     io: std.Io,
-    events: Events,
     threads: []std.Thread,
     mutex: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
@@ -38,11 +37,12 @@ pub const Pool = struct {
     inflight: usize = 0,
     max_queue: usize,
     shutdown: bool = false,
-    /// Checked lock-free by hashBuffer between 64 KB chunks.
-    /// Written under mutex in deinit before broadcast — sequenced safely.
+    /// Checked lock-free by the hashing loop between 64 KB chunks.
+    /// Written under mutex in deinit before broadcast — the `.release` store
+    /// is correctly sequenced with the mutex unlock that follows.
     cancel_all: std.atomic.Value(bool) = .{ .raw = false },
 
-    pub fn init(alloc: std.mem.Allocator, opts: PoolOptions, events: Events) !*Pool {
+    pub fn init(alloc: std.mem.Allocator, opts: PoolOptions) !*Pool {
         const self = try alloc.create(Pool);
         errdefer alloc.destroy(self);
         const threads = try alloc.alloc(std.Thread, opts.workers);
@@ -50,7 +50,6 @@ pub const Pool = struct {
         self.* = .{
             .alloc = alloc,
             .io = opts.io,
-            .events = events,
             .threads = threads,
             .max_queue = opts.max_queue,
         };
@@ -77,20 +76,16 @@ pub const Pool = struct {
     pub fn deinit(self: *Pool) void {
         self.mutex.lockUncancelable(self.io);
         self.shutdown = true;
-        // Signal cancel so in-flight hashBuffer returns error.Cancelled quickly.
         self.cancel_all.store(true, .release);
         self.cond.broadcast(self.io);
         self.mutex.unlock(self.io);
-
         for (self.threads) |t| t.join();
-
         self.queue.deinit(self.alloc);
         self.alloc.free(self.threads);
         const a = self.alloc;
         a.destroy(self);
     }
 
-    /// Enqueue a job. Returns error.QueueFull when the bounded cap is reached.
     pub fn submit(self: *Pool, job: Job) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -100,7 +95,6 @@ pub const Pool = struct {
         self.cond.signal(self.io);
     }
 
-    /// Block until every submitted job has finished (resolved or rejected).
     pub fn waitIdle(self: *Pool) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -108,8 +102,6 @@ pub const Pool = struct {
             self.idle_cond.waitUncancelable(self.io, &self.mutex);
         }
     }
-
-    // ── Worker goroutine ────────────────────────────────────────────────────
 
     fn worker(self: *Pool) void {
         while (true) {
@@ -126,8 +118,7 @@ pub const Pool = struct {
             const job = self.queue.orderedRemove(0);
             self.mutex.unlock(self.io);
 
-            // Execute the job outside the lock so other workers run in parallel.
-            run(self, job);
+            job.run(job.ctx, &self.cancel_all);
 
             self.mutex.lockUncancelable(self.io);
             self.inflight -= 1;
@@ -135,88 +126,44 @@ pub const Pool = struct {
             self.mutex.unlock(self.io);
         }
     }
-
-    // ── Job execution ───────────────────────────────────────────────────────
-
-    fn run(self: *Pool, job: Job) void {
-        const Ctx = struct { pool: *Pool, id: u64 };
-        var ctx = Ctx{ .pool = self, .id = job.id };
-        const prog = sha.Progress{
-            .ctx = &ctx,
-            .func = struct {
-                fn f(c: *anyopaque, pct: u8) void {
-                    const x: *Ctx = @ptrCast(@alignCast(c));
-                    x.pool.events.onProgress(x.pool.events.ctx, x.id, pct);
-                }
-            }.f,
-        };
-        const digest = demo.hashGenerated(
-            self.alloc,
-            job.megabytes,
-            prog,
-            &self.cancel_all,
-        ) catch |err| {
-            const msg: []const u8 = switch (err) {
-                error.Cancelled => "cancelled",
-                error.OutOfMemory => "out of memory",
-            };
-            self.events.onReject(self.events.ctx, job.id, msg);
-            return;
-        };
-        self.events.onResolve(self.events.ctx, job.id, &digest);
-    }
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-test "submitted job runs, reports progress, completes once" {
-    var sink = TestEvents.init(std.testing.allocator);
-    defer sink.deinit();
-    var pool = try Pool.init(
-        std.testing.allocator,
-        .{ .workers = 2, .max_queue = 16, .io = std.testing.io },
-        sink.handler(),
-    );
+const TestWork = struct {
+    resolves: std.atomic.Value(usize) = .{ .raw = 0 },
+    fn run(ctx: *anyopaque, _: *std.atomic.Value(bool)) void {
+        const self: *TestWork = @ptrCast(@alignCast(ctx));
+        _ = self.resolves.fetchAdd(1, .monotonic);
+    }
+};
+
+test "submitted thunk runs exactly once" {
+    var w = TestWork{};
+    var pool = try Pool.init(std.testing.allocator, .{ .workers = 2, .max_queue = 16, .io = std.testing.io });
     defer pool.deinit();
-
-    try pool.submit(.{ .id = 1, .megabytes = 1 });
+    try pool.submit(.{ .id = 1, .ctx = &w, .run = TestWork.run });
     pool.waitIdle();
-
-    try std.testing.expect(sink.resolves == 1);
-    try std.testing.expect(sink.progressCalls >= 1);
-    try std.testing.expect(sink.lastPct == 100);
+    try std.testing.expectEqual(@as(usize, 1), w.resolves.load(.monotonic));
 }
 
-test "many jobs all resolve within bounded workers" {
-    var sink = TestEvents.init(std.testing.allocator);
-    defer sink.deinit();
-    var pool = try Pool.init(
-        std.testing.allocator,
-        .{ .workers = 3, .max_queue = 256, .io = std.testing.io },
-        sink.handler(),
-    );
+test "many thunks all run within bounded workers" {
+    var w = TestWork{};
+    var pool = try Pool.init(std.testing.allocator, .{ .workers = 3, .max_queue = 256, .io = std.testing.io });
     defer pool.deinit();
     var i: u64 = 0;
-    while (i < 200) : (i += 1) try pool.submit(.{ .id = i, .megabytes = 1 });
+    while (i < 200) : (i += 1) try pool.submit(.{ .id = i, .ctx = &w, .run = TestWork.run });
     pool.waitIdle();
-    try std.testing.expectEqual(@as(usize, 200), sink.resolves);
+    try std.testing.expectEqual(@as(usize, 200), w.resolves.load(.monotonic));
 }
 
 test "submit returns QueueFull at the cap" {
-    var sink = TestEvents.init(std.testing.allocator);
-    defer sink.deinit();
-    // 0 workers so jobs never drain; everything stacks on the queue.
-    var pool = try Pool.init(
-        std.testing.allocator,
-        .{ .workers = 0, .max_queue = 4, .io = std.testing.io },
-        sink.handler(),
-    );
+    var w = TestWork{};
+    var pool = try Pool.init(std.testing.allocator, .{ .workers = 0, .max_queue = 4, .io = std.testing.io });
     defer pool.deinit();
-    try pool.submit(.{ .id = 1, .megabytes = 1 });
-    try pool.submit(.{ .id = 2, .megabytes = 1 });
-    try pool.submit(.{ .id = 3, .megabytes = 1 });
-    try pool.submit(.{ .id = 4, .megabytes = 1 });
-    try std.testing.expectError(error.QueueFull, pool.submit(.{ .id = 5, .megabytes = 1 }));
+    var i: u64 = 0;
+    while (i < 4) : (i += 1) try pool.submit(.{ .id = i, .ctx = &w, .run = TestWork.run });
+    try std.testing.expectError(error.QueueFull, pool.submit(.{ .id = i, .ctx = &w, .run = TestWork.run }));
 }
 
 test "fuzz: submission storms never leak or deadlock" {
@@ -226,82 +173,10 @@ test "fuzz: submission storms never leak or deadlock" {
 fn fuzzStorm(_: void, smith: *std.testing.Smith) anyerror!void {
     var buf: [256]u8 = undefined;
     const n = smith.slice(&buf);
-    var sink = TestEvents.init(std.testing.allocator);
-    defer sink.deinit();
-    var pool = try Pool.init(
-        std.testing.allocator,
-        .{ .workers = 2, .max_queue = 64, .io = std.testing.io },
-        sink.handler(),
-    );
+    var w = TestWork{};
+    var pool = try Pool.init(std.testing.allocator, .{ .workers = 2, .max_queue = 64, .io = std.testing.io });
     defer pool.deinit();
     var i: u64 = 0;
-    while (i < n) : (i += 1) {
-        pool.submit(.{ .id = i, .megabytes = 1 }) catch {}; // QueueFull expected at cap
-    }
+    while (i < n) : (i += 1) pool.submit(.{ .id = i, .ctx = &w, .run = TestWork.run }) catch {};
     pool.waitIdle();
 }
-
-// ─── TestEvents helper ────────────────────────────────────────────────────────
-
-const TestEvents = struct {
-    // All fields guarded by mutex; mutex itself uses Io.Mutex.
-    // We cannot use Io.Mutex here without an io instance, so we use
-    // a simple atomic-flag spinlock for the test-only sink.
-    // Actually, to keep it simple we use a plain uncontended seqlock via
-    // atomic ops, because test callbacks are short and non-nested.
-    //
-    // Better: use a raw spinlock since this is test-only and always
-    // uncontended for long periods.
-    lock_flag: std.atomic.Value(bool) = .{ .raw = false },
-    resolves: usize = 0,
-    progressCalls: usize = 0,
-    lastPct: u8 = 0,
-    alloc: std.mem.Allocator,
-
-    fn init(a: std.mem.Allocator) TestEvents {
-        return .{ .alloc = a };
-    }
-    fn deinit(_: *TestEvents) void {}
-
-    fn acquire(self: *TestEvents) void {
-        while (self.lock_flag.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
-            std.atomic.spinLoopHint();
-        }
-    }
-    fn release(self: *TestEvents) void {
-        self.lock_flag.store(false, .release);
-    }
-
-    fn onProgress(self: *TestEvents, _: u64, pct: u8) void {
-        self.acquire();
-        defer self.release();
-        self.progressCalls += 1;
-        self.lastPct = pct;
-    }
-    fn onResolve(self: *TestEvents, _: u64, _: []const u8) void {
-        self.acquire();
-        defer self.release();
-        self.resolves += 1;
-    }
-    fn onReject(_: *TestEvents, _: u64, _: []const u8) void {}
-    fn handler(self: *TestEvents) Events {
-        return .{
-            .ctx = self,
-            .onProgress = struct {
-                fn f(c: *anyopaque, id: u64, p: u8) void {
-                    onProgress(@ptrCast(@alignCast(c)), id, p);
-                }
-            }.f,
-            .onResolve = struct {
-                fn f(c: *anyopaque, id: u64, h: []const u8) void {
-                    onResolve(@ptrCast(@alignCast(c)), id, h);
-                }
-            }.f,
-            .onReject = struct {
-                fn f(c: *anyopaque, id: u64, m: []const u8) void {
-                    onReject(@ptrCast(@alignCast(c)), id, m);
-                }
-            }.f,
-        };
-    }
-};

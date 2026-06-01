@@ -255,13 +255,18 @@ test "attack: post-terminate flood produces no emissions" {
     var h = try Harness.init();
     defer h.deinit();
     h.backend.simulateLifecycle(.window_all_closed); // App.shutdown path sets terminate
+    // App.shutdown() calls bridge.deinit() which frees the bridge and the pool.
+    // h.settle() would UAF through the freed bridge pointer. Use pumpMain directly:
+    // the backend is still alive and pumpMain with terminated=true drops anything
+    // pending. This mirrors app.zig's "L10" test which avoids drainForTest after
+    // shutdown for the same reason.
     var i: u64 = 0;
     while (i < 100) : (i += 1) {
         var buf: [128]u8 = undefined;
         const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":1}}}}", .{i});
         h.backend.simulateMessage(h.main_id, "app://localhost", text);
     }
-    h.settle();
+    h.backend.pumpMain();
     try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
 }
 

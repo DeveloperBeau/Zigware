@@ -3,6 +3,8 @@ const protocol = @import("protocol.zig");
 const Allowlist = @import("allowlist.zig").Allowlist;
 const jobs = @import("jobs.zig");
 const backend_mod = @import("platform/backend.zig");
+const sha = @import("commands/sha256.zig");
+const demo = @import("commands/demo.zig");
 
 /// Total in-flight working-set budget. Each submitted job reserves mb*1MiB
 /// against this; a submission that would exceed it is rejected with "busy".
@@ -38,12 +40,10 @@ pub fn Bridge(comptime B: type) type {
         window: B.WindowHandle,
         allow: Allowlist,
         pool: *jobs.Pool,
-        /// Per-id reserved bytes for in-flight jobs. `jobs.zig` stays Unchanged
-        /// (its callbacks carry only id, not mb), so the bridge keeps its own
+        /// Per-id reserved bytes for in-flight jobs. The bridge keeps its own
         /// id -> reserved-bytes map: insert before submit, remove+subtract on
-        /// resolve/reject (which run on worker threads, hence the mutex). This
-        /// is the M7-consistent design: no jobs.zig edit. `inflight_total` is
-        /// the running sum the budget gate reads.
+        /// resolve/reject (which run on worker threads, hence the mutex).
+        /// `inflight_total` is the running sum the budget gate reads.
         inflight_mutex: std.Io.Mutex = .init,
         inflight: std.AutoHashMapUnmanaged(u64, u64) = .empty,
         inflight_total: u64 = 0,
@@ -61,13 +61,6 @@ pub fn Bridge(comptime B: type) type {
             var allow: Allowlist = .empty;
             try allow.add("sha256");
 
-            const events = jobs.Events{
-                .ctx = self,
-                .onProgress = onProgress,
-                .onResolve = onResolve,
-                .onReject = onReject,
-            };
-
             self.* = .{
                 .alloc = alloc,
                 .io = io,
@@ -81,7 +74,7 @@ pub fn Bridge(comptime B: type) type {
                 .workers = opts.worker_count orelse workerCount(),
                 .max_queue = opts.max_queue,
                 .io = io,
-            }, events);
+            });
 
             return self;
         }
@@ -170,7 +163,14 @@ pub fn Bridge(comptime B: type) type {
             self.inflight_total += cost;
             self.inflight_mutex.unlock(self.io);
 
-            self.pool.submit(.{ .id = msg.id, .megabytes = mb }) catch {
+            const job = self.alloc.create(Sha256Job) catch {
+                self.releaseInflightFor(msg.id);
+                self.emitReject(msg.id, "busy");
+                return;
+            };
+            job.* = .{ .bridge = self, .id = msg.id, .megabytes = mb };
+            self.pool.submit(.{ .id = msg.id, .ctx = job, .run = Sha256Job.run }) catch {
+                self.alloc.destroy(job);
                 self.releaseInflightFor(msg.id);
                 self.emitReject(msg.id, "queue full");
             };
@@ -264,13 +264,49 @@ pub fn Bridge(comptime B: type) type {
             self.emit(aw.writer.buffered());
         }
 
+        /// Heap ctx for one sha256 job. The thunk frees it and calls
+        /// `releaseInflightFor` (the single per-job budget release). Captures
+        /// everything the worker needs to run the hash and emit through the bridge.
+        const Sha256Job = struct {
+            bridge: *Self,
+            id: u64,
+            megabytes: usize,
+
+            fn run(ctx: *anyopaque, cancel: *std.atomic.Value(bool)) void {
+                const job: *Sha256Job = @ptrCast(@alignCast(ctx));
+                const self = job.bridge;
+                defer self.alloc.destroy(job);
+                defer self.releaseInflightFor(job.id);
+
+                const ProgCtx = struct { bridge: *Self, id: u64 };
+                var pc = ProgCtx{ .bridge = self, .id = job.id };
+                const prog = sha.Progress{
+                    .ctx = &pc,
+                    .func = struct {
+                        fn f(c: *anyopaque, pct: u8) void {
+                            const x: *ProgCtx = @ptrCast(@alignCast(c));
+                            x.bridge.onProgress(x.id, pct);
+                        }
+                    }.f,
+                };
+                const digest = demo.hashGenerated(self.alloc, job.megabytes, prog, cancel) catch |err| {
+                    const msg: []const u8 = switch (err) {
+                        error.Cancelled => "cancelled",
+                        error.OutOfMemory => "out of memory",
+                    };
+                    self.onReject(job.id, msg);
+                    return;
+                };
+                self.onResolve(job.id, &digest);
+            }
+        };
+
         /// Emit a non-terminal progress update for `id`. Progress-before-terminal
         /// ordering for a given id is guaranteed by jobs.zig's serial per-job
         /// callback sequencing: onProgress is called synchronously before
         /// onResolve within a job, so a future jobs.zig change that parallelizes
         /// per-job callbacks would break this invariant.
-        fn onProgress(ctx: *anyopaque, id: u64, pct: u8) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
+        fn onProgress(self: *Self, id: u64, pct: u8) void {
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
             defer aw.deinit();
             var jbuf: [64]u8 = undefined;
@@ -282,9 +318,7 @@ pub fn Bridge(comptime B: type) type {
             self.emit(aw.writer.buffered());
         }
 
-        fn onResolve(ctx: *anyopaque, id: u64, hex: []const u8) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            defer self.releaseInflightFor(id);
+        fn onResolve(self: *Self, id: u64, hex: []const u8) void {
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
             defer aw.deinit();
             var jbuf: [128]u8 = undefined;
@@ -307,9 +341,7 @@ pub fn Bridge(comptime B: type) type {
             self.emit(aw.writer.buffered());
         }
 
-        fn onReject(ctx: *anyopaque, id: u64, msg: []const u8) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            defer self.releaseInflightFor(id);
+        fn onReject(self: *Self, id: u64, msg: []const u8) void {
             self.emitReject(id, msg);
         }
 
