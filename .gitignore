@@ -15,5 +15,10 @@ node_modules/
 # Logs
 *.log
 
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+
 # Local-only, per-clone rules
 CLAUDE.local.md
