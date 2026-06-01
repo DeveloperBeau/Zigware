@@ -111,6 +111,19 @@ pub fn build(b: *std.Build) void {
     const escapes_step = b.step("escapes", "Emit test/fixtures/js_escapes.jsonl");
     escapes_step.dependOn(&fixture_run.step);
 
+    const dts_mod = b.createModule(.{
+        .root_source_file = b.path("src/emit_dts.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dts_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    dts_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    dts_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    const dts_exe = b.addExecutable(.{ .name = "emit_dts", .root_module = dts_mod });
+    const dts_run = b.addRunArtifact(dts_exe);
+    const dts_step = b.step("dts", "Generate frontend/bindings.d.ts");
+    dts_step.dependOn(&dts_run.step);
+
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
