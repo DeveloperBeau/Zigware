@@ -16,6 +16,7 @@ const seam = @import("platform/backend.zig");
 const NullBackend = @import("platform/null.zig").NullBackend;
 const App = @import("app.zig").App;
 const Bridge = @import("bridge.zig").Bridge;
+const builtin = @import("commands/builtin.zig");
 const protocol = @import("protocol.zig");
 const assets = @import("assets.zig");
 
@@ -54,36 +55,43 @@ const TestBridge = struct {
     backend: *NullBackend,
     bridge: *Bridge(NullBackend),
     window_id: u64,
+    state: *builtin.State,
 
     fn init() !TestBridge {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
         const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
+        const state = try std.testing.allocator.create(builtin.State);
+        state.* = .{};
         const bridge = try Bridge(NullBackend).init(
             std.testing.allocator,
             std.testing.io,
             backend,
             win,
+            builtin.State,
+            builtin.Commands,
+            state,
             .{ .worker_count = 4 }, // deterministic concurrency (L9)
         );
-        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win) };
+        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state };
     }
     fn send(self: *TestBridge, text: []const u8) void {
         self.bridge.handleMessage(self.window_id, "app://localhost", text);
     }
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers
+        std.testing.allocator.destroy(self.state);
         self.backend.markJoined(); // bridge-only test owns the handshake
         self.backend.deinit();
     }
 };
 
-/// Parse the numeric id out of a `window.zig._resolve(ID, ...` or
-/// `window.zig._reject(ID, ...` terminal emission. Returns null for anything
-/// else (progress `_emit` calls, malformed entries), so a single pass over
+/// Parse the numeric id out of a `window.Zigware._resolve(ID, ...` or
+/// `window.Zigware._reject(ID, ...` terminal emission. Returns null for anything
+/// else (progress `_stream` calls, malformed entries), so a single pass over
 /// eval_log can tally terminals without an O(n) substring scan per id.
 fn terminalEmissionId(js: []const u8) ?u64 {
-    const resolve = "window.zig._resolve(";
-    const reject = "window.zig._reject(";
+    const resolve = "window.Zigware._resolve(";
+    const reject = "window.Zigware._reject(";
     const rest = if (std.mem.startsWith(u8, js, resolve))
         js[resolve.len..]
     else if (std.mem.startsWith(u8, js, reject))
@@ -106,20 +114,25 @@ test "attack: gigabyte megabytes request is clamped to MAX_MEGABYTES" {
     try std.testing.expect(h.backend.countResolveExactly(1) == 1);
 }
 
-test "attack: negative megabytes runs at default, resolves once" {
+test "attack: negative megabytes is a bad_args reject" {
     var h = try Harness.init();
     defer h.deinit();
+    // The registry decodes sha256's `megabytes: u32` strictly: a negative value
+    // fails decode and becomes a structured bad_args reject, not a default run.
     h.backend.simulateMessage(h.main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":-1}}");
     h.settle();
-    try std.testing.expect(h.backend.countResolveExactly(1) == 1);
+    try std.testing.expect(h.backend.countRejectExactly(1) == 1);
+    try std.testing.expect(h.backend.countContaining("\"code\":\"bad_args\"") >= 1);
 }
 
-test "attack: non-integer megabytes runs at default, resolves once" {
+test "attack: non-integer megabytes is a bad_args reject" {
     var h = try Harness.init();
     defer h.deinit();
+    // A non-integer megabytes value fails the strict u32 decode -> bad_args.
     h.backend.simulateMessage(h.main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":\"big\"}}");
     h.settle();
-    try std.testing.expect(h.backend.countResolveExactly(1) == 1);
+    try std.testing.expect(h.backend.countRejectExactly(1) == 1);
+    try std.testing.expect(h.backend.countContaining("\"code\":\"bad_args\"") >= 1);
 }
 
 // ─── Attack vector 2: reserved-route exfil attempts ──────────────────────────
@@ -440,7 +453,8 @@ test "NullBackend.evalJS is safe under 8-thread contention with interleaved pump
 test "Bridge.deinit while workers are mid-flight does not UAF" {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
-    const bridge = try Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, .{ .worker_count = 4 });
+    var state = builtin.State{};
+    const bridge = try Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 });
     // Submit jobs with NO settle, then deinit immediately. bridge.deinit joins
     // the pool; backend.deinit then drains and frees. No UAF, no leak. The
     // UAF-safety property is independent of per-job size, so use the smallest
@@ -514,7 +528,8 @@ test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
             backend.deinit();
             continue;
         };
-        const bridge = Bridge(NullBackend).init(a, std.testing.io, backend, win, .{ .worker_count = 2 }) catch {
+        var state = builtin.State{};
+        const bridge = Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 2 }) catch {
             backend.markJoined();
             backend.deinit();
             continue;
@@ -537,18 +552,19 @@ test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
 
 // ─── Attack vector 17: working-set memory ceiling under flood (I2/H11) ───────
 
-test "I2: a 1000-message flood stays within the working-set budget" {
+test "I2: a 1000-message flood stays within a bounded transient budget (concurrency-capped)" {
     const N: u64 = 1000;
     var dbg = std.heap.DebugAllocator(.{ .thread_safe = true, .enable_memory_limit = true }){};
-    // The 1 GiB working-set budget admits at most ~4 concurrent 256 MB jobs
-    // (1 GiB / 256 MB), so the budget gate sheds the vast majority of the flood
-    // as "busy" without ever allocating their buffers and bounds peak transient
-    // heap near 1 GiB regardless of how many of the 1000 messages arrive. The
-    // 2 GiB ceiling sits above that bound: it proves the heap does not run away
-    // under the flood (the unbounded-queue failure mode the budget prevents)
-    // while leaving headroom for the recorded emission log so the gate sheds
-    // load rather than the allocator spuriously failing terminal emissions.
-    dbg.requested_memory_limit = 2 * 1024 * 1024 * 1024; // runtime field; flag is enable_memory_limit (B2)
+    // The concurrency-count cap (MAX_CONCURRENT = 8), not a byte budget, bounds
+    // peak. This test goes through App.init, which uses workerCount() = up to 8
+    // workers, so with megabytes:8 peak ~= min(workers, MAX_CONCURRENT) * 8 MiB
+    // ~= 64 MiB worst case on an >=8-core host. A 128 MiB ceiling gives 2x
+    // headroom over that peak: it still proves the heap does not run away under
+    // the flood (the unbounded-queue failure mode the cap prevents) while
+    // leaving room for the recorded emission log so the gate sheds load rather
+    // than the allocator spuriously failing terminal emissions under parallel
+    // test load.
+    dbg.requested_memory_limit = 128 * 1024 * 1024; // runtime field; flag is enable_memory_limit (B2)
     defer std.debug.assert(dbg.deinit() == .ok);
     const a = dbg.allocator();
     const backend = try NullBackend.init(a, std.testing.io);
@@ -561,23 +577,20 @@ test "I2: a 1000-message flood stays within the working-set budget" {
     var i: u64 = 1;
     while (i <= N) : (i += 1) {
         var buf: [160]u8 = undefined;
-        // Each asks for 256 MB. With a 1 GiB working-set budget that is at most
-        // ~4 concurrent reservations, so the budget gate sheds the vast majority
-        // of the flood as "busy" rejects WITHOUT ever hashing them (mirrors
-        // bridge.zig's I2 vector). Only the handful that fit the budget actually
-        // hash, which keeps the suite fast while still exercising the gate. The
-        // property under test ("every id gets exactly one terminal emission and
-        // the heap stays under the DebugAllocator ceiling under a flood that
-        // trips the budget") is independent of per-job size, so a large size
-        // that maximizes shedding is the cheap, correct choice.
-        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":256}}}}", .{i});
+        // Each asks for 8 MB. The count cap admits at most MAX_CONCURRENT = 8
+        // concurrent calls, so the gate sheds the vast majority of the flood as
+        // "server busy" rejects WITHOUT ever hashing them (mirrors bridge.zig's
+        // I2 vector). The property under test ("every id gets exactly one
+        // terminal emission and the heap stays under the DebugAllocator ceiling
+        // under a flood that trips the cap") is independent of per-job size.
+        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":8}}}}", .{i});
         backend.simulateMessage(main_id, "app://localhost", text);
     }
     app.bridge.drainForTest();
     backend.pumpMain();
-    // The budget gate must have actually tripped: a large fraction of the flood
-    // is shed as "busy" without hashing, so the budget path is genuinely covered
-    // (not just queued and resolved).
+    // The concurrency cap must have actually tripped: a large fraction of the
+    // flood is shed as "server busy" without hashing, so the gate path is
+    // genuinely covered (not just queued and resolved).
     try std.testing.expect(backend.countContaining("busy") > 0);
     // Every id received exactly one terminal emission (resolve OR busy-reject).
     // Tally in a single O(n) pass: parse each emission's id and bump its slot,

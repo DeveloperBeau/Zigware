@@ -210,22 +210,14 @@ pub fn writeJsonAsJsLiteral(w: *std.Io.Writer, text: []const u8) !void {
 // ─── encode helpers ──────────────────────────────────────────────────────────
 
 pub fn encodeResolve(w: *std.Io.Writer, id: u64, json: []const u8) !void {
-    try w.print("window.zig._resolve({d}, ", .{id});
+    try w.print("window.Zigware._resolve({d}, ", .{id});
     try writeJsonAsJsLiteral(w, json);
     try w.writeAll(");");
 }
 
 pub fn encodeReject(w: *std.Io.Writer, id: u64, message: []const u8) !void {
-    try w.print("window.zig._reject({d}, ", .{id});
+    try w.print("window.Zigware._reject({d}, ", .{id});
     try jsString(w, message);
-    try w.writeAll(");");
-}
-
-pub fn encodeEmit(w: *std.Io.Writer, channel: []const u8, json: []const u8) !void {
-    try w.writeAll("window.zig._emit(");
-    try jsString(w, channel);
-    try w.writeAll(", ");
-    try writeJsonAsJsLiteral(w, json);
     try w.writeAll(");");
 }
 
@@ -418,7 +410,7 @@ test "encodeResolve produces a valid JS call with JSON arg" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try encodeResolve(&aw.writer, 3, "{\"hash\":\"ab\"}");
-    try std.testing.expectEqualStrings("window.zig._resolve(3, {\"hash\":\"ab\"});", aw.writer.buffered());
+    try std.testing.expectEqualStrings("window.Zigware._resolve(3, {\"hash\":\"ab\"});", aw.writer.buffered());
 }
 
 test "jsString escapes injection vectors including LS/PS" {

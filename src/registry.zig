@@ -381,7 +381,7 @@ test "sync command decodes args, runs, resolves" {
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
     Reg.dispatch(&b, &st, "add", 1, "{\"a\":2,\"b\":3}");
-    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.zig._resolve(1, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(1, ") != null);
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "5") != null);
 }
 
@@ -426,7 +426,7 @@ test "async command runs on the pool and resolves" {
     defer b.last.deinit(std.testing.allocator);
     Reg.dispatch(&b, &st, "slowAdd", 5, "{\"a\":4,\"b\":6}");
     pool.waitIdle();
-    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.zig._resolve(5, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(5, ") != null);
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "10") != null);
 }
 

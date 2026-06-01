@@ -3,16 +3,8 @@ const protocol = @import("protocol.zig");
 const Allowlist = @import("allowlist.zig").Allowlist;
 const jobs = @import("jobs.zig");
 const backend_mod = @import("platform/backend.zig");
-const sha = @import("commands/sha256.zig");
-const demo = @import("commands/demo.zig");
-
-/// Total in-flight working-set budget. Each submitted job reserves mb*1MiB
-/// against this; a submission that would exceed it is rejected with "busy".
-/// Bounds total memory regardless of how deep the queue is, replacing a
-/// time-based rate limit (deferred to v0.2). 1 GiB headroom for the demo's
-/// 300 MB job plus a few concurrent ones.
-const BRIDGE_MEMORY_BUDGET: u64 = 1 * 1024 * 1024 * 1024;
-const MIB: u64 = 1024 * 1024;
+const ctxmod = @import("command_ctx.zig");
+const registry = @import("registry.zig");
 
 pub const BridgeOptions = struct {
     /// Explicit worker count so tests are deterministic across CI hardware.
@@ -21,10 +13,29 @@ pub const BridgeOptions = struct {
     max_queue: usize = 256,
 };
 
-/// Bridge over a platform backend `B`. Routes inbound JS messages to the worker
-/// pool and emits results back through `B.evalJS`. Liveness is the backend's
-/// concern: evalJS after shutdown is dropped by the backend, so the bridge has
-/// no separate alive gate.
+/// G5: max concurrently in-flight calls. Bounds peak arena memory together with
+/// the bounded worker pool. A resource-aware per-command budget (from D's
+/// manifest) is deferred to D. B counts calls, not bytes (deviation 6).
+const MAX_CONCURRENT: usize = 8;
+
+/// Per-id parked binary, pulled out-of-band over the stream scheme. Bounded by a
+/// fixed byte budget per id; overflow is rejected at park time (G5). Eviction is
+/// serve-or-teardown, never on settle (deviation 9): the webview pulls bytes
+/// after the invoke settles, so freeing on settle would 404 every pull.
+const BIN_BUDGET_PER_ID: usize = 16 * 1024 * 1024;
+
+const BinEntry = struct { seq: u32, bytes: []u8, served: bool = false };
+const BinRing = struct {
+    entries: std.ArrayList(BinEntry) = .empty,
+    total: usize = 0,
+    settled: bool = false,
+};
+
+/// Bridge over a platform backend `B`, routing inbound messages to commands
+/// registered in `Reg = Commands(B, State, UserCommands)`. `Bridge(B)` stays
+/// generic over `B` only: the registry and `*State` are erased behind a captured
+/// `dispatchFn` and `state_ptr` so A's call sites that name `Bridge(NullBackend)`
+/// keep compiling.
 ///
 /// Lifecycle contract: `deinit` is INFALLIBLE. It joins the worker pool and
 /// frees state and cannot fail. Any future fallible cleanup MUST go through a
@@ -38,36 +49,60 @@ pub fn Bridge(comptime B: type) type {
         io: std.Io,
         backend: *B,
         window: B.WindowHandle,
-        allow: Allowlist,
         pool: *jobs.Pool,
-        /// Per-id reserved bytes for in-flight jobs. The bridge keeps its own
-        /// id -> reserved-bytes map: insert before submit, remove+subtract on
-        /// resolve/reject (which run on worker threads, hence the mutex).
-        /// `inflight_total` is the running sum the budget gate reads.
+
+        // G5: in-flight call ids (also duplicate-id detection), capped at
+        // MAX_CONCURRENT. The map value is void; this is an id set, not a byte
+        // budget (deviation 6).
         inflight_mutex: std.Io.Mutex = .init,
-        inflight: std.AutoHashMapUnmanaged(u64, u64) = .empty,
-        inflight_total: u64 = 0,
+        inflight: std.AutoHashMapUnmanaged(u64, void) = .empty,
+
+        // Window label map (deviation 3): single "main" entry pre-E. C's G2
+        // resolves a label through this; E generalizes it to multi-window.
+        main_window_id: u64,
+
+        // Per-id binary ring buffer (full machinery lands here so the sink
+        // closure, releaseCall, and deinit can reference it; Task 7 only adds
+        // serveStream/parseStreamPath and the registry Bytes branch).
+        bin_mutex: std.Io.Mutex = .init,
+        bins: std.AutoHashMapUnmanaged(u64, BinRing) = .empty,
+
+        // Comptime-erased dispatch: a fn pointer the init fills from the registry
+        // type, so Bridge(B) is not generic over State/UserCommands.
+        dispatchFn: *const fn (self: *Self, name: []const u8, id: u64, args_json: []const u8) void,
+        allow: Allowlist,
+        state_ptr: *anyopaque,
 
         pub fn init(
             alloc: std.mem.Allocator,
             io: std.Io,
             backend: *B,
             window: B.WindowHandle,
+            comptime State: type,
+            comptime UserCommands: type,
+            state: *State,
             opts: BridgeOptions,
         ) !*Self {
             const self = try alloc.create(Self);
             errdefer alloc.destroy(self);
 
-            var allow: Allowlist = .empty;
-            try allow.add("sha256");
+            const Reg = registry.Commands(B, State, UserCommands);
 
             self.* = .{
                 .alloc = alloc,
                 .io = io,
                 .backend = backend,
                 .window = window,
-                .allow = allow,
                 .pool = undefined,
+                .main_window_id = backend.windowId(window),
+                .state_ptr = state,
+                .allow = Reg.allowlist(),
+                .dispatchFn = struct {
+                    fn f(s: *Self, name: []const u8, id: u64, args_json: []const u8) void {
+                        const st: *State = @ptrCast(@alignCast(s.state_ptr));
+                        Reg.dispatch(s, st, name, id, args_json);
+                    }
+                }.f,
             };
 
             self.pool = try jobs.Pool.init(alloc, .{
@@ -80,10 +115,12 @@ pub fn Bridge(comptime B: type) type {
         }
 
         /// INFALLIBLE by contract. Joins the pool (so no worker touches the
-        /// inflight map after this), frees the inflight map, frees state.
+        /// inflight map or bins after this), frees the inflight map, frees any
+        /// parked binary, frees state.
         pub fn deinit(self: *Self) void {
             self.pool.deinit();
             self.inflight.deinit(self.alloc);
+            self.deinitBins();
             self.alloc.destroy(self);
         }
 
@@ -107,7 +144,7 @@ pub fn Bridge(comptime B: type) type {
             // Layer-2 message-size cap (H1). onMessageImp enforces it first at
             // the objc seam; this is the defense-in-depth check for any caller.
             if (text.len > protocol.MAX_MESSAGE_LEN) {
-                if (scanId(text)) |id| self.emitReject(id, "message too large");
+                if (scanId(text)) |id| self.emitErrorReject(id, "internal", "message too large", null);
                 return;
             }
 
@@ -118,62 +155,27 @@ pub fn Bridge(comptime B: type) type {
             const msg = protocol.decode(a, text, protocol.MAX_MESSAGE_LEN) catch {
                 // Malformed: if a numeric "id" is scannable, send one correlated
                 // reject so the page-side promise settles instead of hanging.
-                if (scanId(text)) |id| self.emitReject(id, "bad message");
+                if (scanId(text)) |id| self.emitErrorReject(id, "internal", "bad message", null);
                 return;
             };
             // msg is arena-owned; no msg.deinit needed.
 
+            // Reserved inbound names (e.g. __zigware_ready from E) never hit the gate.
+            if (protocol.isReservedInboundName(msg.cmd)) return;
+
             if (!self.allow.contains(msg.cmd)) {
-                self.emitReject(msg.id, "unknown command");
+                self.emitErrorReject(msg.id, "unknown_command", "no such command", null);
                 return;
             }
 
-            const mb = self.parseMegabytes(a, msg.args_json);
-            const cost: u64 = @as(u64, mb) * MIB;
+            // G5: reserve a slot under the budget. reserveCall emits the reject
+            // itself on failure (duplicate id, budget exceeded, or OOM).
+            if (!self.reserveCall(msg.id)) return;
 
-            // Working-set budget gate (H11). Reserve before submit under the
-            // mutex; if we would blow the budget, reject and do not submit. The
-            // reservation is recorded per id and released by onResolve/onReject
-            // (or rolled back here on a submit failure). Reserving with the
-            // allocator (hash insert) can OOM; treat that as a soft "busy".
-            self.inflight_mutex.lockUncancelable(self.io);
-            // The id is attacker-controlled (the page picks it). If an id is
-            // already in flight, reject the duplicate rather than overwriting
-            // its reservation in the map: a collided key would make the two
-            // releases subtract the wrong cost and underflow inflight_total,
-            // permanently wedging the budget (finding B1). getOrPut lets us
-            // detect the collision atomically under the lock.
-            const gop = self.inflight.getOrPut(self.alloc, msg.id) catch {
-                self.inflight_mutex.unlock(self.io);
-                self.emitReject(msg.id, "busy");
-                return;
-            };
-            if (gop.found_existing) {
-                self.inflight_mutex.unlock(self.io);
-                self.emitReject(msg.id, "duplicate id");
-                return;
-            }
-            if (self.inflight_total + cost > BRIDGE_MEMORY_BUDGET) {
-                _ = self.inflight.remove(msg.id); // back out the slot we just reserved
-                self.inflight_mutex.unlock(self.io);
-                self.emitReject(msg.id, "busy");
-                return;
-            }
-            gop.value_ptr.* = cost;
-            self.inflight_total += cost;
-            self.inflight_mutex.unlock(self.io);
+            // C's G1/G2/G4 hook here in the future (origin trusted, window granted,
+            // args in scope). Today a pass-through.
 
-            const job = self.alloc.create(Sha256Job) catch {
-                self.releaseInflightFor(msg.id);
-                self.emitReject(msg.id, "busy");
-                return;
-            };
-            job.* = .{ .bridge = self, .id = msg.id, .megabytes = mb };
-            self.pool.submit(.{ .id = msg.id, .ctx = job, .run = Sha256Job.run }) catch {
-                self.alloc.destroy(job);
-                self.releaseInflightFor(msg.id);
-                self.emitReject(msg.id, "queue full");
-            };
+            self.dispatchFn(self, msg.cmd, msg.id, msg.args_json);
         }
 
         fn workerCount() usize {
@@ -203,167 +205,198 @@ pub fn Bridge(comptime B: type) type {
             return @intCast(parsed);
         }
 
-        /// Parse the optional `megabytes` integer from the args JSON via a
-        /// bounded Value parse on the per-message arena; JSON_PARSE_OPTIONS caps
-        /// value length and the depth pre-scan in decode bounds nesting (H2).
-        /// Absent -> default
-        /// 256 (matches the PoC and keeps the 300 MB smoke demo and its hash
-        /// oracle valid). Present-but-malformed -> default (the job still runs).
-        /// Clamps to MAX_MEGABYTES so a hostile page cannot drive gigabyte
-        /// allocations across the bounded pool. Uses the supplied (arena)
-        /// allocator, never page_allocator.
-        ///
-        /// pub for direct boundary + fuzz tests (M15).
-        pub const MAX_MEGABYTES: usize = 512;
-        const DEFAULT_MEGABYTES: usize = 256;
-        pub fn parseMegabytes(self: *Self, a: std.mem.Allocator, args_json: []const u8) usize {
-            _ = self;
-            // Reuse protocol's single JSON_PARSE_OPTIONS so decode and the
-            // megabytes scan can never drift on parse limits.
-            const parsed = std.json.parseFromSlice(std.json.Value, a, args_json, protocol.JSON_PARSE_OPTIONS) catch return DEFAULT_MEGABYTES;
-            defer parsed.deinit();
-            if (parsed.value != .object) return DEFAULT_MEGABYTES;
-            const v = parsed.value.object.get("megabytes") orelse return DEFAULT_MEGABYTES;
-            if (v != .integer or v.integer <= 0) return DEFAULT_MEGABYTES;
-            // Clamp on the i64 domain BEFORE the cast (M11): @intCast of an i64
-            // larger than usize traps in ReleaseSafe on a 32-bit target. After
-            // the clamp the value is provably in [1, MAX_MEGABYTES], so the cast
-            // is total on any target width.
-            const clamped: i64 = @min(v.integer, @as(i64, MAX_MEGABYTES));
-            return @intCast(clamped);
+        // ── Registry-facing surface (duck-typed by registry.dispatch) ──────────
+
+        /// G5 reservation. Returns true if the call may proceed (slot reserved),
+        /// false if it was rejected (duplicate id, budget exceeded, or OOM) — in
+        /// which case this method has already emitted the terminal reject.
+        pub fn reserveCall(self: *Self, id: u64) bool {
+            self.inflight_mutex.lockUncancelable(self.io);
+            defer self.inflight_mutex.unlock(self.io);
+            if (self.inflight.count() >= MAX_CONCURRENT) {
+                self.emitErrorReject(id, "queue_full", "server busy", null);
+                return false;
+            }
+            const gop = self.inflight.getOrPut(self.alloc, id) catch {
+                self.emitErrorReject(id, "queue_full", "server busy", null);
+                return false;
+            };
+            if (gop.found_existing) {
+                self.emitErrorReject(id, "internal", "duplicate id", null);
+                return false;
+            }
+            return true;
         }
 
-        /// Emit JS to the window. The backend drops it if the webview is gone.
+        /// Release the reservation recorded for `id`. Idempotent: an id not
+        /// present (already released, or rejected before submit) is a no-op. Runs
+        /// on worker threads via the registry's async thunk, hence the mutex.
+        pub fn releaseCall(self: *Self, id: u64) void {
+            self.inflight_mutex.lockUncancelable(self.io);
+            _ = self.inflight.remove(id);
+            self.inflight_mutex.unlock(self.io);
+            // Do NOT free parked binary here (deviation 9): the webview pulls
+            // bytes AFTER the call settles, so freeing on settle would 404 every
+            // pull. Mark the ring settled; serveStream frees it once its last seq
+            // is served, and deinitBins frees any un-pulled ring at teardown.
+            // markBinSettled does NOT run under inflight_mutex (unlocked above),
+            // so there is no inflight->bin lock coupling (H3).
+            self.markBinSettled(id);
+        }
+
         fn emit(self: *Self, js: []const u8) void {
             self.backend.evalJS(self.window, js);
         }
 
         /// Emit a minimal reject from a fixed stack buffer that CANNOT OOM, so
         /// every id always settles even under allocator failure (H5). Emits a
-        /// constant `"error"` reason (there is no caller-supplied message);
-        /// correctness only needs the id and the reject channel.
+        /// constant `"error"` reason; correctness only needs the id and the
+        /// reject channel.
         fn emitFixedReject(self: *Self, id: u64) void {
             var buf: [256]u8 = undefined;
-            const js = std.fmt.bufPrint(&buf, "window.zig._reject({d}, \"error\");", .{id}) catch {
-                // id formatting cannot realistically overflow 256 bytes; if it
-                // somehow does, there is no safe fallback, so drop.
+            const js = std.fmt.bufPrint(&buf, "window.Zigware._reject({d}, \"error\");", .{id}) catch {
                 std.log.warn("bridge: fixed reject overflow for id {d}", .{id});
                 return;
             };
             self.emit(js);
         }
 
-        fn emitReject(self: *Self, id: u64, message: []const u8) void {
+        pub fn emitResolve(self: *Self, id: u64, json: []const u8) void {
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
             defer aw.deinit();
-            protocol.encodeReject(&aw.writer, id, message) catch |err| {
-                std.log.warn("bridge: encodeReject failed: {s}", .{@errorName(err)});
+            protocol.encodeResolve(&aw.writer, id, json) catch {
                 self.emitFixedReject(id);
                 return;
             };
             self.emit(aw.writer.buffered());
         }
 
-        /// Heap ctx for one sha256 job. The thunk frees it and calls
-        /// `releaseInflightFor` (the single per-job budget release). Captures
-        /// everything the worker needs to run the hash and emit through the bridge.
-        const Sha256Job = struct {
+        pub fn emitErrorReject(self: *Self, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
+            var aw: std.Io.Writer.Allocating = .init(self.alloc);
+            defer aw.deinit();
+            protocol.encodeErrorReject(&aw.writer, id, code, message, payload) catch {
+                self.emitFixedReject(id);
+                return;
+            };
+            self.emit(aw.writer.buffered());
+        }
+
+        /// Per-call sink context. The EmitSink is its first field so the static
+        /// closures recover (bridge, id) via @fieldParentPtr. Lives on the
+        /// runHandler frame (sync) or the heap job ctx's runHandler frame (async);
+        /// the by-value local outlives the whole call (B1).
+        pub const SinkCtx = struct {
+            sink: ctxmod.EmitSink,
             bridge: *Self,
             id: u64,
-            megabytes: usize,
-
-            fn run(ctx: *anyopaque, cancel: *std.atomic.Value(bool)) void {
-                const job: *Sha256Job = @ptrCast(@alignCast(ctx));
-                const self = job.bridge;
-                defer self.alloc.destroy(job);
-                defer self.releaseInflightFor(job.id);
-
-                const ProgCtx = struct { bridge: *Self, id: u64 };
-                var pc = ProgCtx{ .bridge = self, .id = job.id };
-                const prog = sha.Progress{
-                    .ctx = &pc,
-                    .func = struct {
-                        fn f(c: *anyopaque, pct: u8) void {
-                            const x: *ProgCtx = @ptrCast(@alignCast(c));
-                            x.bridge.onProgress(x.id, pct);
-                        }
-                    }.f,
-                };
-                const digest = demo.hashGenerated(self.alloc, job.megabytes, prog, cancel) catch |err| {
-                    const msg: []const u8 = switch (err) {
-                        error.Cancelled => "cancelled",
-                        error.OutOfMemory => "out of memory",
-                    };
-                    self.onReject(job.id, msg);
-                    return;
-                };
-                self.onResolve(job.id, &digest);
-            }
         };
 
-        /// Emit a non-terminal progress update for `id`. Progress-before-terminal
-        /// ordering for a given id is guaranteed by jobs.zig's serial per-job
-        /// callback sequencing: onProgress is called synchronously before
-        /// onResolve within a job, so a future jobs.zig change that parallelizes
-        /// per-job callbacks would break this invariant.
-        fn onProgress(self: *Self, id: u64, pct: u8) void {
-            var aw: std.Io.Writer.Allocating = .init(self.alloc);
-            defer aw.deinit();
-            var jbuf: [64]u8 = undefined;
-            const json = std.fmt.bufPrint(&jbuf, "{{\"id\":{d},\"pct\":{d}}}", .{ id, pct }) catch return;
-            protocol.encodeEmit(&aw.writer, "progress", json) catch |err| {
-                std.log.warn("bridge: encodeEmit(progress) failed: {s}", .{@errorName(err)});
-                return; // progress is non-terminal; the resolve/reject still settles the promise
-            };
-            self.emit(aw.writer.buffered());
+        /// Build a per-call SinkCtx (returned BY VALUE) for in-flight call `id`.
+        /// No allocation, no map, no lock on the emit path (B1). The label is
+        /// "main" pre-E (deviation 3).
+        pub fn makeSink(self: *Self, id: u64) SinkCtx {
+            return .{ .sink = .{ .label = "main", .evalJS = sinkEvalJS, .parkBinary = sinkParkBinary }, .bridge = self, .id = id };
         }
 
-        fn onResolve(self: *Self, id: u64, hex: []const u8) void {
-            var aw: std.Io.Writer.Allocating = .init(self.alloc);
-            defer aw.deinit();
-            var jbuf: [128]u8 = undefined;
-            // LOAD-BEARING (M4): `hex` is a charset-restricted SHA-256 digest
-            // ([0-9a-f], fixed 64 bytes), so hand-building the JSON and routing
-            // it through writeJsonAsJsLiteral (which escapes only LS/PS, NOT
-            // arbitrary string content) is safe HERE ONLY. Any command whose
-            // result contains attacker-influenced string bytes MUST build the
-            // object with std.json.Stringify or route each string through
-            // jsString. Sub-project B's typed result codegen enforces this.
-            const json = std.fmt.bufPrint(&jbuf, "{{\"hash\":\"{s}\"}}", .{hex}) catch {
-                self.emitFixedReject(id);
-                return;
-            };
-            protocol.encodeResolve(&aw.writer, id, json) catch |err| {
-                std.log.warn("bridge: encodeResolve failed: {s}", .{@errorName(err)});
-                self.emitFixedReject(id);
-                return;
-            };
-            self.emit(aw.writer.buffered());
+        fn sinkEvalJS(sink: *ctxmod.EmitSink, js: []const u8) void {
+            const sc: *SinkCtx = @fieldParentPtr("sink", sink);
+            // The A-seam alive check lives in backend.evalJS (dropped after teardown).
+            sc.bridge.emit(js);
         }
 
-        fn onReject(self: *Self, id: u64, msg: []const u8) void {
-            self.emitReject(id, msg);
+        fn sinkParkBinary(sink: *ctxmod.EmitSink, id: u64, seq: u32, bytes: []const u8) bool {
+            const sc: *SinkCtx = @fieldParentPtr("sink", sink);
+            return sc.bridge.parkBinary(id, seq, bytes);
         }
 
-        /// Release the reservation recorded for `id` at submit time. Looks the
-        /// id up in the inflight map, removes it, and subtracts its exact cost
-        /// from the running total. Idempotent: an id not present (already
-        /// released, or rejected before submit) is a no-op. Runs on worker
-        /// threads via the onResolve/onReject defers, hence the mutex.
-        fn releaseInflightFor(self: *Self, id: u64) void {
-            self.inflight_mutex.lockUncancelable(self.io);
-            defer self.inflight_mutex.unlock(self.io);
-            if (self.inflight.fetchRemove(id)) |kv| {
-                self.inflight_total -= kv.value;
+        // ── Per-id binary ring buffer (Task 7 Step 1 machinery) ────────────────
+
+        /// Park bytes under (id, seq). Returns false if the per-id budget would
+        /// overflow. Copies the bytes (the handler's slice is arena-owned and
+        /// freed after the call).
+        pub fn parkBinary(self: *Self, id: u64, seq: u32, bytes: []const u8) bool {
+            self.bin_mutex.lockUncancelable(self.io);
+            defer self.bin_mutex.unlock(self.io);
+            self.reapServedLocked();
+            const cur_total = if (self.bins.getPtr(id)) |r| r.total else 0;
+            if (cur_total + bytes.len > BIN_BUDGET_PER_ID) return false;
+            const gop = self.bins.getOrPut(self.alloc, id) catch return false;
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            const ring = gop.value_ptr;
+            const copy = self.alloc.dupe(u8, bytes) catch return false;
+            ring.entries.append(self.alloc, .{ .seq = seq, .bytes = copy }) catch {
+                self.alloc.free(copy);
+                return false;
+            };
+            ring.total += bytes.len;
+            return true;
+        }
+
+        /// Mark the ring for `id` settled (deviation 9). Does NOT free parked
+        /// bytes (the webview pulls them after settle). A ring with no entries
+        /// (no _bin was ever parked, e.g. a non-binary call) is removed here so
+        /// common calls leave nothing behind.
+        fn markBinSettled(self: *Self, id: u64) void {
+            self.bin_mutex.lockUncancelable(self.io);
+            defer self.bin_mutex.unlock(self.io);
+            const ring = self.bins.getPtr(id) orelse return;
+            ring.settled = true;
+            if (ring.entries.items.len == 0) {
+                if (self.bins.fetchRemove(id)) |kv| {
+                    var r = kv.value;
+                    r.entries.deinit(self.alloc);
+                }
             }
         }
 
-        /// Test-only accessor: the current reserved total. After a fully drained
-        /// flood it must be 0 (proves no reservation leaks, finding B1).
-        pub fn inflightBytes(self: *Self) u64 {
+        /// Free the bytes of every already-served entry across all rings, and drop
+        /// any settled ring left empty. Reclaims served binary on the next
+        /// park/serve without freeing bytes still in flight. Caller holds
+        /// bin_mutex. The empties buffer is a fixed window; any overflow is reaped
+        /// on the next pass (deinitBins is the backstop).
+        fn reapServedLocked(self: *Self) void {
+            var empties: [16]u64 = undefined;
+            var n: usize = 0;
+            var it = self.bins.iterator();
+            while (it.next()) |kv| {
+                const ring = kv.value_ptr;
+                var i: usize = 0;
+                while (i < ring.entries.items.len) {
+                    if (ring.entries.items[i].served) {
+                        self.alloc.free(ring.entries.items[i].bytes);
+                        _ = ring.entries.orderedRemove(i);
+                    } else i += 1;
+                }
+                if (ring.settled and ring.entries.items.len == 0 and n < empties.len) {
+                    empties[n] = kv.key_ptr.*;
+                    n += 1;
+                }
+            }
+            for (empties[0..n]) |id| {
+                if (self.bins.fetchRemove(id)) |kv| {
+                    var r = kv.value;
+                    r.entries.deinit(self.alloc);
+                }
+            }
+        }
+
+        /// Free every parked ring at teardown (the backstop for any un-pulled or
+        /// un-reaped entry).
+        fn deinitBins(self: *Self) void {
+            var it = self.bins.iterator();
+            while (it.next()) |kv| {
+                for (kv.value_ptr.entries.items) |e| self.alloc.free(e.bytes);
+                kv.value_ptr.entries.deinit(self.alloc);
+            }
+            self.bins.deinit(self.alloc);
+        }
+
+        /// Test-only accessor: the current in-flight call count. After a fully
+        /// drained flood it must be 0 (proves no reservation leaks).
+        pub fn inflightCount(self: *Self) usize {
             self.inflight_mutex.lockUncancelable(self.io);
             defer self.inflight_mutex.unlock(self.io);
-            return self.inflight_total;
+            return self.inflight.count();
         }
     };
 }
@@ -371,23 +404,30 @@ pub fn Bridge(comptime B: type) type {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 const NullBackend = @import("platform/null.zig").NullBackend;
+const builtin = @import("commands/builtin.zig");
 
 const TestBridge = struct {
     backend: *NullBackend,
     bridge: *Bridge(NullBackend),
     window_id: u64,
+    state: *builtin.State,
 
     fn init() !TestBridge {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
         const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
+        const state = try std.testing.allocator.create(builtin.State);
+        state.* = .{};
         const bridge = try Bridge(NullBackend).init(
             std.testing.allocator,
             std.testing.io,
             backend,
             win,
+            builtin.State,
+            builtin.Commands,
+            state,
             .{ .worker_count = 4 }, // deterministic concurrency (L9)
         );
-        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win) };
+        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state };
     }
 
     fn send(self: *TestBridge, text: []const u8) void {
@@ -401,21 +441,21 @@ const TestBridge = struct {
 
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers; backend.deinit asserts joined
+        std.testing.allocator.destroy(self.state);
         self.backend.markJoined();
         self.backend.deinit();
     }
 };
 
-// countResolveExactly / countRejectExactly are pub methods on NullBackend
-// (defined in Task 2), so both these bridge tests and the Task 11 regression
-// suite call them the same way: `backend.countResolveExactly(id)`.
+// countResolveExactly / countRejectExactly are pub methods on NullBackend, so
+// both these bridge tests and the regression suite call them the same way.
 
 test "happy path: invoke sha256 emits ordered progress then exactly one resolve" {
     var t = try TestBridge.init();
     defer t.deinit();
     t.send("{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     t.settle();
-    try std.testing.expect(t.backend.countContaining("window.zig._emit(\"progress\"") >= 1);
+    try std.testing.expect(t.backend.countContaining("window.Zigware._stream(") >= 1);
     try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(1));
     try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(1));
 }
@@ -494,29 +534,27 @@ test "flood: every submitted id settles exactly once (resolve XOR reject)" {
         const settled = t.backend.countResolveExactly(i) + t.backend.countRejectExactly(i);
         try std.testing.expectEqual(@as(usize, 1), settled);
     }
-    // After a fully drained flood, every reservation must be released (B1).
-    try std.testing.expectEqual(@as(u64, 0), t.bridge.inflightBytes());
+    // After a fully drained flood, every reservation must be released.
+    try std.testing.expectEqual(@as(usize, 0), t.bridge.inflightCount());
 }
 
-test "I2: a flood stays within a bounded transient memory budget" {
-    // DebugAllocator with a hard transient ceiling. The working-set budget gate
-    // (BRIDGE_MEMORY_BUDGET) and per-message arena must keep peak under this.
-    // requested_memory_limit is a runtime field set after construction; the
-    // config flag that enables it is enable_memory_limit (B2).
+test "I2: a flood stays within a bounded transient memory budget (concurrency-capped)" {
+    // DebugAllocator with a hard transient ceiling. The concurrency-count cap
+    // (MAX_CONCURRENT), not a byte budget, bounds peak: with megabytes:8, peak
+    // ~= min(workers=4, MAX_CONCURRENT=8) * 8 MiB ~= 32 MiB, well under 64 MiB.
     var da = std.heap.DebugAllocator(.{ .thread_safe = true, .enable_memory_limit = true }){};
-    da.requested_memory_limit = 256 * 1024 * 1024;
+    da.requested_memory_limit = 64 * 1024 * 1024;
     defer std.testing.expect(da.deinit() == .ok) catch @panic("leak");
     const a = da.allocator();
 
+    var state = builtin.State{};
     const backend = try NullBackend.init(a, std.testing.io);
     const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
-    const bridge = try Bridge(NullBackend).init(a, std.testing.io, backend, win, .{ .worker_count = 4 });
+    const bridge = try Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 });
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var buf: [160]u8 = undefined;
-        // Each asks for 256 MB; the budget gate rejects most as "busy" so peak
-        // stays bounded well under the 256 MB DebugAllocator ceiling.
-        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":256}}}}", .{i});
+        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":8}}}}", .{i});
         bridge.handleMessage(backend.windowId(win), "app://localhost", text);
     }
     bridge.drainForTest();
@@ -552,51 +590,18 @@ test "handleMessage tolerates empty and exotic origin values" {
 
 test "duplicate id is rejected and does not corrupt the inflight budget" {
     // Two messages share an id. The second must reject as a duplicate without
-    // overwriting the first's reservation, so the budget total never underflows
-    // (finding B1). After draining, inflightBytes() returns to 0.
+    // overwriting the first's reservation. After draining, inflightCount() == 0.
     var t = try TestBridge.init();
     defer t.deinit();
     // Use a large job so the first reservation is still in flight when the
-    // duplicate arrives. The pool has 4 workers; one 256 MB job keeps a slot.
+    // duplicate arrives. The pool has 4 workers; one large job keeps a slot.
     t.send("{\"id\":5,\"cmd\":\"sha256\",\"args\":{\"megabytes\":256}}");
     t.send("{\"id\":5,\"cmd\":\"sha256\",\"args\":{\"megabytes\":256}}");
     t.settle();
     // The first settles (resolve or reject); the duplicate is one extra reject.
     const settled = t.backend.countResolveExactly(5) + t.backend.countRejectExactly(5);
     try std.testing.expect(settled >= 1);
-    try std.testing.expectEqual(@as(u64, 0), t.bridge.inflightBytes());
-}
-
-// ─── parseMegabytes direct boundary tests (M15) ─────────────────────────────────
-
-fn pmb(args_json: []const u8) usize {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    // parseMegabytes ignores self; pass undefined-but-valid via a throwaway.
-    const backend = NullBackend.init(std.testing.allocator, std.testing.io) catch unreachable;
-    defer backend.deinit();
-    const win = backend.createWindow(.{ .url = "x" }) catch unreachable;
-    const bridge = Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, .{ .worker_count = 1 }) catch unreachable;
-    defer {
-        bridge.deinit();
-        backend.markJoined();
-    }
-    return bridge.parseMegabytes(arena.allocator(), args_json);
-}
-
-test "parseMegabytes boundaries" {
-    try std.testing.expectEqual(@as(usize, 256), pmb("{}")); // absent -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("{\"other\":5}")); // absent -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("not json")); // malformed -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("[]")); // non-object -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("{\"megabytes\":0}")); // <=0 -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("{\"megabytes\":-7}")); // negative -> default
-    try std.testing.expectEqual(@as(usize, 256), pmb("{\"megabytes\":\"5\"}")); // wrong type -> default
-    try std.testing.expectEqual(@as(usize, 1), pmb("{\"megabytes\":1}"));
-    try std.testing.expectEqual(@as(usize, 300), pmb("{\"megabytes\":300}")); // the demo size, intact
-    try std.testing.expectEqual(@as(usize, 512), pmb("{\"megabytes\":512}")); // at the cap
-    try std.testing.expectEqual(@as(usize, 512), pmb("{\"megabytes\":513}")); // over cap -> clamp
-    try std.testing.expectEqual(@as(usize, 512), pmb("{\"megabytes\":1000000}")); // way over -> clamp
+    try std.testing.expectEqual(@as(usize, 0), t.bridge.inflightCount());
 }
 
 // ─── Real concurrency (H11, H13) ────────────────────────────────────────────────
@@ -617,6 +622,16 @@ test "Bridge.deinit while a worker is mid-emit does not UAF" {
 }
 
 // ─── Fuzz (H14: manual >= 10000-iteration driver because 0.16 --fuzz is broken) ─
+
+test "parkBinary parks within budget, rejects on overflow, and frees on teardown" {
+    var t = try TestBridge.init();
+    defer t.deinit(); // joins + deinitBins; freeing the parked ring with no leak is the assertion
+    const small = [_]u8{0xAB} ** 16;
+    try std.testing.expect(t.bridge.parkBinary(1, 0, &small));
+    const big = try std.testing.allocator.alloc(u8, BIN_BUDGET_PER_ID);
+    defer std.testing.allocator.free(big);
+    try std.testing.expect(!t.bridge.parkBinary(1, 1, big)); // cumulative size exceeds budget
+}
 
 const FUZZ_ITERS: usize = 10_000;
 

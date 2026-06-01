@@ -2,6 +2,7 @@ const std = @import("std");
 const backend_mod = @import("platform/backend.zig");
 const assets = @import("assets.zig");
 const Bridge = @import("bridge.zig").Bridge;
+const builtin = @import("commands/builtin.zig");
 
 const app_js = @embedFile("frontend/app.js");
 
@@ -31,6 +32,9 @@ pub fn App(comptime B: type) type {
         bridge: *Bridge(B),
         window: B.WindowHandle,
         shutdown_done: std.atomic.Value(bool) = .init(false),
+        /// The single app State injected into every command handler. A field, not
+        /// an init-scope local, so its address is stable for the bridge's life.
+        state: builtin.State = .{},
 
         pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
             const self = try alloc.create(Self);
@@ -47,7 +51,13 @@ pub fn App(comptime B: type) type {
             // wired but whose App never finished init.
             errdefer backend.destroyWindow(window);
 
-            const bridge = try Bridge(B).init(alloc, io, backend, window, .{});
+            // &self.state is a valid, stable address right after alloc.create; the
+            // value is written by the self.* literal below before any message can
+            // arrive, so the bridge never reads it early.
+            const bridge = try Bridge(B).init(
+                alloc, io, backend, window,
+                builtin.State, builtin.Commands, &self.state, .{},
+            );
             errdefer bridge.deinit();
 
             self.* = .{
@@ -56,6 +66,7 @@ pub fn App(comptime B: type) type {
                 .backend = backend,
                 .bridge = bridge,
                 .window = window,
+                .state = .{},
             };
 
             backend.setCallbacks(.{
@@ -197,7 +208,7 @@ test "end to end: simulated invoke resolves through the real pool into eval_log"
     h.app.bridge.drainForTest();
     h.backend.pumpMain();
     var buf: [64]u8 = undefined;
-    const needle = try std.fmt.bufPrint(&buf, "window.zig._resolve(1, ", .{});
+    const needle = try std.fmt.bufPrint(&buf, "window.Zigware._resolve(1, ", .{});
     try std.testing.expectEqual(@as(usize, 1), h.backend.countContaining(needle));
 }
 
