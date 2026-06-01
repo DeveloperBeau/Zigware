@@ -39,4 +39,14 @@ pub const Commands = struct {
             return z.done(z.Result(Out){ .err = .{ .code = "internal", .message = "oom" } });
         return z.done(z.Result(Out){ .ok = .{ .hash = hex } });
     }
+
+    /// Allocate `n` bytes on the per-call arena, fill them, and return them as a
+    /// binary result. The bytes are served out-of-band over the stream scheme,
+    /// never on the eval channel (G6).
+    pub fn echoBytes(ctx: *z.Ctx(State), args: struct { n: u32 }) z.Result(z.Bytes) {
+        const buf = ctx.arena.alloc(u8, args.n) catch
+            return .{ .err = .{ .code = "internal", .message = "oom" } };
+        for (buf, 0..) |*x, i| x.* = @truncate(i);
+        return .{ .ok = .{ .data = buf, .mime = "application/octet-stream" } };
+    }
 };

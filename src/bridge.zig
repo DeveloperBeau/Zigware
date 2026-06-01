@@ -317,7 +317,14 @@ pub fn Bridge(comptime B: type) type {
         pub fn parkBinary(self: *Self, id: u64, seq: u32, bytes: []const u8) bool {
             self.bin_mutex.lockUncancelable(self.io);
             defer self.bin_mutex.unlock(self.io);
-            self.reapServedLocked();
+            // Do NOT reap served entries here: parkBinary runs on a worker thread,
+            // but a just-served entry's bytes may still be in flight being copied
+            // by the backend on the scheme/main thread (serveStream returns a
+            // transient slice into this ring; the backend copies it AFTER
+            // serveStream unlocks bin_mutex). A worker freeing that body mid-copy
+            // is a use-after-free. Reaping happens only in serveStream (same
+            // scheme/main thread, after the prior copy completed) and deinitBins
+            // (after the pool joins).
             const cur_total = if (self.bins.getPtr(id)) |r| r.total else 0;
             if (cur_total + bytes.len > BIN_BUDGET_PER_ID) return false;
             const gop = self.bins.getOrPut(self.alloc, id) catch return false;
@@ -330,6 +337,47 @@ pub fn Bridge(comptime B: type) type {
             };
             ring.total += bytes.len;
             return true;
+        }
+
+        /// Serve one parked entry for (id, seq), exactly once. Returns a transient
+        /// Response into this ring. The returned body stays valid until the NEXT
+        /// serveStream on the scheme/main thread or until teardown, and is NEVER
+        /// freed by a worker thread: only serveStream (this same thread, on a later
+        /// call, after the prior copy completed) and deinitBins (after the pool
+        /// joins) reap; parkBinary does not. Scheme callbacks are serialized on the
+        /// main thread, so the backend's copy of this body always completes before
+        /// the next serveStream can free it. 404s an unknown or already-served
+        /// (id, seq).
+        pub fn serveStream(self: *Self, path: []const u8) backend_mod.Response {
+            const parsed = parseStreamPath(path) orelse return notFound();
+            self.bin_mutex.lockUncancelable(self.io);
+            defer self.bin_mutex.unlock(self.io);
+            self.reapServedLocked();
+            const ring = self.bins.getPtr(parsed.id) orelse return notFound();
+            for (ring.entries.items) |*e| {
+                if (e.seq == parsed.seq and !e.served) {
+                    e.served = true;
+                    return .{ .status = 200, .mime = "application/octet-stream", .body = e.bytes, .kind = .transient };
+                }
+            }
+            return notFound();
+        }
+
+        fn notFound() backend_mod.Response {
+            return .{ .status = 404, .mime = "text/plain", .body = "", .kind = .embedded_static };
+        }
+
+        /// Parse `/__zigware_stream/<id>/<seq>` into numeric id and seq. Rejects
+        /// anything else (defense in depth; A already 404s non-stream sources).
+        pub const StreamPath = struct { id: u64, seq: u32 };
+        pub fn parseStreamPath(path: []const u8) ?StreamPath {
+            const prefix = "/__zigware_stream/";
+            if (!std.mem.startsWith(u8, path, prefix)) return null;
+            const rest = path[prefix.len..];
+            const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+            const id = std.fmt.parseInt(u64, rest[0..slash], 10) catch return null;
+            const seq = std.fmt.parseInt(u32, rest[slash + 1 ..], 10) catch return null;
+            return .{ .id = id, .seq = seq };
         }
 
         /// Mark the ring for `id` settled (deviation 9). Does NOT free parked
@@ -427,7 +475,30 @@ const TestBridge = struct {
             state,
             .{ .worker_count = 4 }, // deterministic concurrency (L9)
         );
+        // Wire a scheme callback so simulateSchemeRequestSource(.stream_scheme,...)
+        // reaches the bridge's serveStream (send() calls handleMessage directly,
+        // so the other callbacks are unused no-ops here).
+        backend.setCallbacks(.{
+            .ctx = bridge,
+            .onSchemeRequest = schemeReq,
+            .onMessage = noopMessage,
+            .onLifecycle = noopLifecycle,
+            .onNavigation = noopNavigation,
+        });
         return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state };
+    }
+
+    fn schemeReq(ctx: *anyopaque, req: backend_mod.Request) backend_mod.Response {
+        const bridge: *Bridge(NullBackend) = @ptrCast(@alignCast(ctx));
+        switch (req.source) {
+            .stream_scheme => return bridge.serveStream(req.path),
+            .asset_scheme => return .{ .status = 404, .mime = "text/plain", .body = "" },
+        }
+    }
+    fn noopMessage(_: *anyopaque, _: u64, _: []const u8, _: []const u8) void {}
+    fn noopLifecycle(_: *anyopaque, _: backend_mod.LifecycleEvent) void {}
+    fn noopNavigation(_: *anyopaque, _: []const u8) backend_mod.NavigationDecision {
+        return .cancel;
     }
 
     fn send(self: *TestBridge, text: []const u8) void {
@@ -644,6 +715,77 @@ test "parkBinary parks within budget, rejects on overflow, and frees on teardown
     const big = try std.testing.allocator.alloc(u8, BIN_BUDGET_PER_ID);
     defer std.testing.allocator.free(big);
     try std.testing.expect(!t.bridge.parkBinary(1, 1, big)); // cumulative size exceeds budget
+}
+
+test "binary: echoBytes parks bytes, emits _bin, and serves them once over the stream scheme" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    t.send("{\"id\":1,\"cmd\":\"echoBytes\",\"args\":{\"n\":8}}");
+    t.settle();
+    // A _bin control frame was emitted; the raw bytes never appear in eval_log.
+    try std.testing.expect(t.backend.countContaining("window.Zigware._bin(1, 0, 8, ") >= 1);
+    // Serve the bytes through the stream scheme; they come back, length 8.
+    const r = t.backend.simulateSchemeRequestSource(.stream_scheme, "/__zigware_stream/1/0");
+    try std.testing.expectEqual(@as(u16, 200), r.status);
+    try std.testing.expectEqual(@as(usize, 8), r.body.len);
+    // Second pull of the same (id, seq) 404s (serve-once).
+    const r2 = t.backend.simulateSchemeRequestSource(.stream_scheme, "/__zigware_stream/1/0");
+    try std.testing.expectEqual(@as(u16, 404), r2.status);
+}
+
+test "binary: unknown (id, seq) 404s" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    const r = t.backend.simulateSchemeRequestSource(.stream_scheme, "/__zigware_stream/999/0");
+    try std.testing.expectEqual(@as(u16, 404), r.status);
+}
+
+test "parseStreamPath: adversarial table never traps and parses only well-formed paths" {
+    const P = Bridge(NullBackend).parseStreamPath;
+    // Valid minimal.
+    {
+        const r = P("/__zigware_stream/1/0") orelse return error.ExpectedParse;
+        try std.testing.expectEqual(@as(u64, 1), r.id);
+        try std.testing.expectEqual(@as(u32, 0), r.seq);
+    }
+    // Valid at the u64/u32 maxima.
+    {
+        const r = P("/__zigware_stream/18446744073709551615/4294967295") orelse return error.ExpectedParse;
+        try std.testing.expectEqual(std.math.maxInt(u64), r.id);
+        try std.testing.expectEqual(std.math.maxInt(u32), r.seq);
+    }
+    // Malformed: each must return null and must not trap.
+    try std.testing.expect(P("/wrong_prefix/1/0") == null); // wrong prefix
+    try std.testing.expect(P("/__zigware_stream/1") == null); // missing seq segment
+    try std.testing.expect(P("/__zigware_stream//0") == null); // empty id
+    try std.testing.expect(P("/__zigware_stream/1/") == null); // empty seq
+    try std.testing.expect(P("/__zigware_stream/x/0") == null); // non-numeric id
+    try std.testing.expect(P("/__zigware_stream/1/y") == null); // non-numeric seq
+    try std.testing.expect(P("/__zigware_stream/99999999999999999999/0") == null); // id overflow (checked parseInt)
+    // Extra trailing segment: indexOfScalar finds the first '/', so seq is
+    // "0/2" and the checked parseInt rejects the embedded '/'.
+    try std.testing.expect(P("/__zigware_stream/1/0/2") == null);
+    // Trailing slash: seq becomes "0/", which the checked parseInt rejects.
+    try std.testing.expect(P("/__zigware_stream/1/0/") == null);
+}
+
+test "binary: bytes never appear on the eval channel (G6 untouched)" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    t.send("{\"id\":1,\"cmd\":\"echoBytes\",\"args\":{\"n\":8}}");
+    t.settle();
+    // echoBytes fills byte[i] = @truncate(i), so for n=8 the raw payload is
+    // {0,1,2,3,4,5,6,7}. Those control bytes cannot appear in any eval_log entry:
+    // the _bin frame carries only id/seq/len/mime, never the bytes themselves.
+    const raw = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 };
+    for (t.backend.eval_log.items) |e| {
+        try std.testing.expect(std.mem.indexOf(u8, e.js, &raw) == null);
+        // Every emitted frame is a known control frame, never raw bytes.
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "_bin(") != null or
+            std.mem.indexOf(u8, e.js, "_resolve(") != null or
+            std.mem.indexOf(u8, e.js, "_stream(") != null or
+            std.mem.indexOf(u8, e.js, "_reject(") != null);
+    }
 }
 
 const FUZZ_ITERS: usize = 10_000;

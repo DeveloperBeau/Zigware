@@ -55,8 +55,14 @@ pub fn App(comptime B: type) type {
             // value is written by the self.* literal below before any message can
             // arrive, so the bridge never reads it early.
             const bridge = try Bridge(B).init(
-                alloc, io, backend, window,
-                builtin.State, builtin.Commands, &self.state, .{},
+                alloc,
+                io,
+                backend,
+                window,
+                builtin.State,
+                builtin.Commands,
+                &self.state,
+                .{},
             );
             errdefer bridge.deinit();
 
@@ -142,14 +148,17 @@ pub fn App(comptime B: type) type {
 
         // ── Inbound callbacks (C-free; plain fn ptrs over *anyopaque ctx) ──────
 
-        /// A owns only the asset scheme. Any other source (B's streaming
-        /// scheme) is 404 at the seam, so a future second handler that forgets
-        /// deny-by-default cannot route attacker paths through serveAsset (M7).
-        fn onSchemeRequest(_: *anyopaque, req: backend_mod.Request) backend_mod.Response {
-            if (req.source != .asset_scheme) {
-                return .{ .status = 404, .mime = "text/plain", .body = "" };
+        /// A owns the asset scheme; B's stream scheme routes to the bridge's
+        /// serveStream (out-of-band binary). The switch over Request.source is
+        /// exhaustive at compile time over the 2-variant enum: a new source
+        /// variant is a compile error here, not a silent runtime miss. The
+        /// sentinel deadScheme still 404s every source during teardown (fail-closed).
+        fn onSchemeRequest(ctx: *anyopaque, req: backend_mod.Request) backend_mod.Response {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            switch (req.source) {
+                .asset_scheme => return assets.serveAsset(req.path),
+                .stream_scheme => return self.bridge.serveStream(req.path),
             }
-            return assets.serveAsset(req.path);
         }
 
         fn onMessage(ctx: *anyopaque, window_id: u64, origin: []const u8, text: []const u8) void {
@@ -223,12 +232,26 @@ test "scheme request routes through serveAsset" {
     try std.testing.expectEqual(@as(u16, 404), reserved.status);
 }
 
-test "M7: a non-asset scheme source is 404 at the seam" {
+test "a stream-scheme request for a non-stream path 404s via serveStream/parseStreamPath" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
     // simulateSchemeRequestSource lets a test set Request.source explicitly.
+    // .stream_scheme is no longer denied at the seam: it routes to serveStream,
+    // which 404s here only because "/index.html" fails parseStreamPath.
     const r = h.backend.simulateSchemeRequestSource(.stream_scheme, "/index.html");
     try std.testing.expectEqual(@as(u16, 404), r.status);
+}
+
+test "stream scheme routes to the bridge serveStream (app path)" {
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = h.backend.windowId(h.app.window);
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"echoBytes\",\"args\":{\"n\":4}}");
+    h.app.bridge.drainForTest();
+    h.backend.pumpMain();
+    const r = h.backend.simulateSchemeRequestSource(.stream_scheme, "/__zigware_stream/1/0");
+    try std.testing.expectEqual(@as(u16, 200), r.status);
+    try std.testing.expectEqual(@as(usize, 4), r.body.len);
 }
 
 test "M6: navigation denies by default, allows only the app://localhost origin" {

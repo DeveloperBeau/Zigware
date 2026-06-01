@@ -253,21 +253,45 @@ fn callMaybeAsync(comptime handler: anytype, comptime Inner: type, ctx: anytype,
     return raw;
 }
 
-/// Encode the terminal result for `id`. T and Result(T) here; the Bytes branch
-/// (which uses `ctx` to route through ctx.binaryChunk so the terminal bytes share
-/// the per-call bin_seq space, H2) is added in Task 7. Routes every string
-/// through std.json.Stringify or jsString (via protocol), so G6 holds. `ctx` is
-/// the live per-call Ctx (unused until Task 7's Bytes branch).
+/// True if T is command_ctx.Bytes.
+fn isBytes(comptime T: type) bool {
+    return T == ctxmod.Bytes;
+}
+
+/// Encode the terminal result for `id`: T, Result(T), Bytes, and Result(Bytes).
+/// The Bytes branch routes through ctx.binaryChunk so the terminal bytes share
+/// the per-call bin_seq space (H2) and emit a _bin frame through the same sink
+/// as streamed chunks. Routes every string through std.json.Stringify or
+/// jsString (via protocol), so G6 holds. `ctx` is the live per-call Ctx.
 fn encodeResult(comptime Inner: type, bridge: anytype, ctx: anytype, id: u64, result: Inner) void {
-    _ = ctx; // used by Task 7's Bytes/Result(Bytes) branch
+    if (comptime isBytes(Inner)) {
+        emitBytes(ctx, bridge, id, result);
+        return;
+    }
     if (comptime isResult(Inner)) {
         switch (result) {
-            .ok => |v| emitOk(@TypeOf(v), bridge, id, v),
+            .ok => |v| {
+                if (comptime isBytes(@TypeOf(v))) emitBytes(ctx, bridge, id, v) else emitOk(@TypeOf(v), bridge, id, v);
+            },
             .err => |e| bridge.emitErrorReject(id, e.code, e.message, e.payload_json),
         }
-    } else {
-        emitOk(Inner, bridge, id, result);
+        return;
     }
+    emitOk(Inner, bridge, id, result);
+}
+
+/// Park the terminal bytes via ctx.binaryChunk so they share the per-call
+/// bin_seq space (a handler that ALSO streamed chunks does not collide at seq 0,
+/// H2). binaryChunk parks the bytes AND emits the _bin frame through the same
+/// sink as the streamed chunks. On budget overflow it returns false (nothing
+/// emitted), so we reject queue_full; otherwise resolve null and the shim
+/// settles once it has pulled every advertised seq.
+fn emitBytes(ctx: anytype, bridge: anytype, id: u64, b: ctxmod.Bytes) void {
+    if (!ctx.binaryChunk(b.data, b.mime)) {
+        bridge.emitErrorReject(id, "queue_full", "binary buffer full", null);
+        return;
+    }
+    bridge.emitResolve(id, "null");
 }
 
 /// True if T is Result(X) for some X (union(enum){ok,err} with our CommandError).
