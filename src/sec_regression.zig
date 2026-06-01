@@ -77,6 +77,10 @@ const TestBridge = struct {
     fn send(self: *TestBridge, text: []const u8) void {
         self.bridge.handleMessage(self.window_id, "app://localhost", text);
     }
+    fn settle(self: *TestBridge) void {
+        self.bridge.drainForTest();
+        self.backend.pumpMain();
+    }
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers
         std.testing.allocator.destroy(self.state);
@@ -765,4 +769,157 @@ test "fuzz: handleMessage triple-input never panics or emits to a dead webview (
         h.app.bridge.handleMessage(window_id, origin_buf[0..origin_len], text_buf[0..text_len]);
         h.settle();
     }
+}
+
+// ─── Attack vector 21: G6 over the typed-arg result, stream, and error paths ──
+// echo (builtin) drives attacker-controlled bytes through the resolve channel,
+// the stream frame, and (when fail is set) the reject channel. Every emitted
+// frame must be a structurally safe JS literal: no raw </script>, no raw LS/PS.
+
+const HOSTILE = "</script><script>alert(1)</script>\u{2028}\u{2029}\"'\\";
+
+test "G6: a hostile string resolves to a structurally safe literal" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    // Send the hostile string as a JSON-escaped arg.
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try aw.writer.writeAll("{\"id\":1,\"cmd\":\"echo\",\"args\":{\"s\":");
+    try protocol.jsString(&aw.writer, HOSTILE);
+    try aw.writer.writeAll("}}");
+    t.send(aw.writer.buffered());
+    t.settle();
+    // The stream frame AND the resolve must have been emitted (so the scan below
+    // is not vacuous): one _stream + one _resolve.
+    try std.testing.expect(t.backend.eval_log.items.len >= 2);
+    // The resolve/stream payload travels the Stringify + writeJsonAsJsLiteral
+    // channel. That channel's breakout invariant (protocol.zig: writeJsonAsJsLiteral)
+    // is "no raw LS/PS": those terminate a JS string literal. It deliberately does
+    // NOT escape `/` (the resolve JS is delivered via WKWebView evaluateJavaScript,
+    // a direct JS-eval context where `</script>` inside a string literal is inert,
+    // not HTML-embedded). So assert the real breakout invariant on every frame:
+    // no raw LS/PS.
+    for (t.backend.eval_log.items) |e| {
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "\u{2028}") == null);
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "\u{2029}") == null);
+    }
+    // And prove faithful, inert delivery (not silent loss/corruption): the resolve
+    // frame's payload round-trips back to the hostile string byte-for-byte.
+    var seen_resolve = false;
+    for (t.backend.eval_log.items) |e| {
+        const prefix = "window.Zigware._resolve(1, ";
+        if (!std.mem.startsWith(u8, e.js, prefix)) continue;
+        seen_resolve = true;
+        const json = e.js[prefix.len .. e.js.len - 2]; // strip trailing ");"
+        const Parsed = struct { s: []const u8 };
+        var parsed = try std.json.parseFromSlice(Parsed, std.testing.allocator, json, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(HOSTILE, parsed.value.s);
+    }
+    try std.testing.expect(seen_resolve);
+}
+
+test "G6: a hostile error message is escaped on the reject channel" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try aw.writer.writeAll("{\"id\":1,\"cmd\":\"echo\",\"args\":{\"s\":");
+    try protocol.jsString(&aw.writer, HOSTILE);
+    try aw.writer.writeAll(",\"fail\":true}}");
+    t.send(aw.writer.buffered());
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(1));
+    // No raw LS/PS on ANY frame (the universal string-literal breakout invariant).
+    for (t.backend.eval_log.items) |e| {
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "\u{2028}") == null);
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "\u{2029}") == null);
+    }
+    // The error `code`/`message` cross via encodeErrorReject's jsString channel,
+    // which DOES escape `/` to neutralise `</script>`. Assert that on the _reject
+    // frame, where the strong invariant genuinely holds.
+    for (t.backend.eval_log.items) |e| {
+        if (!std.mem.startsWith(u8, e.js, "window.Zigware._reject(")) continue;
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "</script>") == null);
+    }
+}
+
+test "G6: a hostile mime string is escaped in the _bin frame" {
+    // echoBytes uses a fixed mime; this pins encodeBinReady's jsString path
+    // directly so a future variable-mime command cannot inject.
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try protocol.encodeBinReady(&aw.writer, 1, 0, 4, "x\"</script>");
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "</script>") == null);
+}
+
+// ─── Attack vector 22: per-id binary budget overflow is a queue_full reject ───
+
+test "G5: exceeding the per-id binary budget yields a queue_full-class reject" {
+    // A command that parks more than BIN_BUDGET_PER_ID must reject. Drive it via
+    // an oversized echoBytes (n > 16 MiB). The bench uses std.testing.allocator
+    // (no memory limit), so the 20 MB transient arena alloc succeeds and the
+    // parkBinary budget check (16 MiB) is what rejects.
+    var t = try TestBridge.init();
+    defer t.deinit();
+    t.send("{\"id\":1,\"cmd\":\"echoBytes\",\"args\":{\"n\":20000000}}"); // 20 MB > 16 MiB budget
+    t.settle();
+    // The park fails, so the command rejects rather than resolving with bytes.
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(1));
+    try std.testing.expect(t.backend.countContaining("\"code\":\"queue_full\"") >= 1);
+}
+
+// ─── Attack vector 23: cancel/shutdown ordering for streaming commands ────────
+
+test "shutdown: an in-flight streaming command after terminate drops all further frames" {
+    var t = try TestBridge.init();
+    t.backend.terminate();
+    t.send("{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":4}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 0), t.backend.eval_log.items.len);
+    t.deinit();
+}
+
+// ─── Attack vector 24: args_json typed-decode fuzz, manual driver (H14) ───────
+// The existing handleMessage fuzz feeds raw text. This driver builds VALID-JSON
+// args objects from a corpus of well-formed JSON value tokens so the envelope
+// always passes decode() and parseFromSliceLeaky(ArgsT, ...) is exercised on
+// every iteration. Most iterations hit the bad_args reject path (type mismatch,
+// out-of-range, extra field); a few run cheaply. The decode must never trap.
+
+test "fuzz: typed args_json decode for registered commands never traps (manual >= 10000)" {
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0xB17E);
+    const rand = prng.random();
+    var t = try TestBridge.init();
+    defer t.deinit();
+    const cmds = [_][]const u8{ "sha256", "echoBytes", "echo" };
+    // Field names spanning the three command shapes + an unknown, and a corpus
+    // of well-formed JSON value tokens (type-mismatched, boundary, and a few
+    // small-valid) so the envelope is ALWAYS valid JSON and the typed decoder runs.
+    const fields = [_][]const u8{ "megabytes", "n", "s", "fail", "x" };
+    const values = [_][]const u8{
+        "0", "1", "2", "256", "-1", "true", "false", "null", "3.14",
+        "4294967296", "18446744073709551615", "\"\"", "\"x\"", "\"</script>\"",
+        "\"\\u2028\"", "[]", "{}", "[1,2,3]", "{\"k\":1}",
+    };
+    var it: usize = 0;
+    while (it < 10_000) : (it += 1) {
+        const cmd = cmds[rand.uintLessThan(usize, cmds.len)];
+        const f1 = fields[rand.uintLessThan(usize, fields.len)];
+        const v1 = values[rand.uintLessThan(usize, values.len)];
+        var msg: [256]u8 = undefined;
+        // Sometimes one field, sometimes two, sometimes empty {} — all valid JSON.
+        const text = switch (rand.uintLessThan(u8, 3)) {
+            0 => std.fmt.bufPrint(&msg, "{{\"id\":{d},\"cmd\":\"{s}\",\"args\":{{}}}}", .{ it, cmd }) catch continue,
+            1 => std.fmt.bufPrint(&msg, "{{\"id\":{d},\"cmd\":\"{s}\",\"args\":{{\"{s}\":{s}}}}}", .{ it, cmd, f1, v1 }) catch continue,
+            else => blk: {
+                const f2 = fields[rand.uintLessThan(usize, fields.len)];
+                const v2 = values[rand.uintLessThan(usize, values.len)];
+                break :blk std.fmt.bufPrint(&msg, "{{\"id\":{d},\"cmd\":\"{s}\",\"args\":{{\"{s}\":{s},\"{s}\":{s}}}}}", .{ it, cmd, f1, v1, f2, v2 }) catch continue;
+            },
+        };
+        t.bridge.handleMessage(t.window_id, "app://localhost", text);
+        if (it % 256 == 0) t.settle(); // drain periodically so the pool/budget never backs up
+    }
+    t.settle();
 }

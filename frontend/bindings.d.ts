@@ -4,6 +4,7 @@
 export interface ZigCommands {
   sha256: { args: { megabytes: number }; result: { hash: string }; stream: unknown };
   echoBytes: { args: { n: number }; result: Uint8Array; stream: unknown };
+  echo: { args: { s: string; fail: boolean }; result: { s: string }; stream: unknown };
 }
 
 export declare namespace Zigware {

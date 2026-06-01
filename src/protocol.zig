@@ -303,7 +303,7 @@ pub fn emitEscapeFixtures(w: *std.Io.Writer) !void {
 ///   • No unescaped double-quote in the interior.
 ///   • Every backslash begins a recognised escape sequence
 ///     (\", \\, \/, \n, \r, \t, \b, \f, \uXXXX).
-fn assertSafeJsLiteral(out: []const u8) !void {
+pub fn assertSafeJsLiteral(out: []const u8) !void {
     if (out.len < 2) return error.TooShort;
     if (out[0] != '"') return error.MissingOpenQuote;
     if (out[out.len - 1] != '"') return error.MissingCloseQuote;

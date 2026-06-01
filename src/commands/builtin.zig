@@ -49,4 +49,13 @@ pub const Commands = struct {
         for (buf, 0..) |*x, i| x.* = @truncate(i);
         return .{ .ok = .{ .data = buf, .mime = "application/octet-stream" } };
     }
+
+    /// Echo the caller's string back as the result (G6 stress: attacker bytes on the
+    /// resolve channel). Also streams it once and, if `fail` is set, rejects with it.
+    pub fn echo(ctx: *z.Ctx(State), args: struct { s: []const u8, fail: bool = false }) z.Result(struct { s: []const u8 }) {
+        ctx.channel(struct { s: []const u8 }).send(.{ .s = args.s });
+        if (args.fail) return .{ .err = .{ .code = "boom", .message = args.s } };
+        const copy = ctx.arena.dupe(u8, args.s) catch return .{ .err = .{ .code = "internal", .message = "oom" } };
+        return .{ .ok = .{ .s = copy } };
+    }
 };
