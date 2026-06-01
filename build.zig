@@ -47,6 +47,8 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
