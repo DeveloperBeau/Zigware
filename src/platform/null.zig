@@ -490,3 +490,247 @@ test "pumpMain reserve-then-drain ordering (reservation-OOM path documented, exe
     try std.testing.expectEqual(@as(usize, 1), b.eval_log.items.len);
     try std.testing.expectEqual(@as(usize, 0), b.pending.items.len);
 }
+
+// ─── Per-method coverage (Task 11) ───────────────────────────────────────────
+// Every test calls b.markJoined() before b.deinit() (deinit asserts joined).
+// The lifecycle/scheme capture tests use an instance field through ctx, never a
+// struct-scope var (M12); every @memcpy asserts the destination fits.
+
+test "setTitle replaces the recorded title" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    try b.setTitle(h, "New Title");
+    try std.testing.expectEqualStrings("New Title", b.windows.items[h].title);
+}
+
+test "setSize records width and height" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    b.setSize(h, 1024.0, 768.0);
+    try std.testing.expectEqual(@as(f64, 1024.0), b.windows.items[h].width);
+    try std.testing.expectEqual(@as(f64, 768.0), b.windows.items[h].height);
+}
+
+test "setFullscreen records the flag" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    b.setFullscreen(h, true);
+    try std.testing.expect(b.windows.items[h].fullscreen);
+    b.setFullscreen(h, false);
+    try std.testing.expect(!b.windows.items[h].fullscreen);
+}
+
+test "showWindow flips shown to true" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html", .show = false });
+    try std.testing.expect(!b.windows.items[h].shown);
+    b.showWindow(h);
+    try std.testing.expect(b.windows.items[h].shown);
+}
+
+test "focusWindow is callable (no-op for NullBackend)" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    b.focusWindow(h);
+}
+
+test "nativeWindow returns null for NullBackend" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    try std.testing.expect(b.nativeWindow(h) == null);
+}
+
+test "dispatchMain runs work inline on the calling thread" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    var counter: u32 = 0;
+    const work = struct {
+        fn f(c: ?*anyopaque) callconv(.c) void {
+            const ptr: *u32 = @ptrCast(@alignCast(c.?));
+            ptr.* += 1;
+        }
+    }.f;
+    b.dispatchMain(work, &counter);
+    try std.testing.expectEqual(@as(u32, 1), counter);
+}
+
+test "run is a no-op for NullBackend" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    b.run();
+}
+
+test "destroyWindow is a no-op for NullBackend (record only)" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    b.destroyWindow(h);
+}
+
+test "injectUserScript adds to the recorded list" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    const before = b.injected_scripts.items.len;
+    try b.injectUserScript(h, "console.log('runtime');");
+    try std.testing.expectEqual(before + 1, b.injected_scripts.items.len);
+}
+
+test "createWindow with user_scripts records them in injected_scripts" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    _ = try b.createWindow(.{
+        .url = "app://localhost/index.html",
+        .user_scripts = &.{ "window.a = 1;", "window.b = 2;" },
+    });
+    try std.testing.expectEqual(@as(usize, 2), b.injected_scripts.items.len);
+    try std.testing.expectEqualStrings("window.a = 1;", b.injected_scripts.items[0]);
+    try std.testing.expectEqualStrings("window.b = 2;", b.injected_scripts.items[1]);
+}
+
+// ─── windowId: monotonic, distinct, stable, sentinel on unknown (M14, H8) ────
+
+test "windowId returns a monotonic counter, distinct from the WindowHandle space" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h0 = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    const h1 = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    const id0 = b.windowId(h0);
+    const id1 = b.windowId(h1);
+    try std.testing.expect(id1 == id0 + 1);
+    try std.testing.expect(id0 != id1);
+}
+
+test "windowId is stable across setSize, setTitle, showWindow" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    const h = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    const id_before = b.windowId(h);
+    b.setSize(h, 320, 240);
+    try b.setTitle(h, "changed");
+    b.showWindow(h);
+    try std.testing.expectEqual(id_before, b.windowId(h));
+}
+
+test "windowId on an unknown handle returns the sentinel, never panics" {
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    _ = try b.createWindow(.{ .url = "app://localhost/index.html" });
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), b.windowId(9999));
+}
+
+test "simulateSchemeRequest invokes the registered onSchemeRequest" {
+    const Capture = struct {
+        called_with_path: [128]u8 = undefined,
+        path_len: usize = 0,
+        fn onScheme(ctx_: *anyopaque, req: seam.Request) seam.Response {
+            const c: *@This() = @ptrCast(@alignCast(ctx_));
+            std.debug.assert(req.path.len <= c.called_with_path.len);
+            @memcpy(c.called_with_path[0..req.path.len], req.path);
+            c.path_len = req.path.len;
+            return .{ .status = 200, .mime = "text/plain", .body = "ok" };
+        }
+        fn onMessage(_: *anyopaque, _: u64, _: []const u8, _: []const u8) void {}
+        fn onLifecycle(_: *anyopaque, _: seam.LifecycleEvent) void {}
+        fn onNav(_: *anyopaque, _: []const u8) seam.NavigationDecision {
+            return .allow;
+        }
+    };
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    var capture = Capture{};
+    b.setCallbacks(.{
+        .ctx = &capture,
+        .onSchemeRequest = Capture.onScheme,
+        .onMessage = Capture.onMessage,
+        .onLifecycle = Capture.onLifecycle,
+        .onNavigation = Capture.onNav,
+    });
+    const r = b.simulateSchemeRequest("/test");
+    try std.testing.expectEqual(@as(u16, 200), r.status);
+    try std.testing.expectEqualStrings("/test", capture.called_with_path[0..capture.path_len]);
+}
+
+test "simulateLifecycle records the call and invokes the callback (instance ctx, no static)" {
+    const Capture = struct {
+        last_event: ?seam.LifecycleEvent = null,
+        fn onLifecycle(ctx_: *anyopaque, event: seam.LifecycleEvent) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx_));
+            c.last_event = event;
+        }
+        fn onScheme(_: *anyopaque, _: seam.Request) seam.Response {
+            return .{ .status = 404, .mime = "text/plain", .body = "" };
+        }
+        fn onMessage(_: *anyopaque, _: u64, _: []const u8, _: []const u8) void {}
+        fn onNav(_: *anyopaque, _: []const u8) seam.NavigationDecision {
+            return .allow;
+        }
+    };
+    var b = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        b.markJoined();
+        b.deinit();
+    }
+    var capture = Capture{};
+    b.setCallbacks(.{
+        .ctx = &capture,
+        .onSchemeRequest = Capture.onScheme,
+        .onMessage = Capture.onMessage,
+        .onLifecycle = Capture.onLifecycle,
+        .onNavigation = Capture.onNav,
+    });
+    b.simulateLifecycle(.did_launch);
+    try std.testing.expectEqual(@as(?seam.LifecycleEvent, .did_launch), capture.last_event);
+    try std.testing.expectEqual(@as(usize, 1), b.lifecycle_calls.items.len);
+}

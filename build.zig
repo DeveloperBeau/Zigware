@@ -89,6 +89,7 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
     addEmbedTest(b, test_step, target, optimize, "src/app.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/sec_regression.zig");
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),

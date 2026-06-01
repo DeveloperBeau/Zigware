@@ -9,6 +9,7 @@
 //! coverage. They carry no Cocoa/WebKit dependency, so no GUI is needed.
 test {
     _ = @import("app.zig");
+    _ = @import("sec_regression.zig");
     _ = @import("platform/macos/origin.zig");
     _ = @import("platform/macos/scheme_logic.zig");
 }
