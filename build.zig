@@ -50,6 +50,22 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
 
+    // Logic test that needs the embedded frontend assets (assets.zig, app.zig).
+    const addEmbedTest = struct {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, src: []const u8) void {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path(src),
+                .target = t,
+                .optimize = o,
+            });
+            m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
+            m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            const tt = bb.addTest(.{ .root_module = m });
+            ts.dependOn(&bb.addRunArtifact(tt).step);
+        }
+    }.add;
+    addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
+
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
         .target = target,
