@@ -24,14 +24,24 @@ window.zig = {
 
 // --- demo UI wiring (CSP-safe: no inline script) ---
 document.addEventListener("DOMContentLoaded", () => {
+  const go = document.getElementById("go");
+  const again = document.getElementById("again");
   const bar = document.getElementById("bar");
   const pct = document.getElementById("pct");
   const out = document.getElementById("out");
+
+  let running = false;
+
   window.addEventListener("zig:progress", (e) => {
     bar.value = e.detail.pct;
     pct.textContent = e.detail.pct + "%";
   });
-  document.getElementById("go").addEventListener("click", async () => {
+
+  async function run() {
+    if (running) return; // guard: no overlapping 300 MB jobs
+    running = true;
+    go.disabled = true;
+    again.disabled = true;
     out.textContent = "working...";
     bar.value = 0;
     pct.textContent = "0%";
@@ -40,6 +50,14 @@ document.addEventListener("DOMContentLoaded", () => {
       out.textContent = "SHA-256: " + r.hash;
     } catch (err) {
       out.textContent = "error: " + err.message;
+    } finally {
+      running = false;
+      go.disabled = false;
+      again.disabled = false;
+      again.hidden = false; // reveal "Run again" once a run has completed
     }
-  });
+  }
+
+  go.addEventListener("click", run);
+  again.addEventListener("click", run);
 });
