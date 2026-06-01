@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/app.zig");
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
@@ -90,6 +91,8 @@ pub fn build(b: *std.Build) void {
     });
     scaffold_mod.linkFramework("Cocoa", .{});
     scaffold_mod.linkFramework("WebKit", .{});
+    scaffold_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    scaffold_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
