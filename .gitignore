@@ -22,3 +22,8 @@ node_modules/
 
 # Local-only, per-clone rules
 CLAUDE.local.md
+graphy-out/
+
+# Stray zig test artifacts
+*.a
+*.o

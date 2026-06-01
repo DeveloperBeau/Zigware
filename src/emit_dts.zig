@@ -1,7 +1,5 @@
 const std = @import("std");
-const registry = @import("registry.zig");
 const ctxmod = @import("command_ctx.zig");
-const NullBackend = @import("platform/null.zig").NullBackend;
 const builtin = @import("commands/builtin.zig");
 
 const Async = ctxmod.Async;
@@ -105,11 +103,4 @@ pub fn main() !void {
         .sub_path = "frontend/bindings.d.ts",
         .data = aw.writer.buffered(),
     });
-}
-
-comptime {
-    // Keep the spec-mandated imports referenced so emit_dts can instantiate
-    // Commands(NullBackend, State, UserCommands) without an unused-import error.
-    _ = registry;
-    _ = NullBackend;
 }
