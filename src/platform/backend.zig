@@ -35,14 +35,14 @@ pub const WindowOpts = struct {
     show: bool = true,
 };
 
+/// Which custom-scheme handler the request arrived through; A serves only `.asset_scheme`.
+pub const RequestSource = enum { asset_scheme, stream_scheme };
+
 /// A custom-scheme asset request.
 ///   `source` tags which scheme handler received it (finding M7). A only serves
 ///   `.asset_scheme`; anything else is 404 at the seam. Sub-project B adds the
 ///   `.stream_scheme` handler.
 ///   `path` is the request path. v0.1.0 carries only these two.
-/// Which custom-scheme handler the request arrived through. A serves only
-/// `.asset_scheme`; `.stream_scheme` is reserved for sub-project B and 404s here.
-pub const RequestSource = enum { asset_scheme, stream_scheme };
 pub const Request = struct {
     source: RequestSource = .asset_scheme,
     path: []const u8,
@@ -58,11 +58,13 @@ pub const Request = struct {
 /// bodies, so no cache may hold `body` beyond the call.
 ///   `kind` lets a backend refuse to cache a transient body. A only ever
 ///   returns `.embedded_static`; `.transient` is reserved for B.
+pub const ResponseKind = enum { embedded_static, transient };
+
 pub const Response = struct {
     status: u16,
     mime: [:0]const u8,
     body: []const u8,
-    kind: enum { embedded_static, transient } = .embedded_static,
+    kind: ResponseKind = .embedded_static,
 };
 
 /// Inbound callbacks the app registers on the backend via `setCallbacks`.
@@ -76,6 +78,10 @@ pub const Callbacks = struct {
     onLifecycle: *const fn (ctx: *anyopaque, event: LifecycleEvent) void,
     onNavigation: *const fn (ctx: *anyopaque, url: []const u8) NavigationDecision,
 };
+
+/// Expected number of required backend methods; named once so the comptime
+/// length assert below carries no bare magic literal.
+const required_method_count = 17;
 
 /// One name per line so the count is auditable and the comptime length assert
 /// below cannot be silently fooled by an alignment trick (finding L12).
@@ -111,7 +117,7 @@ const required_methods = [_][]const u8{
 /// the central error sets close the drift that motivated the finding.)
 pub fn assertBackend(comptime B: type) void {
     comptime {
-        std.debug.assert(required_methods.len == 17);
+        std.debug.assert(required_methods.len == required_method_count);
 
         if (!@hasDecl(B, "WindowHandle"))
             @compileError(@typeName(B) ++ " is missing associated type WindowHandle");
@@ -164,7 +170,7 @@ test "assertBackend accepts a conformant stub" {
     assertBackend(Stub); // compile-time; if it returns, the contract holds
 }
 
-test "assertBackend rejects a non-fn decl in a method slot" {
+test "assertBackend rejection path is verified out-of-band (see comment)" {
     // This stub mislabels createWindow as a constant. assertBackend MUST reject
     // it at comptime. We document the expectation; this is verified by hand
     // (uncomment locally to confirm the @compileError fires) because a failing
