@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/commands/sha256.zig");
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
+    addLogicTest(b, test_step, target, optimize, "src/registry.zig");
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
