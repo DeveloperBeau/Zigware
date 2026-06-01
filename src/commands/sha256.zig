@@ -3,7 +3,9 @@ const std = @import("std");
 pub const Progress = struct {
     ctx: *anyopaque,
     func: *const fn (ctx: *anyopaque, pct: u8) void,
-    fn report(self: Progress, pct: u8) void { self.func(self.ctx, pct); }
+    fn report(self: Progress, pct: u8) void {
+        self.func(self.ctx, pct);
+    }
 };
 
 pub const HexDigest = [64]u8;
@@ -22,7 +24,10 @@ pub fn hashBuffer(data: []const u8, progress: ?Progress, cancel: ?*const std.ato
         done = end;
         if (progress) |p| {
             const pct: u8 = @intCast((done * 100) / @max(data.len, 1));
-            if (pct != last_pct) { p.report(pct); last_pct = pct; }
+            if (pct != last_pct) {
+                p.report(pct);
+                last_pct = pct;
+            }
         }
     }
     if (data.len == 0) if (progress) |p| p.report(100);
@@ -65,12 +70,20 @@ test "honours cancel flag between chunks" {
 }
 
 const ProgressCapture = struct {
-    last: u8 = 0, calls: usize = 0,
-    fn onProgress(self: *ProgressCapture, pct: u8) void { self.calls += 1; self.last = pct; }
+    last: u8 = 0,
+    calls: usize = 0,
+    fn onProgress(self: *ProgressCapture, pct: u8) void {
+        self.calls += 1;
+        self.last = pct;
+    }
     fn cb(self: *ProgressCapture) Progress {
         return .{
             .ctx = self,
-            .func = struct { fn f(c: *anyopaque, p: u8) void { onProgress(@ptrCast(@alignCast(c)), p); } }.f,
+            .func = struct {
+                fn f(c: *anyopaque, p: u8) void {
+                    onProgress(@ptrCast(@alignCast(c)), p);
+                }
+            }.f,
         };
     }
 };

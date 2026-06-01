@@ -41,6 +41,7 @@ pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: t
         pub const command_names: []const []const u8 = buildNames(UserCommands);
 
         pub fn allowlist() Allowlist {
+            comptime std.debug.assert(command_names.len <= Allowlist.max_commands);
             var a: Allowlist = .empty;
             inline for (command_names) |n| a.add(n) catch unreachable;
             return a;
@@ -271,13 +272,13 @@ fn encodeResult(comptime Inner: type, bridge: anytype, ctx: anytype, id: u64, re
     if (comptime isResult(Inner)) {
         switch (result) {
             .ok => |v| {
-                if (comptime isBytes(@TypeOf(v))) emitBytes(ctx, bridge, id, v) else emitOk(@TypeOf(v), bridge, id, v);
+                if (comptime isBytes(@TypeOf(v))) emitBytes(ctx, bridge, id, v) else emitOk(@TypeOf(v), bridge, ctx.arena, id, v);
             },
             .err => |e| bridge.emitErrorReject(id, e.code, e.message, e.payload_json),
         }
         return;
     }
-    emitOk(Inner, bridge, id, result);
+    emitOk(Inner, bridge, ctx.arena, id, result);
 }
 
 /// Park the terminal bytes via ctx.binaryChunk so they share the per-call
@@ -304,8 +305,8 @@ fn isResult(comptime T: type) bool {
 }
 
 /// Serialize a success value to JSON and emit a _resolve via the bridge.
-fn emitOk(comptime T: type, bridge: anytype, id: u64, value: T) void {
-    var aw: std.Io.Writer.Allocating = .init(bridge.alloc);
+fn emitOk(comptime T: type, bridge: anytype, arena: std.mem.Allocator, id: u64, value: T) void {
+    var aw: std.Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     std.json.Stringify.value(value, .{}, &aw.writer) catch {
         bridge.emitErrorReject(id, "internal", "could not encode result", null);

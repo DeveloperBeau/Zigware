@@ -898,9 +898,9 @@ test "fuzz: typed args_json decode for registered commands never traps (manual >
     // small-valid) so the envelope is ALWAYS valid JSON and the typed decoder runs.
     const fields = [_][]const u8{ "megabytes", "n", "s", "fail", "x" };
     const values = [_][]const u8{
-        "0", "1", "2", "256", "-1", "true", "false", "null", "3.14",
-        "4294967296", "18446744073709551615", "\"\"", "\"x\"", "\"</script>\"",
-        "\"\\u2028\"", "[]", "{}", "[1,2,3]", "{\"k\":1}",
+        "0",          "1",                    "2",    "256",   "-1",            "true",        "false", "null", "3.14",
+        "4294967296", "18446744073709551615", "\"\"", "\"x\"", "\"</script>\"", "\"\\u2028\"", "[]",    "{}",   "[1,2,3]",
+        "{\"k\":1}",
     };
     var it: usize = 0;
     while (it < 10_000) : (it += 1) {
