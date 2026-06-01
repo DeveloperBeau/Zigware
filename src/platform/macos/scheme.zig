@@ -73,7 +73,7 @@ pub export fn zw_scheme_stop(self: objc.id, _cmd: objc.SEL, webview: objc.id, ta
 /// Allocate an instance of the pre-registered ZWScheme class and stash the
 /// backend pointer on it. The class itself is registered once in
 /// MacOSBackend.init (H7); this only makes an instance.
-pub fn makeHandler(cls: objc.Class, backend: *mac.MacOSBackend) objc.id {
+pub fn makeSchemeHandler(cls: objc.Class, backend: *mac.MacOSBackend) objc.id {
     const inst = objc.msgSend(*const fn (objc.Class, objc.SEL) callconv(.c) objc.id)(cls, objc.sel("alloc"));
     const handler = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) objc.id)(inst, objc.sel("init"));
     // ASSIGN, not RETAIN: the value is a Zig *MacOSBackend cast to objc.id, not

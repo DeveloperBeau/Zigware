@@ -86,6 +86,18 @@ pub const MacOSBackend = struct {
         const self = try alloc.create(MacOSBackend);
         self.* = .{ .alloc = alloc };
 
+        // Wrap the body in an autorelease pool (I2): init runs on the main thread
+        // during setup with no enclosing pool, but stringWithUTF8String: and the
+        // NSApplication/delegate machinery vend autoreleased temporaries that
+        // would otherwise leak (or dangle when an outer pool drains). Mirror the
+        // IMP autorelease discipline. The objects we KEEP (app, delegate_inst)
+        // are +1 retained by NSApp's own state, not autoreleased, so draining
+        // this pool does not free them.
+        const NSAutoreleasePool = objc.class("NSAutoreleasePool");
+        const poolAlloc = objc.msgSend(*const fn (objc.Class, objc.SEL) callconv(.c) objc.id)(NSAutoreleasePool, objc.sel("alloc"));
+        const pool = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) objc.id)(poolAlloc, objc.sel("init"));
+        defer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(pool, objc.sel("drain"));
+
         // Register each ZW* class once (H7): getClass-or-allocateClassPair.
         const NSObject = objc.class("NSObject");
 
@@ -123,8 +135,13 @@ pub const MacOSBackend = struct {
     /// INFALLIBLE drain-then-free (B2). alive=false, flush the main GCD queue so
     /// every pending hop runs (and early-returns on !alive) before we free, THEN
     /// destroy. App.shutdown already ordered terminate -> bridge.deinit (joins) ->
-    /// pumpMain; this deinit re-drains defensively so a direct backend.deinit is
-    /// still safe.
+    /// pumpMain; for that ordering this deinit re-draining defensively makes a
+    /// direct backend.deinit safe (the pool is joined first, so no worker can
+    /// enqueue a new backend-referencing hop after alive flips). A direct deinit
+    /// is safe ONLY when no main-queue work referencing the backend is still in
+    /// flight: an eval() hop re-checks alive and no-ops, but raw dispatchMain
+    /// work (which carries no alive gate inside the block) is the caller's
+    /// responsibility to have drained or kept backend-free.
     pub fn deinit(self: *MacOSBackend) void {
         self.alive.store(false, .release);
         dispatch.drain(); // run/flush any in-flight hops; they see !alive and no-op
@@ -155,6 +172,20 @@ pub const MacOSBackend = struct {
         for (opts.user_scripts) |s| {
             if (std.mem.indexOfScalar(u8, s, 0) != null) return error.ScriptContainsNul;
         }
+
+        // Wrap the body in an autorelease pool (I2): createWindow runs on the
+        // main thread during setup with no enclosing pool, yet vends autoreleased
+        // temporaries (objc.nsString via stringWithUTF8String:, NSURL from
+        // URLWithString:) that would otherwise leak or dangle. Mirror the IMP
+        // autorelease discipline. The handles we RETURN are NOT autoreleased:
+        // NSWindow and WKWebView both come from alloc/init (+1 retained, owned by
+        // us / the app window list once shown), so draining this pool does not
+        // free them. The intermediates (ucc, handler, cfg, scheme handler) are
+        // owned by the webview/config graph or released via their errdefers.
+        const NSAutoreleasePool = objc.class("NSAutoreleasePool");
+        const poolAlloc = objc.msgSend(*const fn (objc.Class, objc.SEL) callconv(.c) objc.id)(NSAutoreleasePool, objc.sel("alloc"));
+        const pool = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) objc.id)(poolAlloc, objc.sel("init"));
+        defer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(pool, objc.sel("drain"));
 
         const window = window_mod.create(opts);
         errdefer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(window, objc.sel("release"));
@@ -187,7 +218,7 @@ pub const MacOSBackend = struct {
         const cfg = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) objc.id)(cfgAlloc, objc.sel("init"));
         errdefer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(cfg, objc.sel("release"));
         _ = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) void)(cfg, objc.sel("setUserContentController:"), ucc);
-        const schemeHandler = scheme_mod.makeHandler(self.scheme_cls, self);
+        const schemeHandler = scheme_mod.makeSchemeHandler(self.scheme_cls, self);
         self.scheme_inst = schemeHandler; // stored so deinit can null the association (H5)
         _ = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id, objc.id) callconv(.c) void)(cfg, objc.sel("setURLSchemeHandler:forURLScheme:"), schemeHandler, objc.nsString("app"));
 
@@ -205,11 +236,20 @@ pub const MacOSBackend = struct {
 
         const NSURL = objc.class("NSURL");
         const url = objc.msgSend(*const fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id)(NSURL, objc.sel("URLWithString:"), objc.nsString(opts.url.ptr));
-        const NSURLRequest = objc.class("NSURLRequest");
-        const reqAlloc = objc.msgSend(*const fn (objc.Class, objc.SEL) callconv(.c) objc.id)(NSURLRequest, objc.sel("alloc"));
-        const request = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id)(reqAlloc, objc.sel("initWithURL:"), url);
-        defer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(request, objc.sel("release"));
-        _ = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id)(webview, objc.sel("loadRequest:"), request);
+        // URLWithString: returns nil for a malformed URL. Passing nil to
+        // NSURLRequest initWithURL: raises an ObjC exception, which is UB across
+        // this Zig frame (no @C unwinder). opts.url is trusted today, but guard
+        // defensively: on nil, warn and skip loadRequest, still returning the
+        // created window (I3).
+        if (@intFromPtr(url) == 0) {
+            std.log.warn("createWindow: malformed url, skipping initial loadRequest: {s}", .{opts.url});
+        } else {
+            const NSURLRequest = objc.class("NSURLRequest");
+            const reqAlloc = objc.msgSend(*const fn (objc.Class, objc.SEL) callconv(.c) objc.id)(NSURLRequest, objc.sel("alloc"));
+            const request = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id)(reqAlloc, objc.sel("initWithURL:"), url);
+            defer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(request, objc.sel("release"));
+            _ = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id)(webview, objc.sel("loadRequest:"), request);
+        }
 
         if (opts.show) window_mod.show(window);
 
@@ -259,15 +299,25 @@ pub const MacOSBackend = struct {
     }
 
     /// Returns the monotonic id assigned at createWindow (H8). Never the raw
-    /// pointer; never panics. An unknown/stale handle returns the sentinel.
+    /// pointer; never panics. v0.1.0 ships a single window: returns the current
+    /// monotonic id for any non-null handle, sentinel for null. E generalizes to
+    /// a handle->id map.
     pub fn windowId(self: *MacOSBackend, h: WindowHandle) WindowId {
-        // v0.1.0: one window. A handle whose webview/window does not match the
-        // current window yields the sentinel rather than a panic.
         if (@intFromPtr(h.window) == 0) return std.math.maxInt(u64);
         return self.current_window_id;
     }
 
-    pub fn dispatchMain(_: *MacOSBackend, work: *const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) void {
+    /// Enqueue arbitrary `work(ctx)` on the main queue. Gated on `alive`: once
+    /// terminate()/deinit has flipped alive false, this drops the work rather
+    /// than enqueuing it, so a late call after shutdown cannot race the free.
+    ///
+    /// ctx must NOT reference backend/bridge memory unless the caller guarantees
+    /// the work runs before terminate(); the hop path (eval) is the
+    /// lifetime-safe channel for backend-referencing work. Unlike eval(), this
+    /// path applies NO lifetime extension (no retain, no alive re-check inside
+    /// the block), so the caller owns ctx's lifetime entirely.
+    pub fn dispatchMain(self: *MacOSBackend, work: *const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) void {
+        if (!self.alive.load(.acquire)) return;
         dispatch.async_(work, ctx);
     }
 
