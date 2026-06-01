@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
+<title>Zigware PoC</title>
+<style>
+  body { font: 15px -apple-system, sans-serif; margin: 40px; }
+  #bar { width: 100%; height: 18px; }
+  #out { margin-top: 16px; font-family: ui-monospace, monospace; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Zigware PoC</h1>
+  <button id="go">Hash 300 MB in Zig</button>
+  <button id="again" hidden>Run again</button>
+  <p><progress id="bar" max="100" value="0"></progress> <span id="pct">0%</span></p>
+  <div id="out"></div>
+  <script src="app.js"></script>
+</body>
+</html>

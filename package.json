@@ -1,0 +1,6 @@
+{
+  "name": "zigware-shim-tests",
+  "private": true,
+  "engines": { "bun": ">=1.1.0" },
+  "scripts": { "test": "bun test" }
+}
