@@ -6,15 +6,15 @@ const index_html_embed = @embedFile("frontend/index.html");
 const app_js_embed = @embedFile("frontend/app.js");
 
 // Comptime table of every path that may legitimately return 200, with the exact
-// body each must serve. The fuzz oracle asserts against the BODY CONTENT so a
-// corrupted asset table that returns the wrong body for a known path is caught
-// (the previous pointer-identity check compared a slice against itself and
-// proved nothing).
-const KnownAsset = struct { path: []const u8, body: []const u8 };
+// body and mime each must serve. The fuzz oracle asserts against the BODY CONTENT
+// and the MIME so a corrupted asset table that returns the wrong body, or serves
+// /app.js as text/html, is caught (the previous pointer-identity check compared a
+// slice against itself and proved nothing).
+const KnownAsset = struct { path: []const u8, body: []const u8, mime: []const u8 };
 const known_paths = [_]KnownAsset{
-    .{ .path = "/", .body = index_html_embed },
-    .{ .path = "/index.html", .body = index_html_embed },
-    .{ .path = "/app.js", .body = app_js_embed },
+    .{ .path = "/", .body = index_html_embed, .mime = "text/html" },
+    .{ .path = "/index.html", .body = index_html_embed, .mime = "text/html" },
+    .{ .path = "/app.js", .body = app_js_embed, .mime = "text/javascript" },
 };
 
 // Reserved internal routes are declared in protocol.zig because sub-project B
@@ -116,7 +116,11 @@ test "fuzz: serveAsset oracle (manual >= 10000 iterations)" {
     const rand = prng.random();
     var iter: usize = 0;
     while (iter < 10_000) : (iter += 1) {
-        var buf: [16 * 1024]u8 = undefined; // 16 KiB to reach tail-collision cases
+        // Uniformly random bytes essentially never spell "/index.html", so this
+        // driver exercises the no-panic and no-false-200 properties on long,
+        // arbitrary input rather than known-path collision coverage. The exact
+        // known-path contract is pinned by the unit tests above.
+        var buf: [16 * 1024]u8 = undefined;
         const n = rand.intRangeAtMost(usize, 0, buf.len);
         for (buf[0..n]) |*c| c.* = rand.int(u8);
         try checkServeAssetOracle(buf[0..n]);
@@ -129,9 +133,12 @@ fn fuzzServeAsset(_: void, smith: *std.testing.Smith) anyerror!void {
     try checkServeAssetOracle(buf[0..n]);
 }
 
-/// Shared oracle. Reserved routes never 200. A 200 is allowed ONLY when `path`
-/// exactly equals a known path AND the returned body equals that known asset's
-/// bytes (content comparison, not pointer identity).
+/// Shared oracle, bidirectional so it alone pins the contract both ways (mirrors
+/// protocol.zig's checkReservedInvariant). Reserved routes never 200. If `path`
+/// exactly equals a known_paths entry it MUST 200 with that entry's exact body
+/// and mime (catches a regression to 404, or a corrupted table). If it does not
+/// equal any known entry it MUST 404 (catches a spurious 200). Body/mime are
+/// content comparisons, not pointer identity.
 fn checkServeAssetOracle(path: []const u8) !void {
     const r = serveAsset(path);
 
@@ -140,17 +147,21 @@ fn checkServeAssetOracle(path: []const u8) !void {
         return;
     }
 
-    if (r.status == 200) {
-        var matched = false;
-        for (known_paths) |k| {
-            if (std.mem.eql(u8, k.path, path)) {
-                try std.testing.expectEqualStrings(k.body, r.body);
-                matched = true;
-                break;
-            }
+    var known: ?KnownAsset = null;
+    for (known_paths) |k| {
+        if (std.mem.eql(u8, k.path, path)) {
+            known = k;
+            break;
         }
-        if (!matched) return error.UnknownAssetReturned200;
+    }
+
+    if (known) |k| {
+        // Forward direction: a known path must serve its exact contract.
+        try std.testing.expectEqual(@as(u16, 200), r.status);
+        try std.testing.expectEqualStrings(k.body, r.body);
+        try std.testing.expectEqualStrings(k.mime, r.mime);
     } else {
+        // Reverse direction: anything not in the table must 404, never 200.
         try std.testing.expectEqual(@as(u16, 404), r.status);
     }
 }
