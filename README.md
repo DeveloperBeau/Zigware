@@ -28,5 +28,4 @@ live progress -> result, UI never freezes.
 - ordered shutdown (alive=false -> join workers -> drain main queue -> free)
 - dev affordances (Web Inspector) gated to debug builds only
 
-See `docs/superpowers/specs/2026-06-01-zigware-poc-design.md` for the full design and
-`docs/SMOKE.md` for manual glue verification.
+See `docs/SMOKE.md` for the manual glue-verification checklist.
