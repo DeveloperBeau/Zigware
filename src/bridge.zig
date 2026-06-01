@@ -148,7 +148,7 @@ pub const Bridge = struct {
 
     /// Route an inbound JS→Zig message: decode → allowlist → submit or reject.
     pub fn handleMessage(self: *Bridge, text: []const u8) void {
-        const msg = protocol.decode(self.alloc, text) catch return;
+        const msg = protocol.decode(self.alloc, text, protocol.MAX_MESSAGE_LEN) catch return;
         defer msg.deinit(self.alloc);
 
         if (!self.allow.contains(msg.cmd)) {

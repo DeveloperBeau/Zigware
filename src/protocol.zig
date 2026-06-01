@@ -1,5 +1,81 @@
 const std = @import("std");
 
+// ─── Limits and reserved routes ──────────────────────────────────────────────
+
+/// Hard cap on an inbound bridge message (finding H1). Enforced at three layers:
+/// the macOS onMessage IMP rejects an NSString longer than this before spanning
+/// it, Bridge.handleMessage rejects text.len > MAX with one reject, and decode
+/// takes max_len explicitly. 64 KiB is generous for a JSON command envelope.
+pub const MAX_MESSAGE_LEN: usize = 64 * 1024;
+
+/// Maximum JSON nesting depth before decode rejects (finding H2). Closes the
+/// deeply-nested-object/array bomb that fits inside MAX_MESSAGE_LEN.
+pub const MAX_JSON_DEPTH: usize = 32;
+
+/// Per-value length cap and duplicate-field policy passed to std.json on every
+/// parse in the codebase (finding H2). Bounds a single giant string field and
+/// makes duplicate-key handling deterministic (first wins).
+pub const JSON_PARSE_OPTIONS: std.json.ParseOptions = .{
+    .max_value_len = 4096,
+    .duplicate_field_behavior = .use_first,
+};
+
+/// Reserved internal route prefixes that must never be served as static assets
+/// and never reach the command gate. Owned here in protocol.zig; sub-project B
+/// extends this list (for example the binary streaming scheme) and B's command
+/// gate consults the same list. A's serveAsset consults it to exclude reserved
+/// routes from the asset allowlist.
+pub const reserved_route_prefixes = [_][]const u8{
+    "/__zigware_stream",
+};
+
+/// True when `path` exactly equals a reserved route prefix OR begins with a
+/// reserved prefix followed by `/`. Bare `startsWith` is insufficient: an
+/// attacker can request `/__zigware_streamattack` and bypass the reserved-route
+/// check, then potentially reach a sibling handler that uses the same loose
+/// prefix. Boundary matching closes that hole.
+pub fn isReservedRoute(path: []const u8) bool {
+    for (reserved_route_prefixes) |prefix| {
+        if (!std.mem.startsWith(u8, path, prefix)) continue;
+        if (path.len == prefix.len) return true;
+        if (path[prefix.len] == '/') return true;
+    }
+    return false;
+}
+
+/// Reject text whose `{`/`[` nesting exceeds MAX_JSON_DEPTH. A cheap pre-scan
+/// run before std.json so a depth bomb is refused without recursing the parser.
+fn exceedsJsonDepth(text: []const u8) bool {
+    var depth: usize = 0;
+    var max: usize = 0;
+    var in_string = false;
+    var escaped = false;
+    for (text) |c| {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            '{', '[' => {
+                depth += 1;
+                if (depth > max) max = depth;
+            },
+            '}', ']' => {
+                if (depth > 0) depth -= 1;
+            },
+            else => {},
+        }
+    }
+    return max > MAX_JSON_DEPTH;
+}
+
 // ─── Public types ────────────────────────────────────────────────────────────
 
 pub const Message = struct {
@@ -17,8 +93,10 @@ pub const DecodeError = error{BadMessage} || std.mem.Allocator.Error;
 
 // ─── decode ──────────────────────────────────────────────────────────────────
 
-pub fn decode(alloc: std.mem.Allocator, text: []const u8) DecodeError!Message {
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, .{}) catch return error.BadMessage;
+pub fn decode(alloc: std.mem.Allocator, text: []const u8, max_len: usize) DecodeError!Message {
+    if (text.len > max_len) return error.BadMessage;
+    if (exceedsJsonDepth(text)) return error.BadMessage;
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, JSON_PARSE_OPTIONS) catch return error.BadMessage;
     defer parsed.deinit();
     const root = parsed.value;
     if (root != .object) return error.BadMessage;
@@ -95,7 +173,7 @@ pub fn jsString(w: *std.Io.Writer, s: []const u8) !void {
 /// bytes in string positions). Callers passing raw user data here bypass the
 /// `jsString` escape and break the injection boundary — raw user strings must
 /// go through `jsString`, never here.
-fn writeJsonAsJsLiteral(w: *std.Io.Writer, text: []const u8) !void {
+pub fn writeJsonAsJsLiteral(w: *std.Io.Writer, text: []const u8) !void {
     var i: usize = 0;
     while (i < text.len) {
         if (i + 3 <= text.len and text[i] == 0xE2 and text[i + 1] == 0x80 and (text[i + 2] == 0xA8 or text[i + 2] == 0xA9)) {
@@ -214,16 +292,46 @@ fn assertSafeJsLiteral(out: []const u8) !void {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-test "decode parses well-formed message" {
-    const msg = try decode(std.testing.allocator, "{\"id\":7,\"cmd\":\"sha256\",\"args\":{\"megabytes\":4}}");
+test "isReservedRoute matches reserved prefixes at a boundary and nothing else" {
+    try std.testing.expect(isReservedRoute("/__zigware_stream/1/0"));
+    try std.testing.expect(isReservedRoute("/__zigware_stream"));
+    try std.testing.expect(!isReservedRoute("/index.html"));
+    try std.testing.expect(!isReservedRoute("/"));
+    try std.testing.expect(!isReservedRoute("/app.js"));
+    // Adversarial: a prefix that a bare startsWith would accept must NOT match.
+    try std.testing.expect(!isReservedRoute("/__zigware_streamattack"));
+    try std.testing.expect(!isReservedRoute("/__zigware_stream_x"));
+    try std.testing.expect(!isReservedRoute("/__zigware_streamabc/foo"));
+}
+
+test "decode rejects text larger than max_len before parsing" {
+    var buf: [MAX_MESSAGE_LEN + 16]u8 = undefined;
+    @memset(buf[0..], 'a');
+    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, buf[0 .. MAX_MESSAGE_LEN + 1], MAX_MESSAGE_LEN));
+}
+
+test "decode rejects deeply nested JSON (depth bomb)" {
+    // 64 nested arrays exceeds MAX_JSON_DEPTH = 32.
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var d: usize = 0;
+    while (d < 64) : (d += 1) try aw.writer.writeByte('[');
+    try aw.writer.writeAll("\"id\"");
+    d = 0;
+    while (d < 64) : (d += 1) try aw.writer.writeByte(']');
+    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, aw.writer.buffered(), MAX_MESSAGE_LEN));
+}
+
+test "decode parses a well-formed message within limits" {
+    const msg = try decode(std.testing.allocator, "{\"id\":7,\"cmd\":\"sha256\",\"args\":{\"megabytes\":4}}", MAX_MESSAGE_LEN);
     defer msg.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 7), msg.id);
     try std.testing.expectEqualStrings("sha256", msg.cmd);
 }
 
 test "decode rejects malformed input with error, no panic" {
-    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, "not json"));
-    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, "{\"id\":\"x\"}"));
+    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, "not json", MAX_MESSAGE_LEN));
+    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, "{\"id\":\"x\"}", MAX_MESSAGE_LEN));
 }
 
 test "encodeResolve produces a valid JS call with JSON arg" {
@@ -312,8 +420,67 @@ fn fuzzDecode(_: void, smith: *std.testing.Smith) anyerror!void {
     var buf: [4096]u8 = undefined;
     const n = smith.slice(&buf);
     const input = buf[0..n];
-    const r = decode(std.testing.allocator, input) catch return;
+    const r = decode(std.testing.allocator, input, MAX_MESSAGE_LEN) catch return;
     r.deinit(std.testing.allocator);
+}
+
+// ── Manual fuzz driver (finding H14): the native --fuzz body runs once under
+//    `zig build test` due to a 0.16 toolchain bug, so a deterministic loop runs
+//    >= 10000 iterations seeded by std.testing.random_seed.
+
+test "fuzz: isReservedRoute boundary-matches only (native body)" {
+    try std.testing.fuzz({}, fuzzReserved, .{});
+}
+
+test "fuzz: isReservedRoute boundary-matches only (manual >= 10000 iterations)" {
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const rand = prng.random();
+    var iter: usize = 0;
+    while (iter < 10_000) : (iter += 1) {
+        var buf: [256]u8 = undefined;
+        const n = rand.intRangeAtMost(usize, 0, buf.len);
+        for (buf[0..n]) |*c| c.* = rand.int(u8);
+        try checkReservedInvariant(buf[0..n]);
+    }
+}
+
+fn fuzzReserved(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [256]u8 = undefined;
+    const n = smith.slice(&buf);
+    try checkReservedInvariant(buf[0..n]);
+}
+
+/// Shared invariant body so the native and manual fuzz drivers test the same
+/// property: if isReservedRoute accepted, the path ends at the prefix or has a
+/// '/' immediately after it.
+fn checkReservedInvariant(path: []const u8) !void {
+    if (!isReservedRoute(path)) return;
+    var matched_clean = false;
+    for (reserved_route_prefixes) |p| {
+        if (!std.mem.startsWith(u8, path, p)) continue;
+        if (path.len == p.len) {
+            matched_clean = true;
+            break;
+        }
+        if (path[p.len] == '/') {
+            matched_clean = true;
+            break;
+        }
+    }
+    try std.testing.expect(matched_clean);
+}
+
+test "fuzz: decode never panics on arbitrary bytes (manual >= 10000 iterations)" {
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const rand = prng.random();
+    var iter: usize = 0;
+    while (iter < 10_000) : (iter += 1) {
+        var buf: [4096]u8 = undefined;
+        const n = rand.intRangeAtMost(usize, 0, buf.len);
+        for (buf[0..n]) |*c| c.* = rand.int(u8);
+        const r = decode(std.testing.allocator, buf[0..n], MAX_MESSAGE_LEN) catch continue;
+        r.deinit(std.testing.allocator);
+    }
 }
 
 test "fuzz: jsString output is always a valid JSON string round-trip" {
