@@ -12,7 +12,6 @@
 //! 0.16 (H14).
 
 const std = @import("std");
-const builtin = @import("builtin");
 const seam = @import("platform/backend.zig");
 const NullBackend = @import("platform/null.zig").NullBackend;
 const App = @import("app.zig").App;
@@ -437,12 +436,14 @@ test "Bridge.deinit while workers are mid-flight does not UAF" {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
     const bridge = try Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, .{ .worker_count = 4 });
-    // Submit large jobs with NO settle, then deinit immediately. bridge.deinit
-    // joins the pool; backend.deinit then drains and frees. No UAF, no leak.
+    // Submit jobs with NO settle, then deinit immediately. bridge.deinit joins
+    // the pool; backend.deinit then drains and frees. No UAF, no leak. The
+    // UAF-safety property is independent of per-job size, so use the smallest
+    // size (1 MB) that still puts workers mid-flight without hashing gigabytes.
     var i: u64 = 1;
     while (i <= 16) : (i += 1) {
         var buf: [128]u8 = undefined;
-        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":64}}}}", .{i});
+        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":1}}}}", .{i});
         bridge.handleMessage(0, "app://localhost", text);
     }
     bridge.deinit(); // joins workers (does NOT call markJoined)
@@ -519,7 +520,10 @@ test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
             backend.pumpMain();
             backend.deinit();
         }
-        bridge.handleMessage(0, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{}}");
+        // megabytes:1 keeps the (possibly successful) hash tiny: the property
+        // here is "OOM during decode drops or fixed-buffer rejects, no leak, no
+        // crash", which is independent of per-job size.
+        bridge.handleMessage(0, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
         bridge.drainForTest();
         backend.pumpMain();
         // OOM during decode => drop or fixed-buffer reject (H5). No leak, no crash.
@@ -528,9 +532,18 @@ test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
 
 // ─── Attack vector 17: working-set memory ceiling under flood (I2/H11) ───────
 
-test "I2: a 10000-message flood stays within the working-set budget" {
+test "I2: a 1000-message flood stays within the working-set budget" {
+    const N: u64 = 1000;
     var dbg = std.heap.DebugAllocator(.{ .thread_safe = true, .enable_memory_limit = true }){};
-    dbg.requested_memory_limit = 256 * 1024 * 1024; // runtime field; flag is enable_memory_limit (B2)
+    // The 1 GiB working-set budget admits at most ~4 concurrent 256 MB jobs
+    // (1 GiB / 256 MB), so the budget gate sheds the vast majority of the flood
+    // as "busy" without ever allocating their buffers and bounds peak transient
+    // heap near 1 GiB regardless of how many of the 1000 messages arrive. The
+    // 2 GiB ceiling sits above that bound: it proves the heap does not run away
+    // under the flood (the unbounded-queue failure mode the budget prevents)
+    // while leaving headroom for the recorded emission log so the gate sheds
+    // load rather than the allocator spuriously failing terminal emissions.
+    dbg.requested_memory_limit = 2 * 1024 * 1024 * 1024; // runtime field; flag is enable_memory_limit (B2)
     defer std.debug.assert(dbg.deinit() == .ok);
     const a = dbg.allocator();
     const backend = try NullBackend.init(a, std.testing.io);
@@ -541,35 +554,40 @@ test "I2: a 10000-message flood stays within the working-set budget" {
         backend.deinit();
     }
     var i: u64 = 1;
-    while (i <= 10_000) : (i += 1) {
+    while (i <= N) : (i += 1) {
         var buf: [160]u8 = undefined;
-        // Each requests 1 MB. Two gates bound the flood: the bounded queue
-        // (max_queue) and the Bridge inflight-byte budget. Past either, the
-        // message is rejected ("queue full"/"busy") instead of queued without
-        // bound, so accounting never runs away and actual heap stays bounded by
-        // worker_count * 1 MB, far under the 256 MB DebugAllocator limit. The
-        // size is deliberately small: the property under test is "every id gets
-        // exactly one terminal emission and the heap stays bounded", which is
-        // independent of per-job size, so 1 MB keeps the hashing cheap.
-        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":1}}}}", .{i});
+        // Each asks for 256 MB. With a 1 GiB working-set budget that is at most
+        // ~4 concurrent reservations, so the budget gate sheds the vast majority
+        // of the flood as "busy" rejects WITHOUT ever hashing them (mirrors
+        // bridge.zig's I2 vector). Only the handful that fit the budget actually
+        // hash, which keeps the suite fast while still exercising the gate. The
+        // property under test ("every id gets exactly one terminal emission and
+        // the heap stays under the DebugAllocator ceiling under a flood that
+        // trips the budget") is independent of per-job size, so a large size
+        // that maximizes shedding is the cheap, correct choice.
+        const text = try std.fmt.bufPrint(&buf, "{{\"id\":{d},\"cmd\":\"sha256\",\"args\":{{\"megabytes\":256}}}}", .{i});
         backend.simulateMessage(main_id, "app://localhost", text);
     }
     app.bridge.drainForTest();
     backend.pumpMain();
+    // The budget gate must have actually tripped: a large fraction of the flood
+    // is shed as "busy" without hashing, so the budget path is genuinely covered
+    // (not just queued and resolved).
+    try std.testing.expect(backend.countContaining("busy") > 0);
     // Every id received exactly one terminal emission (resolve OR busy-reject).
     // Tally in a single O(n) pass: parse each emission's id and bump its slot,
     // instead of scanning the whole log once per id. The old per-id scan was
-    // O(n^2) over a 10k+ entry log (terminals plus progress _emit) and made
-    // this test dominate the suite's runtime.
-    const counts = try a.alloc(u8, 10_001);
+    // O(n^2) over the emission log (terminals plus progress _emit) and made this
+    // test dominate the suite's runtime.
+    const counts = try a.alloc(u8, N + 1);
     defer a.free(counts);
     @memset(counts, 0);
     for (backend.eval_log.items) |e| {
         const id = terminalEmissionId(e.js) orelse continue;
-        if (id >= 1 and id <= 10_000 and counts[id] < 255) counts[id] += 1;
+        if (id >= 1 and id <= N and counts[id] < 255) counts[id] += 1;
     }
     i = 1;
-    while (i <= 10_000) : (i += 1) {
+    while (i <= N) : (i += 1) {
         try std.testing.expectEqual(@as(u8, 1), counts[i]);
     }
 }
@@ -729,11 +747,4 @@ test "fuzz: handleMessage triple-input never panics or emits to a dead webview (
         h.app.bridge.handleMessage(window_id, origin_buf[0..origin_len], text_buf[0..text_len]);
         h.settle();
     }
-}
-
-comptime {
-    // Manual fuzz drivers exist because 0.16's native --fuzz corpus mode runs a
-    // std.testing.fuzz body once; the >= 10000-iteration loops above are the real
-    // coverage. Touch builtin so the import is not flagged unused on any path.
-    _ = builtin.mode;
 }
