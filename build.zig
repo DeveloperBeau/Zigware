@@ -63,6 +63,7 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
+    addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
