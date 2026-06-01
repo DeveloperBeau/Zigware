@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     if (target.result.os.tag != .macos) {
         std.debug.print("zigware PoC targets macOS only\n", .{});
@@ -120,14 +120,22 @@ pub fn build(b: *std.Build) void {
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
-    // ── coverage-exe: standalone test binary for kcov wrapping ────────────────
-    // Roots at bridge.zig which transitively imports protocol, allowlist, jobs,
-    // commands — the full pure-Zig logic surface (no Cocoa/WebKit needed).
+    // coverage-exe: the full headless logic surface. Rooted at app.zig, which
+    // transitively imports bridge, null backend, assets, backend contract,
+    // protocol, allowlist, jobs, and commands. The pure macOS helpers
+    // (origin.zig, scheme_logic.zig) are pulled in by reference so their tests
+    // run in this binary too and kcov reports their coverage; they are reached
+    // only through the objc backend, which app.zig does not import, so without
+    // the explicit reference below they would never appear in the report.
+    // No Cocoa/WebKit needed.
     const cov_mod = b.createModule(.{
-        .root_source_file = b.path("src/bridge.zig"),
+        .root_source_file = b.path("src/coverage_root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    cov_mod.addImport("objc", objc_mod);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});
     const cov_step = b.step("coverage-exe", "Build the logic-tests binary for kcov");
