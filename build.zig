@@ -8,12 +8,22 @@ pub fn build(b: *std.Build) void {
         std.debug.print("zigware PoC targets macOS only\n", .{});
     }
 
+    // The objc helper exposed as a named module so files rooted as standalone
+    // logic-test modules (e.g. src/platform/macos/origin.zig) can import it
+    // without a relative path that would escape their module root.
+    const objc_mod = b.createModule(.{
+        .root_source_file = b.path("src/objc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.addImport("objc", objc_mod);
     exe_mod.linkFramework("Cocoa", .{});
     exe_mod.linkFramework("WebKit", .{});
     // Embedded frontend assets live outside src/ (the package root), so expose
@@ -49,6 +59,19 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
+
+    // origin.zig imports the `objc` module; wire it on the standalone test.
+    {
+        const m = b.createModule(.{
+            .root_source_file = b.path("src/platform/macos/origin.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        m.addImport("objc", objc_mod);
+        const tt = b.addTest(.{ .root_module = m });
+        test_step.dependOn(&b.addRunArtifact(tt).step);
+    }
 
     // Logic test that needs the embedded frontend assets (assets.zig, app.zig).
     const addEmbedTest = struct {
@@ -89,6 +112,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    scaffold_mod.addImport("objc", objc_mod);
     scaffold_mod.linkFramework("Cocoa", .{});
     scaffold_mod.linkFramework("WebKit", .{});
     scaffold_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
