@@ -14,6 +14,24 @@ pub const MAX_MESSAGE_LEN: usize = 64 * 1024;
 /// deeply-nested-object/array bomb that fits inside MAX_MESSAGE_LEN.
 pub const MAX_JSON_DEPTH: usize = 32;
 
+/// Wire protocol version. No runtime negotiation: the shim is embedded and
+/// rebuilt with the binary, so this exists for diagnostics only.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Reserved inbound message names that bypass the command gate (they never hit
+/// G3) and are not app commands. `__zigware_ready` is introduced by sub-project
+/// E; reserved here so the registry and gate agree on it from day one.
+pub const reserved_inbound_names = [_][]const u8{
+    "__zigware_ready",
+};
+
+pub fn isReservedInboundName(name: []const u8) bool {
+    for (reserved_inbound_names) |n| {
+        if (std.mem.eql(u8, n, name)) return true;
+    }
+    return false;
+}
+
 /// Per-value length cap and duplicate-field policy passed to std.json on every
 /// parse in the codebase (finding H2). Bounds a single giant string field and
 /// makes duplicate-key handling deterministic (first wins).
@@ -208,6 +226,48 @@ pub fn encodeEmit(w: *std.Io.Writer, channel: []const u8, json: []const u8) !voi
     try jsString(w, channel);
     try w.writeAll(", ");
     try writeJsonAsJsLiteral(w, json);
+    try w.writeAll(");");
+}
+
+/// window.Zigware._stream(id, <json-literal>)
+pub fn encodeStream(w: *std.Io.Writer, id: u64, json: []const u8) !void {
+    try w.print("window.Zigware._stream({d}, ", .{id});
+    try writeJsonAsJsLiteral(w, json);
+    try w.writeAll(");");
+}
+
+/// window.Zigware._streamEnd(id)
+pub fn encodeStreamEnd(w: *std.Io.Writer, id: u64) !void {
+    try w.print("window.Zigware._streamEnd({d});", .{id});
+}
+
+/// window.Zigware._reject(id, {code, message, payload?})
+/// `code` and `message` go through jsString; `payload_json` (already std.json
+/// output) through writeJsonAsJsLiteral. Builds the object by hand so the only
+/// bytes-into-JS-string path remains jsString/writeJsonAsJsLiteral (G6 intact).
+pub fn encodeErrorReject(
+    w: *std.Io.Writer,
+    id: u64,
+    code: []const u8,
+    message: []const u8,
+    payload_json: ?[]const u8,
+) !void {
+    try w.print("window.Zigware._reject({d}, {{\"code\":", .{id});
+    try jsString(w, code);
+    try w.writeAll(",\"message\":");
+    try jsString(w, message);
+    if (payload_json) |p| {
+        try w.writeAll(",\"payload\":");
+        try writeJsonAsJsLiteral(w, p);
+    }
+    try w.writeAll("});");
+}
+
+/// window.Zigware._bin(id, seq, len, <mime-lit>). Control frame only: the bytes
+/// themselves are pulled out-of-band over the stream scheme path, never here.
+pub fn encodeBinReady(w: *std.Io.Writer, id: u64, seq: u32, len: usize, mime: []const u8) !void {
+    try w.print("window.Zigware._bin({d}, {d}, {d}, ", .{ id, seq, len });
+    try jsString(w, mime);
     try w.writeAll(");");
 }
 
@@ -525,4 +585,65 @@ fn fuzzEscape(_: void, smith: *std.testing.Smith) anyerror!void {
         defer parsed.deinit();
         try std.testing.expectEqualStrings(input, parsed.value);
     }
+}
+
+test "PROTOCOL_VERSION is exposed for diagnostics" {
+    try std.testing.expectEqual(@as(u32, 1), PROTOCOL_VERSION);
+}
+
+test "encodeStream emits a per-id _stream call with a JSON literal arg" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeStream(&aw.writer, 7, "{\"pct\":50}");
+    try std.testing.expectEqualStrings("window.Zigware._stream(7, {\"pct\":50});", aw.writer.buffered());
+}
+
+test "encodeStreamEnd emits a per-id _streamEnd call" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeStreamEnd(&aw.writer, 7);
+    try std.testing.expectEqualStrings("window.Zigware._streamEnd(7);", aw.writer.buffered());
+}
+
+test "encodeErrorReject builds a structured {code,message,payload} reject" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeErrorReject(&aw.writer, 3, "not_found", "no such note", null);
+    try std.testing.expectEqualStrings(
+        "window.Zigware._reject(3, {\"code\":\"not_found\",\"message\":\"no such note\"});",
+        aw.writer.buffered(),
+    );
+}
+
+test "encodeErrorReject includes payload when present" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeErrorReject(&aw.writer, 3, "bad_args", "boom", "{\"field\":\"a\"}");
+    try std.testing.expectEqualStrings(
+        "window.Zigware._reject(3, {\"code\":\"bad_args\",\"message\":\"boom\",\"payload\":{\"field\":\"a\"}});",
+        aw.writer.buffered(),
+    );
+}
+
+test "encodeErrorReject escapes hostile code and message bytes (G6)" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeErrorReject(&aw.writer, 1, "x\"y", "</script>\u{2028}", null);
+    // The whole _reject(...) call interior after `1, ` is a JS object literal whose
+    // string positions came through jsString. Slice the two string literals and assert each is safe.
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "</script>") == null); // slash escaped
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{2028}") == null); // LS escaped
+}
+
+test "encodeBinReady emits a _bin control frame with an escaped mime" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeBinReady(&aw.writer, 4, 0, 1024, "image/png");
+    try std.testing.expectEqualStrings("window.Zigware._bin(4, 0, 1024, \"image\\/png\");", aw.writer.buffered());
+}
+
+test "reserved inbound name __zigware_ready is recognized" {
+    try std.testing.expect(isReservedInboundName("__zigware_ready"));
+    try std.testing.expect(!isReservedInboundName("sha256"));
 }
