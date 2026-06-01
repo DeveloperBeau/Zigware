@@ -4,11 +4,13 @@
 //! each security file lands.
 comptime {
     _ = @import("security/capability.zig");
+    _ = @import("security/defaults.zig");
 }
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("security/capability.zig");
+    _ = @import("security/defaults.zig");
 }
 
 const std = @import("std");
