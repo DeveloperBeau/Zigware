@@ -258,7 +258,9 @@ const TestEvents = struct {
     lastPct: u8 = 0,
     alloc: std.mem.Allocator,
 
-    fn init(a: std.mem.Allocator) TestEvents { return .{ .alloc = a }; }
+    fn init(a: std.mem.Allocator) TestEvents {
+        return .{ .alloc = a };
+    }
     fn deinit(_: *TestEvents) void {}
 
     fn acquire(self: *TestEvents) void {
@@ -271,11 +273,14 @@ const TestEvents = struct {
     }
 
     fn onProgress(self: *TestEvents, _: u64, pct: u8) void {
-        self.acquire(); defer self.release();
-        self.progressCalls += 1; self.lastPct = pct;
+        self.acquire();
+        defer self.release();
+        self.progressCalls += 1;
+        self.lastPct = pct;
     }
     fn onResolve(self: *TestEvents, _: u64, _: []const u8) void {
-        self.acquire(); defer self.release();
+        self.acquire();
+        defer self.release();
         self.resolves += 1;
     }
     fn onReject(_: *TestEvents, _: u64, _: []const u8) void {}
