@@ -4,7 +4,7 @@ The macOS objc/WKWebView glue needs a live AppKit GUI session and has no unit te
 
 1. `zig build run`: a window opens showing the Zigware UI, served from `app://localhost/index.html`.
 2. Open Web Inspector (Develop > Web Inspector; debug builds set `inspectable`). The Console shows no Content-Security-Policy violations.
-3. Click "Hash 300 MB in Zig". The progress bar advances 0 to 100%.
+3. Click "Hash 300 MB in Zig". The demo calls `window.Zigware.invoke("sha256", { megabytes: 300 }, { onStream })`. The progress bar advances 0 to 100% as each `onStream` frame arrives (the bar reads `frame.pct`). Progress now flows through the invoke's `onStream` callback, not the retired `zig:progress` CustomEvent, so a stalled bar means the stream channel, not the old event, is broken. The promise resolves with the result object and the page reads `r.hash` from it.
 4. While the bar advances, drag the window around. It keeps responding, which proves the hash runs off the main thread.
 5. On completion the page shows `SHA-256: <64 hex chars>`, matching the value the unit tests assert for the chunked path.
 6. Quit with Cmd-Q mid-hash. Expect a clean exit. There must be no crash report in Console.app and no allocator-leak warnings on stderr. This exercises `applicationWillTerminate:` mapping to `onLifecycle(.will_terminate)` and the App's ordered shutdown (terminate, join workers, drain the main queue).

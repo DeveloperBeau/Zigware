@@ -7,9 +7,16 @@
 //! objc backend, which app.zig never pulls in, so they are referenced here
 //! explicitly: that runs their tests in this binary and lets kcov report their
 //! coverage. They carry no Cocoa/WebKit dependency, so no GUI is needed.
+//! The registry, per-call context, and built-in command modules are imported by
+//! bridge.zig with plain top-level `const`s, which compile them in but do not run
+//! their own `test` blocks. They are referenced here explicitly so those unit
+//! tests execute in this binary and kcov reports their coverage.
 test {
     _ = @import("app.zig");
     _ = @import("sec_regression.zig");
     _ = @import("platform/macos/origin.zig");
     _ = @import("platform/macos/scheme_logic.zig");
+    _ = @import("registry.zig");
+    _ = @import("command_ctx.zig");
+    _ = @import("commands/builtin.zig");
 }

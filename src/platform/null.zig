@@ -294,15 +294,15 @@ pub const NullBackend = struct {
     /// Count eval_log entries that resolve exactly this id. The needle includes
     /// the trailing comma+space so id 1 does not match id 10 (finding H13).
     pub fn countResolveExactly(self: *NullBackend, id: u64) usize {
-        var buf: [48]u8 = undefined;
-        const needle = std.fmt.bufPrint(&buf, "window.zig._resolve({d}, ", .{id}) catch return 0;
+        var buf: [64]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "window.Zigware._resolve({d}, ", .{id}) catch return 0;
         return self.countContaining(needle);
     }
 
     /// Count eval_log entries that reject exactly this id (trailing comma+space).
     pub fn countRejectExactly(self: *NullBackend, id: u64) usize {
-        var buf: [48]u8 = undefined;
-        const needle = std.fmt.bufPrint(&buf, "window.zig._reject({d}, ", .{id}) catch return 0;
+        var buf: [64]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "window.Zigware._reject({d}, ", .{id}) catch return 0;
         return self.countContaining(needle);
     }
 

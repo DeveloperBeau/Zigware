@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
     // them as anonymous imports that @embedFile can reference by name.
     exe_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     exe_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    exe_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
     b.installArtifact(exe);
 
@@ -53,9 +54,11 @@ pub fn build(b: *std.Build) void {
     }.add;
     addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
+    addLogicTest(b, test_step, target, optimize, "src/command_ctx.zig");
     addLogicTest(b, test_step, target, optimize, "src/commands/sha256.zig");
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
+    addLogicTest(b, test_step, target, optimize, "src/registry.zig");
     addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
@@ -83,6 +86,7 @@ pub fn build(b: *std.Build) void {
             });
             m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
             m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
@@ -107,6 +111,16 @@ pub fn build(b: *std.Build) void {
     const escapes_step = b.step("escapes", "Emit test/fixtures/js_escapes.jsonl");
     escapes_step.dependOn(&fixture_run.step);
 
+    const dts_mod = b.createModule(.{
+        .root_source_file = b.path("src/emit_dts.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const dts_exe = b.addExecutable(.{ .name = "emit_dts", .root_module = dts_mod });
+    const dts_run = b.addRunArtifact(dts_exe);
+    const dts_step = b.step("dts", "Generate frontend/bindings.d.ts");
+    dts_step.dependOn(&dts_run.step);
+
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -118,6 +132,7 @@ pub fn build(b: *std.Build) void {
     scaffold_mod.linkFramework("WebKit", .{});
     scaffold_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     scaffold_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    scaffold_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
@@ -136,6 +151,7 @@ pub fn build(b: *std.Build) void {
     });
     cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    cov_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     cov_mod.addImport("objc", objc_mod);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});

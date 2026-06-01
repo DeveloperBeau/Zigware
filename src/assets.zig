@@ -4,6 +4,7 @@ const protocol = @import("protocol.zig");
 
 const index_html_embed = @embedFile("frontend/index.html");
 const app_js_embed = @embedFile("frontend/app.js");
+const zigware_js_embed = @embedFile("frontend/zigware.js");
 
 // Comptime table of every path that may legitimately return 200, with the exact
 // body and mime each must serve. The fuzz oracle asserts against the BODY CONTENT
@@ -15,6 +16,7 @@ const known_paths = [_]KnownAsset{
     .{ .path = "/", .body = index_html_embed, .mime = "text/html" },
     .{ .path = "/index.html", .body = index_html_embed, .mime = "text/html" },
     .{ .path = "/app.js", .body = app_js_embed, .mime = "text/javascript" },
+    .{ .path = "/zigware.js", .body = zigware_js_embed, .mime = "text/javascript" },
 };
 
 // Reserved internal routes are declared in protocol.zig because sub-project B
@@ -37,6 +39,9 @@ pub fn serveAsset(path: []const u8) seam.Response {
     }
     if (std.mem.eql(u8, path, "/app.js")) {
         return .{ .status = 200, .mime = "text/javascript", .body = app_js_embed, .kind = .embedded_static };
+    }
+    if (std.mem.eql(u8, path, "/zigware.js")) {
+        return .{ .status = 200, .mime = "text/javascript", .body = zigware_js_embed, .kind = .embedded_static };
     }
     return notFound();
 }
