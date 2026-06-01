@@ -2,10 +2,12 @@ const std = @import("std");
 
 // ─── Limits and reserved routes ──────────────────────────────────────────────
 
-/// Hard cap on an inbound bridge message (finding H1). Enforced at three layers:
-/// the macOS onMessage IMP rejects an NSString longer than this before spanning
-/// it, Bridge.handleMessage rejects text.len > MAX with one reject, and decode
-/// takes max_len explicitly. 64 KiB is generous for a JSON command envelope.
+/// Hard cap on an inbound bridge message (finding H1). Currently enforced in one
+/// place: `decode` rejects `text.len > max_len` before parsing, and callers pass
+/// this constant as `max_len`. Two further layers are PLANNED but not yet in the
+/// tree: the macOS onMessage IMP will reject an NSString longer than this before
+/// spanning it (Task 7), and Bridge.handleMessage will reject text.len > MAX with
+/// one reject (Task 5). 64 KiB is generous for a JSON command envelope.
 pub const MAX_MESSAGE_LEN: usize = 64 * 1024;
 
 /// Maximum JSON nesting depth before decode rejects (finding H2). Closes the
@@ -21,10 +23,11 @@ pub const JSON_PARSE_OPTIONS: std.json.ParseOptions = .{
 };
 
 /// Reserved internal route prefixes that must never be served as static assets
-/// and never reach the command gate. Owned here in protocol.zig; sub-project B
-/// extends this list (for example the binary streaming scheme) and B's command
-/// gate consults the same list. A's serveAsset consults it to exclude reserved
-/// routes from the asset allowlist.
+/// and never reach the command gate. Owned here in protocol.zig. The list is
+/// intended to be consulted by serveAsset (Task 4) to exclude reserved routes
+/// from the asset allowlist, and by the command gate (sub-project B), which will
+/// also extend this list (for example the binary streaming scheme). Those
+/// consumers do not exist in the tree yet.
 pub const reserved_route_prefixes = [_][]const u8{
     "/__zigware_stream",
 };
@@ -322,6 +325,23 @@ test "decode rejects deeply nested JSON (depth bomb)" {
     try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, aw.writer.buffered(), MAX_MESSAGE_LEN));
 }
 
+test "decode rejects an over-long string value (per-value cap active)" {
+    // Build a message comfortably under MAX_MESSAGE_LEN (64 KiB) whose `cmd`
+    // string value exceeds JSON_PARSE_OPTIONS.max_value_len (4096 bytes). This
+    // pins the per-value cap: the whole message is small, but the single string
+    // value is too long, so std.json (and therefore decode) must reject it.
+    const value_len = JSON_PARSE_OPTIONS.max_value_len.? + 1;
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try aw.writer.writeAll("{\"id\":1,\"cmd\":\"");
+    var i: usize = 0;
+    while (i < value_len) : (i += 1) try aw.writer.writeByte('a');
+    try aw.writer.writeAll("\"}");
+    // Sanity: the envelope is well under the 64 KiB message cap.
+    try std.testing.expect(aw.writer.buffered().len < MAX_MESSAGE_LEN);
+    try std.testing.expectError(error.BadMessage, decode(std.testing.allocator, aw.writer.buffered(), MAX_MESSAGE_LEN));
+}
+
 test "decode parses a well-formed message within limits" {
     const msg = try decode(std.testing.allocator, "{\"id\":7,\"cmd\":\"sha256\",\"args\":{\"megabytes\":4}}", MAX_MESSAGE_LEN);
     defer msg.deinit(std.testing.allocator);
@@ -451,23 +471,21 @@ fn fuzzReserved(_: void, smith: *std.testing.Smith) anyerror!void {
 }
 
 /// Shared invariant body so the native and manual fuzz drivers test the same
-/// property: if isReservedRoute accepted, the path ends at the prefix or has a
-/// '/' immediately after it.
+/// property. This is a true equivalence check: an independently re-derived
+/// boundary oracle is computed, and isReservedRoute MUST agree with it in both
+/// directions. Forward: if isReservedRoute accepted, a boundary match exists.
+/// Reverse: if a boundary match exists, isReservedRoute MUST have accepted.
 fn checkReservedInvariant(path: []const u8) !void {
-    if (!isReservedRoute(path)) return;
-    var matched_clean = false;
+    var boundary_match = false;
     for (reserved_route_prefixes) |p| {
         if (!std.mem.startsWith(u8, path, p)) continue;
-        if (path.len == p.len) {
-            matched_clean = true;
-            break;
-        }
-        if (path[p.len] == '/') {
-            matched_clean = true;
+        if (path.len == p.len or path[p.len] == '/') {
+            boundary_match = true;
             break;
         }
     }
-    try std.testing.expect(matched_clean);
+    // Equivalence: isReservedRoute is exactly the re-derived boundary oracle.
+    try std.testing.expectEqual(boundary_match, isReservedRoute(path));
 }
 
 test "fuzz: decode never panics on arbitrary bytes (manual >= 10000 iterations)" {
