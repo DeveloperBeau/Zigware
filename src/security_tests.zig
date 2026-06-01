@@ -5,12 +5,14 @@
 comptime {
     _ = @import("security/capability.zig");
     _ = @import("security/defaults.zig");
+    _ = @import("security/scope/glob.zig");
 }
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("security/capability.zig");
     _ = @import("security/defaults.zig");
+    _ = @import("security/scope/glob.zig");
 }
 
 const std = @import("std");
