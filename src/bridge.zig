@@ -455,9 +455,22 @@ test "happy path: invoke sha256 emits ordered progress then exactly one resolve"
     defer t.deinit();
     t.send("{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     t.settle();
-    try std.testing.expect(t.backend.countContaining("window.Zigware._stream(") >= 1);
+    try std.testing.expect(t.backend.countContaining("window.Zigware._stream(1, ") >= 1);
     try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(1));
     try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(1));
+}
+
+test "streaming: two concurrent invokes never interleave stream ids" {
+    var t = try TestBridge.init();
+    defer t.deinit();
+    t.send("{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":2}}");
+    t.send("{\"id\":2,\"cmd\":\"sha256\",\"args\":{\"megabytes\":2}}");
+    t.settle();
+    // Each id resolves exactly once; each has its own stream frames.
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(1));
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(2));
+    try std.testing.expect(t.backend.countContaining("window.Zigware._stream(1, ") >= 1);
+    try std.testing.expect(t.backend.countContaining("window.Zigware._stream(2, ") >= 1);
 }
 
 test "unknown command rejects exactly once and dispatches nothing" {
