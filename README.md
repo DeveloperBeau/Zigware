@@ -1,31 +1,28 @@
 # Zigware (PoC)
 
-A proof-of-concept desktop app: web UI + Zig backend for heavy compute, with
-`WKWebView` bound directly from Zig (no Swift shim, no webview library). Built for
-privacy and a safe-scaling compute model.
+A web UI driving a Zig backend for heavy compute. Zigware binds WKWebView straight from Zig, with no Swift shim or third-party webview library.
 
 ## Status
-PoC, macOS-only. Demonstrates: button -> 300 MB SHA-256 in Zig on a worker thread ->
-live progress -> result, UI never freezes.
+PoC, macOS-only. A button kicks off a 300 MB SHA-256 in Zig on a worker thread, streams live progress, and returns the result while the window stays responsive.
 
 ## Run
     zig build run
 
 ## Test
-    zig build test          # logic unit + integration tests (CI gate)
-    bun test                # JS shim contract + hardening + JS-eval round-trip
-    bash scripts/coverage.sh  # kcov HTML report if kcov installed, else documented fallback
+    zig build test            # logic unit + integration tests
+    bun test                  # JS shim contract + hardening + JS-eval round-trip
+    bash scripts/coverage.sh  # kcov HTML report, or a documented fallback if kcov is absent
 
-(`zig build test --fuzz` is unavailable in the Zig 0.16.0_1 toolchain; see docs/SMOKE.md.)
+`zig build test --fuzz` does not work on the Zig 0.16.0_1 toolchain; see docs/SMOKE.md.
 
-## Security posture (seeded for the future framework)
-- `app://` custom scheme serving an embedded frontend, with a strict path allowlist (unknown -> 404)
+## Security posture
+- `app://` custom scheme serving an embedded frontend, strict path allowlist (unknown path returns 404)
 - strict CSP (`default-src 'self'; script-src 'self'`), zero inline JS
-- command-name allowlist (frontend can only reach registered Zig commands)
-- all Zig->JS data passed as JSON literals, never string-concatenated (proven by the JS-eval round-trip test)
-- bounded worker pool AND bounded job queue (no unbounded resource growth under load)
+- command-name allowlist checked before any work runs
+- every Zig-to-JS payload crosses as a JSON literal, never string-concatenated; the JS-eval round-trip test proves it
+- bounded worker pool and bounded job queue
 - per-job cancel flag wired through the pure hash path
-- ordered shutdown (alive=false -> join workers -> drain main queue -> free)
-- dev affordances (Web Inspector) gated to debug builds only
+- ordered shutdown: flip alive off, join workers, drain the main queue, free
+- Web Inspector stays gated to debug builds
 
-See `docs/SMOKE.md` for the manual glue-verification checklist.
+See `docs/SMOKE.md` for the manual verification checklist.
