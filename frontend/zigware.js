@@ -45,7 +45,13 @@ window.Zigware = {
     const p = this._pending.get(id);
     if (!p) return;
     p.pending++;
-    fetch(`app://__zigware_stream/${id}/${seq}`)
+    // Path-based URL: __zigware_stream is a PATH segment under the app://localhost
+    // origin (NOT the URL host), so the path reaching the scheme handler is
+    // /__zigware_stream/<id>/<seq> — which is what serveStream's parseStreamPath
+    // and the reserved-route guard (isReservedRoute) both match. A host-based
+    // app://__zigware_stream/... URL would arrive with path /<id>/<seq>, which the
+    // reserved-route guard would NOT catch.
+    fetch(`app://localhost/__zigware_stream/${id}/${seq}`)
       .then((r) => r.arrayBuffer())
       .then((buf) => {
         p.chunks[seq] = new Uint8Array(buf);
