@@ -59,7 +59,7 @@ fn originTrusted(origins: []const OriginPattern, origin: []const u8, is_debug: b
 /// fixed (see its deny-by-default comment). Match `app://localhost/` (with a path)
 /// or the bare `app://localhost` origin, nothing else. An empty, opaque,
 /// javascript:, or foreign origin does not match.
-fn isAppScheme(origin: []const u8) bool {
+pub fn isAppScheme(origin: []const u8) bool {
     return std.mem.startsWith(u8, origin, "app://localhost/") or
         std.mem.eql(u8, origin, "app://localhost");
 }
@@ -179,16 +179,57 @@ test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
         .{ .dev_url = "http://localhost:1420" },
         .{ .https_exact = "https://x.example" },
     };
+    // Known-good seeds: mutations of these land near the boundary and reliably hit
+    // the accept branches, giving the tight oracle real work to do.
+    const seeds = [_][]const u8{
+        "app://localhost",
+        "app://localhost/x",
+        "http://localhost:1420",
+        "https://x.example",
+    };
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0xC0FFEE);
     const rand = prng.random();
+    var accepted_hits: usize = 0;
     var it: usize = 0;
     while (it < 10_000) : (it += 1) {
         var buf: [64]u8 = undefined;
-        const n = rand.uintLessThan(usize, buf.len);
-        rand.bytes(buf[0..n]);
-        const accepted = originTrusted(&origins, buf[0..n], true);
+        var candidate: []u8 = undefined;
+        var n: usize = undefined;
+        // Half the time: raw random bytes (reject-path stress, keep this).
+        // Half the time: mutate a known-good seed to land near the boundary.
+        if (rand.uintLessThan(u8, 2) == 0) {
+            n = rand.uintLessThan(usize, buf.len);
+            rand.bytes(buf[0..n]);
+            candidate = buf[0..n];
+        } else {
+            const seed = seeds[rand.uintLessThan(usize, seeds.len)];
+            @memcpy(buf[0..seed.len], seed);
+            n = seed.len;
+            // Apply a small random mutation: truncate, append, or flip a byte.
+            switch (rand.uintLessThan(u8, 3)) {
+                0 => { // truncate by 1..3 bytes
+                    const k = rand.uintLessThan(usize, 3) + 1;
+                    n = if (n > k) n - k else 0;
+                },
+                1 => { // append a random byte (if room)
+                    if (n < buf.len) {
+                        buf[n] = rand.int(u8);
+                        n += 1;
+                    }
+                },
+                else => { // flip one byte at a random position
+                    if (n > 0) {
+                        const pos = rand.uintLessThan(usize, n);
+                        buf[pos] = rand.int(u8);
+                    }
+                },
+            }
+            candidate = buf[0..n];
+        }
+        const accepted = originTrusted(&origins, candidate, true);
         if (accepted) {
-            const o = buf[0..n];
+            accepted_hits += 1;
+            const o = candidate;
             // SECURITY INVARIANT: only the exact known-trusted origin shapes may be
             // accepted. Any other byte sequence must be rejected. If this fires, it
             // is a REAL bypass in originTrusted; do NOT weaken the oracle.
@@ -205,4 +246,8 @@ test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
             try std.testing.expect(ok);
         }
     }
+    // Teeth check: the mutation strategy must have reached the accept branch a
+    // non-trivial number of times. If this fails, the fuzz vocabulary stopped
+    // covering the trust set (e.g. all seeds rejected), which is itself a bug.
+    try std.testing.expect(accepted_hits > 0);
 }

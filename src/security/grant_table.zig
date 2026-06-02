@@ -154,6 +154,17 @@ pub const GrantTable = struct {
 
     /// G1 input: origins trusted for this window. Empty slice means app_scheme only.
     pub fn originsFor(self: *const GrantTable, label: []const u8) []const OriginPattern {
+        // INERT-GUARD: assert at most one matched cap carries non-empty origins for
+        // this label. Multi-cap origin merge is deferred to D (deviation #5 cluster),
+        // inert in v0.1.0 (one cap per window).
+        {
+            var n: usize = 0;
+            for (self.caps) |c| {
+                if (!self.windowMatches(c, label)) continue;
+                if (c.origins.len > 0) n += 1;
+            }
+            std.debug.assert(n <= 1); // multi-cap origin merge not implemented (deviation #5)
+        }
         for (self.caps) |c| {
             if (self.windowMatches(c, label)) {
                 if (c.origins.len > 0) return c.origins;
@@ -281,7 +292,9 @@ test "https origin dropped when allowRemoteContent off; emitted as diagnostic" {
     defer gt.deinit();
     try std.testing.expectEqual(@as(usize, 0), gt.originsFor("main").len); // dropped -> empty -> app_scheme only
     var saw = false;
-    for (diags.list.items) |d| if (d.code == .fuse_requires_capability) { saw = true; };
+    for (diags.list.items) |d| if (d.code == .fuse_requires_capability) {
+        saw = true;
+    };
     try std.testing.expect(saw);
 }
 

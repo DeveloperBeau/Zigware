@@ -1,6 +1,7 @@
 const std = @import("std");
 const cap = @import("capability.zig");
 const backend_mod = @import("../platform/backend.zig");
+const gates = @import("gates.zig");
 const OriginPattern = cap.OriginPattern;
 
 /// Wire A's reserved onNavigation. Returns A's NavigationDecision (C does not
@@ -12,7 +13,7 @@ pub fn decideNavigation(origins: []const OriginPattern, target: []const u8, is_d
     // cancelled (the bug the current app.zig nav guard fixed). Allow app://localhost
     // (with a path) or the bare app://localhost, independent of `origins`, so a
     // window with an empty grant set can still load its own content.
-    if (std.mem.startsWith(u8, target, "app://localhost/") or std.mem.eql(u8, target, "app://localhost")) return .allow;
+    if (gates.isAppScheme(target)) return .allow;
     for (origins) |o| switch (o) {
         .app_scheme => {}, // handled above
         .dev_url => |u| if (is_debug and std.mem.eql(u8, u, target)) return .allow,
