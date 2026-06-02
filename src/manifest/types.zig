@@ -111,3 +111,144 @@ test "Diagnostics.add surfaces OOM and hasErrors reflects error-level items" {
     try warn_only.add(std.testing.allocator, .{ .code = .dev_url_without_command, .is_error = false, .message = "w", .path = null });
     try std.testing.expect(!warn_only.hasErrors());
 }
+
+/// The app manifest. This type IS the schema: std.zon parses zigware.zon
+/// directly into it, and an unknown or mistyped key becomes a parse error
+/// against this struct rather than a silent ignore.
+pub const Manifest = struct {
+    /// Reverse-DNS bundle identifier, e.g. "com.example.app". Required.
+    identifier: []const u8,
+    /// Display name. Maps to CFBundleName on macOS.
+    productName: []const u8,
+    /// Semver string, e.g. "0.1.0". Maps to CFBundleShortVersionString.
+    version: []const u8,
+
+    app: App = .{},
+    security: Security = .{},
+    build: Build = .{},
+    bundle: Bundle = .{},
+};
+
+pub const App = struct {
+    /// Default window options applied to any window that omits a field.
+    windowDefaults: WindowDefaults = .{},
+    /// Declared windows. Each has a STABLE LABEL (security model section 6).
+    /// At least one window with label "main" is required.
+    windows: []const Window = &.{},
+    /// Platform-aware quit policy. Replaces Electron's hand-written
+    /// process.platform !== 'darwin' boilerplate. The macOS default is
+    /// keep_running_on_last_close.
+    quitOnLastWindowClosed: QuitPolicy = .keep_running_on_last_close,
+    /// Fallback timeout (ms) after which a window is shown even if it never
+    /// signals first paint, so show:false can never strand a window hidden.
+    windowShowFallbackMs: u32 = 5000,
+};
+
+/// Defined once here; imported by E (window lifecycle) and by A's lifecycle
+/// policy. macOS default = keep_running_on_last_close.
+pub const QuitPolicy = enum {
+    /// Stay running when the last window closes (macOS default behavior).
+    keep_running_on_last_close,
+    /// Quit the process when the last window closes.
+    quit_on_last_close,
+    /// Never quit implicitly; the app exits only on an explicit request.
+    explicit,
+};
+
+pub const WindowDefaults = struct {
+    width: u32 = 800,
+    height: u32 = 600,
+    /// Hidden until first paint to avoid the white flash (A's show-on-ready).
+    show: bool = false,
+    /// macOS titlebar style (default | hidden | hidden_inset).
+    titleBarStyle: TitleBarStyle = .default,
+    decorations: bool = true,
+};
+
+pub const Window = struct {
+    /// Stable identifier capabilities bind to. NOT the title (titles are
+    /// JS-mutable and spoofable; security model section 6). Required, unique.
+    label: []const u8,
+    /// Initial URL. null means derive: devUrl in dev, app:// in prod.
+    url: ?[]const u8 = null,
+    title: []const u8,
+    width: u32 = 800,
+    height: u32 = 600,
+    decorations: bool = true,
+    titleBarStyle: TitleBarStyle = .default,
+    /// Hidden until first paint to avoid the white flash (A's show-on-ready).
+    show: bool = false,
+};
+
+pub const TitleBarStyle = enum { default, hidden, hidden_inset };
+
+pub const Security = struct {
+    /// Capability identifiers referenced from src/capabilities/*.zon.
+    /// Resolution and enforcement is sub-project C; D validates that each
+    /// referenced identifier resolves to a capability file.
+    capabilities: []const []const u8 = &.{},
+    /// Content-Security-Policy. F performs compile-time script-hash injection
+    /// for own scripts; the author declares only trusted hosts here.
+    csp: Csp = .{},
+    /// Build-time fuses. All default OFF/safe. Compiled into the binary as
+    /// comptime constants; an auditor reads the whole native attack surface
+    /// here. Reuses the canonical Fuses type defined above.
+    fuses: Fuses = .{},
+};
+
+pub const Csp = struct {
+    /// Directive -> sources. Assembled into the policy header string by F.
+    /// Default is the model's strict baseline.
+    defaultSrc: []const []const u8 = &.{"'self'"},
+    scriptSrc: []const []const u8 = &.{"'self'"},
+    styleSrc: []const []const u8 = &.{"'self'"},
+    connectSrc: []const []const u8 = &.{"'self'"},
+    imgSrc: []const []const u8 = &.{"'self'"},
+};
+
+pub const Build = struct {
+    /// Command run before `dev` (e.g. "bun run dev"). Frontend-toolchain
+    /// agnostic; keeps the npm/Vite ecosystem unchanged.
+    beforeDevCommand: ?[]const u8 = null,
+    /// Command run before `build` (e.g. "bun run build").
+    beforeBuildCommand: ?[]const u8 = null,
+    /// Dev server URL. A trusted origin ONLY in dev builds (security model
+    /// section 12, F). e.g. "http://localhost:5173".
+    devUrl: ?[]const u8 = null,
+    /// Directory of built frontend assets embedded for release (app://).
+    frontendDist: []const u8 = "dist",
+};
+
+pub const Bundle = struct {
+    /// Bundle targets for sub-project G. v0.1.0 honors .app and .dmg.
+    targets: []const Target = &.{ .app, .dmg },
+    /// Paths to icon files (.icns generated by G).
+    icon: []const []const u8 = &.{},
+    category: ?[]const u8 = null,
+    copyright: ?[]const u8 = null,
+    macos: MacOsBundle = .{},
+};
+
+pub const Target = enum { app, dmg };
+
+pub const MacOsBundle = struct {
+    /// codesign identity, e.g. "Developer ID Application: Name (TEAMID)".
+    signingIdentity: ?[]const u8 = null,
+    hardenedRuntime: bool = true,
+    /// Path to entitlements.plist.
+    entitlements: ?[]const u8 = null,
+    /// notarytool provider short name / team id.
+    providerShortName: ?[]const u8 = null,
+    minimumSystemVersion: []const u8 = "11.0",
+};
+
+test "Manifest defaults fill a minimal manifest" {
+    const m = Manifest{ .identifier = "com.example.app", .productName = "App", .version = "0.1.0" };
+    try std.testing.expectEqual(@as(u32, 800), m.app.windowDefaults.width);
+    try std.testing.expectEqual(QuitPolicy.keep_running_on_last_close, m.app.quitOnLastWindowClosed);
+    try std.testing.expect(!m.security.fuses.allowShell);
+    try std.testing.expectEqualStrings("dist", m.build.frontendDist);
+    try std.testing.expectEqual(@as(usize, 2), m.bundle.targets.len);
+    try std.testing.expect(m.bundle.macos.hardenedRuntime);
+    try std.testing.expectEqualStrings("'self'", m.security.csp.scriptSrc[0]);
+}
