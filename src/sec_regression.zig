@@ -19,6 +19,10 @@ const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
 const protocol = @import("protocol.zig");
 const assets = @import("assets.zig");
+const fixtures = @import("security_test_fixtures.zig");
+const security_gates = @import("security/gates.zig");
+
+const dummy_bases = security_gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -33,7 +37,12 @@ const Harness = struct {
 
     fn init() !Harness {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-        const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
+        const grants = try fixtures.buildTestGrants(std.testing.allocator);
+        const app = App(NullBackend).initWithGrants(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+            grants.deinit();
+            std.testing.allocator.destroy(grants);
+            return err;
+        };
         const main_id = backend.windowId(app.window);
         return .{ .backend = backend, .app = app, .main_id = main_id };
     }
@@ -56,12 +65,14 @@ const TestBridge = struct {
     bridge: *Bridge(NullBackend),
     window_id: u64,
     state: *builtin.State,
+    grants: *fixtures.GrantTable,
 
     fn init() !TestBridge {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
         const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
         const state = try std.testing.allocator.create(builtin.State);
         state.* = .{};
+        const grants = try fixtures.buildTestGrants(std.testing.allocator);
         const bridge = try Bridge(NullBackend).init(
             std.testing.allocator,
             std.testing.io,
@@ -71,8 +82,12 @@ const TestBridge = struct {
             builtin.Commands,
             state,
             .{ .worker_count = 4 }, // deterministic concurrency (L9)
+            grants,
+            dummy_bases,
+            std.Io.Dir.cwd(),
+            false,
         );
-        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state };
+        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state, .grants = grants };
     }
     fn send(self: *TestBridge, text: []const u8) void {
         self.bridge.handleMessage(self.window_id, "app://localhost", text);
@@ -83,6 +98,8 @@ const TestBridge = struct {
     }
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers
+        self.grants.deinit();
+        std.testing.allocator.destroy(self.grants);
         std.testing.allocator.destroy(self.state);
         self.backend.markJoined(); // bridge-only test owns the handshake
         self.backend.deinit();
@@ -458,7 +475,8 @@ test "Bridge.deinit while workers are mid-flight does not UAF" {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
     var state = builtin.State{};
-    const bridge = try Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 });
+    const grants = try fixtures.buildTestGrants(std.testing.allocator);
+    const bridge = try Bridge(NullBackend).init(std.testing.allocator, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 }, grants, dummy_bases, std.Io.Dir.cwd(), false);
     // Submit jobs with NO settle, then deinit immediately. bridge.deinit joins
     // the pool; backend.deinit then drains and frees. No UAF, no leak. The
     // UAF-safety property is independent of per-job size, so use the smallest
@@ -470,6 +488,8 @@ test "Bridge.deinit while workers are mid-flight does not UAF" {
         bridge.handleMessage(0, "app://localhost", text);
     }
     bridge.deinit(); // joins workers (does NOT call markJoined)
+    grants.deinit();
+    std.testing.allocator.destroy(grants);
     backend.pumpMain(); // drain hops the joined workers enqueued
     backend.markJoined(); // direct-bridge test owns the handshake (App.shutdown would do this)
     backend.deinit();
@@ -522,6 +542,12 @@ test "OOM: pumpMain reservation failure leaves pending intact, no double-free" {
 }
 
 test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
+    // The bound 24 must stay ABOVE the decode-allocation window. Construction
+    // (NullBackend.init + createWindow + buildTestGrants + Bridge.init) consumes
+    // the first ~10 ordinals; handleMessage's decode allocates ordinals ~10..17.
+    // 24 spans that with headroom. If you GROW construction (e.g. add a field that
+    // allocates in Bridge/App init), bump this bound so the decode-OOM path stays
+    // covered (otherwise coverage silently regresses to construction-only OOM).
     var fail_at: usize = 0;
     while (fail_at < 24) : (fail_at += 1) {
         var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_at });
@@ -533,13 +559,24 @@ test "OOM: handleMessage JSON parse failure emits nothing and leaks nothing" {
             continue;
         };
         var state = builtin.State{};
-        const bridge = Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 2 }) catch {
+        // The grants build on the SAME failing allocator: a compile-OOM is just
+        // another injected-OOM path, handled like the init failure below (continue).
+        const grants = fixtures.buildTestGrants(a) catch {
+            backend.markJoined();
+            backend.deinit();
+            continue;
+        };
+        const bridge = Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 2 }, grants, dummy_bases, std.Io.Dir.cwd(), false) catch {
+            grants.deinit();
+            a.destroy(grants);
             backend.markJoined();
             backend.deinit();
             continue;
         };
         defer {
             bridge.deinit();
+            grants.deinit();
+            a.destroy(grants);
             backend.markJoined();
             backend.pumpMain();
             backend.deinit();
@@ -572,7 +609,15 @@ test "I2: a 1000-message flood stays within a bounded transient budget (concurre
     defer std.debug.assert(dbg.deinit() == .ok);
     const a = dbg.allocator();
     const backend = try NullBackend.init(a, std.testing.io);
-    const app = try App(NullBackend).init(a, std.testing.io, backend);
+    // Grant sha256 so the flood reaches reserveCall and the G5 count-cap sheds the
+    // excess as "busy" (core:default would deny every sha256 at G2 before G5).
+    // Build on `a` so the App (owns_grants=true) frees them with the same allocator.
+    const grants = try fixtures.buildTestGrants(a);
+    const app = App(NullBackend).initWithGrants(a, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+        grants.deinit();
+        a.destroy(grants);
+        return err;
+    };
     const main_id = backend.windowId(app.window);
     defer {
         app.deinit();

@@ -5,6 +5,10 @@ const jobs = @import("jobs.zig");
 const backend_mod = @import("platform/backend.zig");
 const ctxmod = @import("command_ctx.zig");
 const registry = @import("registry.zig");
+const security = struct {
+    const gates = @import("security/gates.zig");
+    const grant = @import("security/grant_table.zig");
+};
 
 pub const BridgeOptions = struct {
     /// Explicit worker count so tests are deterministic across CI hardware.
@@ -61,6 +65,15 @@ pub fn Bridge(comptime B: type) type {
         // resolves a label through this; E generalizes it to multi-window.
         main_window_id: u64,
 
+        // C's capability state (G1/G2/G4). The bridge ALWAYS holds a non-null
+        // immutable GrantTable and ALWAYS evaluates (fail-closed; no pass-through).
+        // base_dir/bases are a real opened dir + base tokens for the path scope
+        // engine; v0.1.0 commands are .none, so they are valid but unused live.
+        grants: *const security.grant.GrantTable,
+        bases: security.gates.Bases,
+        base_dir: std.Io.Dir,
+        is_debug: bool,
+
         // Per-id binary ring buffer (full machinery lands here so the sink
         // closure, releaseCall, and deinit can reference it; Task 7 only adds
         // serveStream/parseStreamPath and the registry Bytes branch).
@@ -82,6 +95,10 @@ pub fn Bridge(comptime B: type) type {
             comptime UserCommands: type,
             state: *State,
             opts: BridgeOptions,
+            grants: *const security.grant.GrantTable,
+            bases: security.gates.Bases,
+            base_dir: std.Io.Dir,
+            is_debug: bool,
         ) !*Self {
             const self = try alloc.create(Self);
             errdefer alloc.destroy(self);
@@ -95,6 +112,10 @@ pub fn Bridge(comptime B: type) type {
                 .window = window,
                 .pool = undefined,
                 .main_window_id = backend.windowId(window),
+                .grants = grants,
+                .bases = bases,
+                .base_dir = base_dir,
+                .is_debug = is_debug,
                 .state_ptr = state,
                 .allow = Reg.allowlist(),
                 .dispatchFn = struct {
@@ -138,9 +159,6 @@ pub fn Bridge(comptime B: type) type {
         /// terminal emission (resolve or reject). Transient allocations use a
         /// per-message arena rooted on self.alloc.
         pub fn handleMessage(self: *Self, window_id: u64, origin: []const u8, text: []const u8) void {
-            _ = window_id;
-            _ = origin;
-
             // Layer-2 message-size cap (H1). onMessageImp enforces it first at
             // the objc seam; this is the defense-in-depth check for any caller.
             if (text.len > protocol.MAX_MESSAGE_LEN) {
@@ -168,18 +186,43 @@ pub fn Bridge(comptime B: type) type {
                 return;
             }
 
+            // G1/G2/G4 (C). Runs after the allowlist (G3) and BEFORE the G5
+            // reservation, so a denied request never reserves a budget slot.
+            // window_id resolves to the single "main" label in v0.1.0 (B's map).
+            const label = self.labelFor(window_id);
+            const decision = security.gates.evaluate(self.grants, .{
+                .window_label = label,
+                .origin = origin,
+                .command = msg.cmd,
+                .scope_input = .none, // v0.1.0 commands carry no scoped arg
+                .is_debug = self.is_debug,
+            }, self.bases, self.io, self.base_dir);
+            switch (decision) {
+                .allow => {},
+                .deny => |r| {
+                    self.emitErrorReject(msg.id, r.code, r.message, null);
+                    return; // no reservation taken
+                },
+            }
+
             // G5: reserve a slot under the budget. reserveCall emits the reject
             // itself on failure (duplicate id, budget exceeded, or OOM).
             if (!self.reserveCall(msg.id)) return;
-
-            // C's G1/G2/G4 hook here in the future (origin trusted, window granted,
-            // args in scope). Today a pass-through.
 
             self.dispatchFn(self, msg.cmd, msg.id, msg.args_json);
         }
 
         fn workerCount() usize {
             return @min(@max(std.Thread.getCpuCount() catch 4, 1), 8);
+        }
+
+        /// Resolve a window id to its stable label. v0.1.0 has the single attested
+        /// "main" window (A ships it, B seeded main_window_id). Any id maps to
+        /// "main"; E generalizes this to a real windowId->label map.
+        fn labelFor(self: *Self, window_id: u64) []const u8 {
+            _ = self;
+            _ = window_id;
+            return "main";
         }
 
         /// Best-effort scan for a numeric `"id": N` in raw (possibly malformed)
@@ -453,18 +496,23 @@ pub fn Bridge(comptime B: type) type {
 
 const NullBackend = @import("platform/null.zig").NullBackend;
 const builtin = @import("commands/builtin.zig");
+const fixtures = @import("security_test_fixtures.zig");
+
+const dummy_bases = security.gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
 const TestBridge = struct {
     backend: *NullBackend,
     bridge: *Bridge(NullBackend),
     window_id: u64,
     state: *builtin.State,
+    grants: *fixtures.GrantTable,
 
     fn init() !TestBridge {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
         const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
         const state = try std.testing.allocator.create(builtin.State);
         state.* = .{};
+        const grants = try fixtures.buildTestGrants(std.testing.allocator);
         const bridge = try Bridge(NullBackend).init(
             std.testing.allocator,
             std.testing.io,
@@ -474,6 +522,10 @@ const TestBridge = struct {
             builtin.Commands,
             state,
             .{ .worker_count = 4 }, // deterministic concurrency (L9)
+            grants,
+            dummy_bases,
+            std.Io.Dir.cwd(),
+            false,
         );
         // Wire a scheme callback so simulateSchemeRequestSource(.stream_scheme,...)
         // reaches the bridge's serveStream (send() calls handleMessage directly,
@@ -485,7 +537,7 @@ const TestBridge = struct {
             .onLifecycle = noopLifecycle,
             .onNavigation = noopNavigation,
         });
-        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state };
+        return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state, .grants = grants };
     }
 
     fn schemeReq(ctx: *anyopaque, req: backend_mod.Request) backend_mod.Response {
@@ -512,6 +564,8 @@ const TestBridge = struct {
 
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers; backend.deinit asserts joined
+        self.grants.deinit();
+        std.testing.allocator.destroy(self.grants);
         std.testing.allocator.destroy(self.state);
         self.backend.markJoined();
         self.backend.deinit();
@@ -634,7 +688,8 @@ test "I2: a flood stays within a bounded transient memory budget (concurrency-ca
     var state = builtin.State{};
     const backend = try NullBackend.init(a, std.testing.io);
     const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
-    const bridge = try Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 });
+    const grants = try fixtures.buildTestGrants(a);
+    const bridge = try Bridge(NullBackend).init(a, std.testing.io, backend, win, builtin.State, builtin.Commands, &state, .{ .worker_count = 4 }, grants, dummy_bases, std.Io.Dir.cwd(), false);
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var buf: [160]u8 = undefined;
@@ -644,6 +699,8 @@ test "I2: a flood stays within a bounded transient memory budget (concurrency-ca
     bridge.drainForTest();
     backend.pumpMain();
     bridge.deinit();
+    grants.deinit();
+    a.destroy(grants);
     backend.markJoined();
     backend.deinit();
 }
@@ -658,18 +715,18 @@ test "handleMessage tolerates extreme window_id values" {
     try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(2));
 }
 
-test "handleMessage tolerates empty and exotic origin values" {
-    // TODO(C): tighten when the origin gate (G1) lands; A ignores origin so all
-    // three resolve here. C deletes or inverts these assertions.
+test "G1: empty, port-bearing, and foreign origins are denied; app://localhost is allowed" {
     var t = try TestBridge.init();
     defer t.deinit();
     t.bridge.handleMessage(t.window_id, "", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     t.bridge.handleMessage(t.window_id, "app://localhost:5173", "{\"id\":2,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     t.bridge.handleMessage(t.window_id, "javascript:alert(1)", "{\"id\":3,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    t.bridge.handleMessage(t.window_id, "app://localhost", "{\"id\":4,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     t.settle();
-    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(1));
-    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(2));
-    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(3));
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(1)); // empty origin denied
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(2)); // app://localhost:5173 is a different origin
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(3)); // javascript: denied
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(4)); // app://localhost allowed (sha256 granted by test:default)
 }
 
 test "duplicate id is rejected and does not corrupt the inflight budget" {
