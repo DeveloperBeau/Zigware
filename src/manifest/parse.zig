@@ -114,12 +114,16 @@ pub fn parseAtBuild(
 /// Path-driven sibling of `parseAtBuild`. The base manifest path and any
 /// per-OS override paths are supplied explicitly so the build graph can pin
 /// every input via `addFileArg` (Task 9's codegen uses this entry point).
-/// The override selection scans basenames in `override_paths`.
+/// The override selection scans basenames in `override_paths`. `capability_ids`
+/// is the present-set the validator cross-checks `security.capabilities`
+/// against; the caller pins capability files via `addFileArg` and extracts
+/// their basenames before calling.
 pub fn parseAtBuildFromPaths(
     gpa: std.mem.Allocator,
     io: std.Io,
     base_path: []const u8,
     override_paths: []const []const u8,
+    capability_ids: []const []const u8,
     target_os: std.Target.Os.Tag,
     optimize: std.builtin.OptimizeMode,
     diag: *Diagnostics,
@@ -162,18 +166,12 @@ pub fn parseAtBuildFromPaths(
         }
     }
 
-    // The path-driven entry point does not enumerate src/capabilities/. Task 9
-    // wiring will pin capability files via addFileArg and (in a future task)
-    // thread their ids through; for v0.1.0 the present-set is empty here. The
-    // validate stub does not consult the ids, so this is correct for Task 5.
-    const empty_caps: []const []const u8 = &.{};
-
     // Parse the base.
     var zon_diag: std.zon.parse.Diagnostics = .{};
     defer zon_diag.deinit(gpa);
     const base = std.zon.parse.fromSliceAlloc(Manifest, gpa, base_src, &zon_diag, .{}) catch |err| switch (err) {
         error.ParseZon => {
-            try mirrorZonDiagnostic(gpa, diag, &zon_diag);
+            try mirrorZonDiagnostic(gpa, diag, &zon_diag, base_path, "base manifest failed to parse");
             return error.ParseFailed;
         },
         error.OutOfMemory => return error.OutOfMemory,
@@ -213,7 +211,7 @@ pub fn parseAtBuildFromPaths(
         defer ov_zon_diag.deinit(gpa);
         override_value = std.zon.parse.fromSliceAlloc(OverrideManifest, gpa, ov_src, &ov_zon_diag, .{}) catch |err| switch (err) {
             error.ParseZon => {
-                try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag);
+                try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag, op, "per-OS override failed to parse");
                 return error.ParseFailed;
             },
             error.OutOfMemory => return error.OutOfMemory,
@@ -228,7 +226,7 @@ pub fn parseAtBuildFromPaths(
     // takes ownership of.
     base_owned = null;
 
-    if (!(try validate.validate(gpa, merged, optimize, empty_caps, diag)) or diag.hasErrors()) {
+    if (!(try validate.validate(gpa, merged, optimize, capability_ids, diag)) or diag.hasErrors()) {
         freeManifest(gpa, merged);
         return error.ValidationFailed;
     }
@@ -374,29 +372,31 @@ fn mirrorZonDiagnostic(
     gpa: std.mem.Allocator,
     out: *Diagnostics,
     src: *const std.zon.parse.Diagnostics,
+    file_path: []const u8,
+    message: []const u8,
 ) std.mem.Allocator.Error!void {
-    // Render the std.zon diagnostic stream as a single allocated string and
-    // attach it as the `path` of one mirrored Diagnostic. The Diagnostic
-    // contract says `path` is heap-built and Diagnostics.deinit frees it.
+    // Render the std.zon diagnostic stream into a path string of the form
+    // "<file_path>: <zon-diag>". The Diagnostic contract says `path` is
+    // heap-built and Diagnostics.deinit frees it; `message` is a static
+    // template owned by the call site.
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
-    src.format(&aw.writer) catch |err| switch (err) {
-        error.WriteFailed => {
-            // Allocating writer surfaces OOM through writer.err.
-            return error.OutOfMemory;
-        },
+    // Allocating writer surfaces OOM through writer.err; the only writer
+    // error returned is WriteFailed, which we mirror as OutOfMemory.
+    aw.writer.writeAll(file_path) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
     };
-    const rendered = aw.writer.buffered();
-    const path_owned = try gpa.dupe(u8, rendered);
+    aw.writer.writeAll(": ") catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+    };
+    src.format(&aw.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+    };
+    const path_owned = try gpa.dupe(u8, aw.writer.buffered());
     errdefer gpa.free(path_owned);
     try out.add(gpa, .{
-        .code = .invalid_version, // a generic non-zero error code; v0.1.0
-        // does not have a dedicated `zon_parse_error` code, and adding one
-        // is out of scope for Task 5. invalid_version is the catch-all code
-        // closest to "the base file did not parse"; the mirrored message in
-        // `path` carries the actual zon error text.
-        .is_error = true,
-        .message = "zigware.zon failed to parse",
+        .code = .zon_parse_error,
+        .message = message,
         .path = path_owned,
     });
 }
@@ -417,7 +417,7 @@ fn parsePipeline(
     defer zon_diag.deinit(gpa);
     const base = std.zon.parse.fromSliceAlloc(Manifest, gpa, base_src, &zon_diag, .{}) catch |err| switch (err) {
         error.ParseZon => {
-            try mirrorZonDiagnostic(gpa, diag, &zon_diag);
+            try mirrorZonDiagnostic(gpa, diag, &zon_diag, "zigware.zon", "base manifest failed to parse");
             return error.ParseFailed;
         },
         error.OutOfMemory => return error.OutOfMemory,
@@ -459,7 +459,7 @@ fn parsePipeline(
         defer ov_zon_diag.deinit(gpa);
         override_value = std.zon.parse.fromSliceAlloc(OverrideManifest, gpa, ov_src, &ov_zon_diag, .{}) catch |err| switch (err) {
             error.ParseZon => {
-                try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag);
+                try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag, ov_name, "per-OS override failed to parse");
                 return error.ParseFailed;
             },
             error.OutOfMemory => return error.OutOfMemory,
@@ -516,6 +516,7 @@ test "parseAtBuild returns FileNotFound when zigware.zon is absent" {
     );
 }
 
+// TODO(D-Task-7): rewrite this to assert m.productName == "LinuxProduct" after merge.merge lands.
 test "parseAtBuildFromPaths selects the override matching target_os" {
     // Setup: base is valid; the linux override is malformed; the macos override
     // is valid. With target_os=.linux, the malformed linux override must be the
@@ -540,6 +541,7 @@ test "parseAtBuildFromPaths selects the override matching target_os" {
             io,
             "tests/manifest/override-select/zigware.zon",
             &overrides,
+            &.{},
             .linux,
             .Debug,
             &diag,
@@ -564,6 +566,7 @@ test "parseAtBuildFromPaths emits override_for_target_dropped per supplied overr
         io,
         "tests/manifest/override/zigware.zon",
         &overrides,
+        &.{},
         .freebsd,
         .Debug,
         &diag,
@@ -591,6 +594,7 @@ test "parseAtBuildFromPaths returns ParseFailed with one mirrored zon Diagnostic
             gpa,
             io,
             "tests/manifest/malformed/zigware.zon",
+            &.{},
             &.{},
             .macos,
             .Debug,

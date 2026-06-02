@@ -22,6 +22,7 @@ pub const Fuses = struct {
 /// parse). Both streams read uniformly because they share this vocabulary.
 pub const Code = enum {
     // --- D-emitted (manifest validation) ---
+    zon_parse_error,
     missing_identifier,
     invalid_identifier,
     invalid_version,
