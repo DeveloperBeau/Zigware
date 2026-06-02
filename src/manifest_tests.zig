@@ -53,7 +53,7 @@ test "fuzz parser+validator: deterministic teeth on parse/validate/valid arms" {
         ".{ .identifier = \"com.example.a\", .productName = \"A\", .version = \"0.1.0\", .app = .{ .windows = .{ .{ .label = \"main\", .title = \"M\" } } } }";
 
     // Multiple of 16 so the threshold math `iters / 16` is exact.
-    const iters: usize = 1024;
+    const iters: usize = 10240;
 
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();

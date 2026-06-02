@@ -28,19 +28,39 @@ test "embedded() equals parseAtBuild over the same source fixture" {
     // embedded() is comptime-static; never freed.
     const e = parse.embedded();
 
-    // Required fields.
+    // Required identity fields.
     try std.testing.expectEqualStrings(e.identifier, parsed.identifier);
     try std.testing.expectEqualStrings(e.productName, parsed.productName);
     try std.testing.expectEqualStrings(e.version, parsed.version);
 
-    // App.windows shape.
+    // --- app ---
     try std.testing.expectEqual(e.app.windows.len, parsed.app.windows.len);
     if (e.app.windows.len > 0) {
         try std.testing.expectEqualStrings(e.app.windows[0].label, parsed.app.windows[0].label);
         try std.testing.expectEqualStrings(e.app.windows[0].title, parsed.app.windows[0].title);
     }
+    try std.testing.expectEqual(e.app.quitOnLastWindowClosed, parsed.app.quitOnLastWindowClosed);
+    try std.testing.expectEqual(e.app.windowDefaults.width, parsed.app.windowDefaults.width);
+    try std.testing.expectEqual(e.app.windowShowFallbackMs, parsed.app.windowShowFallbackMs);
 
-    // Defaulted leaves that the validator depends on.
+    // --- security ---
     try std.testing.expectEqual(e.security.fuses.allowShell, parsed.security.fuses.allowShell);
+    try std.testing.expectEqual(e.security.fuses.allowRemoteContent, parsed.security.fuses.allowRemoteContent);
+    try std.testing.expectEqual(e.security.csp.scriptSrc.len, parsed.security.csp.scriptSrc.len);
+    if (e.security.csp.scriptSrc.len > 0) {
+        try std.testing.expectEqualStrings(e.security.csp.scriptSrc[0], parsed.security.csp.scriptSrc[0]);
+    }
+
+    // --- build ---
     try std.testing.expectEqualStrings(e.build.frontendDist, parsed.build.frontendDist);
+    // Optional left at its default-null: both sides must agree it is absent.
+    try std.testing.expectEqual(@as(?[]const u8, null), e.build.devUrl);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.build.devUrl);
+
+    // --- bundle ---
+    try std.testing.expectEqual(e.bundle.targets.len, parsed.bundle.targets.len);
+    try std.testing.expectEqual(e.bundle.macos.hardenedRuntime, parsed.bundle.macos.hardenedRuntime);
+    try std.testing.expectEqualStrings(e.bundle.macos.minimumSystemVersion, parsed.bundle.macos.minimumSystemVersion);
+    try std.testing.expectEqual(@as(?[]const u8, null), e.bundle.macos.signingIdentity);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.bundle.macos.signingIdentity);
 }
