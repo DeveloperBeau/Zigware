@@ -25,4 +25,9 @@ PoC, macOS-only. A button kicks off a 300 MB SHA-256 in Zig on a worker thread, 
 - ordered shutdown: flip alive off, join workers, drain the main queue, free
 - Web Inspector stays gated to debug builds
 
+## Branch model
+- `develop` is the default branch and where active work integrates. Open PRs against it.
+- `main` is the stable line. It is currently pinned to the PoC (PR #1) and stays there until `develop` is ready to ship, at which point `develop` merges into `main`.
+- Both branches are protected: changes land through a PR with one approving review, force-pushes and deletions are blocked.
+
 See `docs/SMOKE.md` for the manual verification checklist.
