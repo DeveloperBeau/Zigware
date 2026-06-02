@@ -235,3 +235,126 @@ test "segment-boundary: $APPDATA/foo/** must NOT match a /foobar sibling" {
     const cand = try std.fmt.bufPrint(&c, "{s}/foobar/x", .{base});
     try std.testing.expect(!pathMatches(io, tmp.dir, set, cand, bases)); // foobar is NOT under foo/
 }
+
+test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
+    const io = std.testing.io;
+    // One temp dir reused across all iterations (fast: no per-iter tmpDir creation).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var bp: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const bn = try tmp.dir.realPath(io, &bp);
+    const base = bp[0..bn];
+    // Create the allowed zone: $APPDATA/ok/f.
+    // ALSO create an on-disk sibling $APPDATA/okf/f — a path whose canonical form
+    // starts with base/ok but violates the segment boundary (base/okf, not base/ok/).
+    // Without the boundary fix, a bare startsWith would match okf/f against
+    // $APPDATA/ok/**, producing a false allow (escape). The fuzz MUST catch that.
+    try tmp.dir.createDirPath(io, "ok");
+    var f = try tmp.dir.createFile(io, "ok/f", .{});
+    f.close(io);
+    try tmp.dir.createDirPath(io, "okf");
+    var g = try tmp.dir.createFile(io, "okf/f", .{});
+    g.close(io);
+    const bases = Bases{ .appdata = base, .home = base, .appconfig = base };
+    const allow_set = ScopeSet{ .allow = &.{.{ .path = "$APPDATA/ok/**" }}, .deny = &.{} };
+
+    // Build the canonical ok_base once so we can check the segment boundary.
+    var okb: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const ok_base = try std.fmt.bufPrint(&okb, "{s}/ok", .{base});
+
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const rand = prng.random();
+    // Segment vocabulary: mixing "ok", "okf", "f", and ".." ensures:
+    //   - ok/f         -> canonical base/ok/f   -> ALLOW (hits invariant branch)
+    //   - okf/f        -> canonical base/okf/f  -> DENY  (boundary escape probe)
+    //   - ok/../okf/f  -> canonical base/okf/f  -> DENY  (traversal variant)
+    //   - ok/../../x   -> base parent           -> DENY  (out-of-tree escape)
+    // Using segment vocabulary (not a char alphabet) ensures valid on-disk paths
+    // appear on a predictable fraction of iterations so allowed_hits is never ~0.
+    const segs = [_][]const u8{ "ok", "okf", "f", ".." };
+    var allowed_hits: usize = 0;
+    var it: usize = 0;
+    while (it < 10_000) : (it += 1) {
+        // Build a candidate from 1-6 random segments.
+        var cb: [512]u8 = undefined;
+        var pos: usize = 0;
+        const nseg = 1 + rand.uintLessThan(usize, 6);
+        for (0..nseg) |si| {
+            const seg = segs[rand.uintLessThan(usize, segs.len)];
+            if (si > 0) {
+                if (pos >= cb.len) break;
+                cb[pos] = '/';
+                pos += 1;
+            }
+            if (pos + seg.len > cb.len) break;
+            @memcpy(cb[pos .. pos + seg.len], seg);
+            pos += seg.len;
+        }
+        var full: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const cand = std.fmt.bufPrint(&full, "{s}/{s}", .{ base, cb[0..pos] }) catch continue;
+        if (pathMatches(io, tmp.dir, allow_set, cand, bases)) {
+            allowed_hits += 1;
+            // SECURITY INVARIANT: if allowed, the canonical path MUST be under
+            // base/ok AT A SEGMENT BOUNDARY. A bare startsWith would pass base/okf —
+            // tighten to require canon == ok_base or canon[ok_base.len] == '/'.
+            // If this assertion fires it is a REAL security bug; do NOT weaken.
+            var rb: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const rn = tmp.dir.realPathFile(io, cand, &rb) catch continue;
+            const canon = rb[0..rn];
+            try std.testing.expect(std.mem.startsWith(u8, canon, ok_base));
+            try std.testing.expect(canon.len == ok_base.len or canon[ok_base.len] == '/');
+        }
+    }
+    // TEETH CHECK: the allow branch must fire on a non-trivial fraction of
+    // iterations. If this fails, the fuzz alphabet/vocab cannot reach the allowed
+    // zone and the invariant assertion above is never exercised (toothless fuzz).
+    try std.testing.expect(allowed_hits > 0);
+}
+
+// macOS case-insensitivity caveat (C security review C2):
+//
+// On a case-insensitive filesystem (macOS APFS default), realPathFile normalises
+// the on-disk CASE of the candidate. The glob TAIL however is matched byte-exact
+// (no case folding). This means an author who writes a deny pattern with the
+// wrong case — e.g. `*.KEY` when the file on disk is `k.key` — will find the
+// deny silently inactive, because the canonical candidate (`…/k.key`) does not
+// byte-match `*.KEY`.
+//
+// THIS IS NOT ATTACKER-DRIVABLE: the attacker provides the candidate path, not
+// the deny pattern. realPathFile resolves the candidate to its exact on-disk
+// name, so an attacker cannot choose which case the canonical string uses.
+//
+// This is an AUTHOR FOOTGUN: the app author (trusted) who typos a deny pattern
+// case produces a deny that never fires. The workaround is simple: always match
+// the deny glob case to the on-disk file case, or use a case-insensitive glob.
+// Fixing this properly (case-fold both pattern tail and canonical path) is
+// deferred until a real `fs:` command lands (sub-project D).
+//
+// DOCUMENTED BEHAVIOR (asserted below): the deny does NOT fire => pathMatches
+// returns TRUE (the allow fires instead). This is the known author-footgun state.
+test "case-insensitivity caveat: mismatched deny pattern case does not fire (author footgun)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var bp: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const bn = try tmp.dir.realPath(io, &bp);
+    const base = bp[0..bn];
+    // Create `k.key` on disk (lowercase).
+    var fk = try tmp.dir.createFile(io, "k.key", .{});
+    fk.close(io);
+    const bases = Bases{ .appdata = base, .home = base, .appconfig = base };
+    // Allow everything; deny only `*.KEY` (uppercase extension — mismatched case).
+    const set = ScopeSet{
+        .allow = &.{.{ .path = "$APPDATA/**" }},
+        .deny = &.{.{ .path = "$APPDATA/**/*.KEY" }},
+    };
+    var c: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cand = try std.fmt.bufPrint(&c, "{s}/k.key", .{base});
+    // DOCUMENTED BEHAVIOR: on a case-insensitive FS the deny glob `*.KEY` does
+    // NOT match the canonical `k.key` (byte-exact tail match). pathMatches => true.
+    // On a case-sensitive FS (Linux) the canonical name IS `k.key` and `*.KEY`
+    // also fails the byte-exact match — so the result is true on BOTH platforms.
+    // ASSERT: allow fires, deny does not (regardless of platform case sensitivity).
+    // This is NOT a security escape (attacker cannot control pattern case).
+    try std.testing.expect(pathMatches(io, tmp.dir, set, cand, bases));
+}

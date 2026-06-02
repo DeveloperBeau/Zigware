@@ -968,3 +968,56 @@ test "fuzz: typed args_json decode for registered commands never traps (manual >
     }
     t.settle();
 }
+
+// ─── Attack vector 25: live gate integration over App(NullBackend) ────────────
+// These tests exercise the G1/G2 gate codes through the full App path.
+
+test "live gate: a foreign origin is denied with origin.untrusted" {
+    // The granting Harness grants sha256, so a good-origin send would resolve.
+    // Using a foreign origin verifies G1 fires before G2 (sha256 would pass G2).
+    var h = try Harness.init();
+    defer h.deinit();
+    h.backend.simulateMessage(h.main_id, "https://evil.example", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.settle();
+    try std.testing.expect(h.backend.countRejectExactly(1) == 1);
+    try std.testing.expect(h.backend.countContaining("\"code\":\"origin.untrusted\"") >= 1);
+}
+
+test "live gate: an ungranted command is denied with command.not_granted" {
+    // App.init grants only core:default (window.setTitle, dialog.open,
+    // compute.cancel). sha256 is on the G3 allowlist (registered builtin) but
+    // NOT in core:default, so it reaches G2 and is denied there.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer backend.deinit();
+    const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
+    const main_id = backend.windowId(app.window);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expect(backend.countRejectExactly(1) == 1);
+    try std.testing.expect(backend.countContaining("\"code\":\"command.not_granted\"") >= 1);
+    app.deinit();
+}
+
+test "live gate: a granted command from app://localhost resolves" {
+    // Harness uses the granting table (sha256 granted), app://localhost is trusted.
+    var h = try Harness.init();
+    defer h.deinit();
+    h.backend.simulateMessage(h.main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.settle();
+    try std.testing.expect(h.backend.countResolveExactly(1) == 1);
+}
+
+test "live gate: navigation to a foreign origin returns cancel" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try std.testing.expectEqual(seam.NavigationDecision.cancel, h.backend.simulateNavigation("https://evil.example/"));
+    try std.testing.expectEqual(seam.NavigationDecision.cancel, h.backend.simulateNavigation("javascript:alert(1)"));
+}
+
+test "live gate: navigation to app://localhost returns allow" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try std.testing.expectEqual(seam.NavigationDecision.allow, h.backend.simulateNavigation("app://localhost/index.html"));
+    try std.testing.expectEqual(seam.NavigationDecision.allow, h.backend.simulateNavigation("app://localhost"));
+}

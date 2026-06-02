@@ -168,3 +168,41 @@ test "G4: a .none command allows immediately" {
     const bases = Bases{ .appdata = "/a", .home = "/h", .appconfig = "/c" };
     try std.testing.expect(evaluate(&table, ctxFor("app://localhost", "compute.cancel", false), bases, std.testing.io, std.Io.Dir.cwd()) == .allow);
 }
+
+test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
+    // Three origin patterns matching the live gate's trust set:
+    //   app_scheme           -> app://localhost and app://localhost/<path>
+    //   dev_url              -> exact http://localhost:1420
+    //   https_exact          -> exact https://x.example
+    const origins = [_]cap.OriginPattern{
+        .app_scheme,
+        .{ .dev_url = "http://localhost:1420" },
+        .{ .https_exact = "https://x.example" },
+    };
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0xC0FFEE);
+    const rand = prng.random();
+    var it: usize = 0;
+    while (it < 10_000) : (it += 1) {
+        var buf: [64]u8 = undefined;
+        const n = rand.uintLessThan(usize, buf.len);
+        rand.bytes(buf[0..n]);
+        const accepted = originTrusted(&origins, buf[0..n], true);
+        if (accepted) {
+            const o = buf[0..n];
+            // SECURITY INVARIANT: only the exact known-trusted origin shapes may be
+            // accepted. Any other byte sequence must be rejected. If this fires, it
+            // is a REAL bypass in originTrusted; do NOT weaken the oracle.
+            //
+            // app_scheme covers:
+            //   "app://localhost"        (bare, no path)
+            //   "app://localhost/<path>" (with slash-prefixed path)
+            // dev_url: exact string match "http://localhost:1420"
+            // https_exact: exact string match "https://x.example"
+            const ok = std.mem.startsWith(u8, o, "app://localhost/") or
+                std.mem.eql(u8, o, "app://localhost") or
+                std.mem.eql(u8, o, "http://localhost:1420") or
+                std.mem.eql(u8, o, "https://x.example");
+            try std.testing.expect(ok);
+        }
+    }
+}
