@@ -242,6 +242,102 @@ pub const MacOsBundle = struct {
     minimumSystemVersion: []const u8 = "11.0",
 };
 
+/// All-optional mirror of `WindowDefaults` for the platform-override merge. Each
+/// leaf is optional so the merge can distinguish "field absent in override" from
+/// "field present and set to its default". Arrays replace wholesale.
+pub const OverrideWindowDefaults = struct {
+    width: ?u32 = null,
+    height: ?u32 = null,
+    show: ?bool = null,
+    titleBarStyle: ?TitleBarStyle = null,
+    decorations: ?bool = null,
+};
+
+/// All-optional mirror of `App` for the platform-override merge. Each leaf is
+/// optional so the merge can distinguish "field absent in override" from "field
+/// present and set to its default". Arrays replace wholesale.
+pub const OverrideApp = struct {
+    windowDefaults: ?OverrideWindowDefaults = null,
+    windows: ?[]const Window = null,
+    quitOnLastWindowClosed: ?QuitPolicy = null,
+    windowShowFallbackMs: ?u32 = null,
+};
+
+/// All-optional mirror of `Fuses` for the platform-override merge. Each leaf is
+/// optional so the merge can distinguish "field absent in override" from "field
+/// present and set to its default". Arrays replace wholesale.
+pub const OverrideFuses = struct {
+    allowRemoteContent: ?bool = null,
+    allowEval: ?bool = null,
+    allowShell: ?bool = null,
+    debugInspector: ?bool = null,
+};
+
+/// All-optional mirror of `Csp` for the platform-override merge. Each leaf is
+/// optional so the merge can distinguish "field absent in override" from "field
+/// present and set to its default". Arrays replace wholesale.
+pub const OverrideCsp = struct {
+    defaultSrc: ?[]const []const u8 = null,
+    scriptSrc: ?[]const []const u8 = null,
+    styleSrc: ?[]const []const u8 = null,
+    connectSrc: ?[]const []const u8 = null,
+    imgSrc: ?[]const []const u8 = null,
+};
+
+/// All-optional mirror of `Security` for the platform-override merge. Each leaf
+/// is optional so the merge can distinguish "field absent in override" from
+/// "field present and set to its default". Arrays replace wholesale.
+pub const OverrideSecurity = struct {
+    capabilities: ?[]const []const u8 = null,
+    csp: ?OverrideCsp = null,
+    fuses: ?OverrideFuses = null,
+};
+
+/// All-optional mirror of `Build` for the platform-override merge. Each leaf is
+/// optional so the merge can distinguish "field absent in override" from "field
+/// present and set to its default". Arrays replace wholesale.
+pub const OverrideBuild = struct {
+    beforeDevCommand: ?[]const u8 = null,
+    beforeBuildCommand: ?[]const u8 = null,
+    devUrl: ?[]const u8 = null,
+    frontendDist: ?[]const u8 = null,
+};
+
+/// All-optional mirror of `MacOsBundle` for the platform-override merge. Each
+/// leaf is optional so the merge can distinguish "field absent in override" from
+/// "field present and set to its default". Arrays replace wholesale.
+pub const OverrideMacOsBundle = struct {
+    signingIdentity: ?[]const u8 = null,
+    hardenedRuntime: ?bool = null,
+    entitlements: ?[]const u8 = null,
+    providerShortName: ?[]const u8 = null,
+    minimumSystemVersion: ?[]const u8 = null,
+};
+
+/// All-optional mirror of `Bundle` for the platform-override merge. Each leaf is
+/// optional so the merge can distinguish "field absent in override" from "field
+/// present and set to its default". Arrays replace wholesale.
+pub const OverrideBundle = struct {
+    targets: ?[]const Target = null,
+    icon: ?[]const []const u8 = null,
+    category: ?[]const u8 = null,
+    copyright: ?[]const u8 = null,
+    macos: ?OverrideMacOsBundle = null,
+};
+
+/// All-optional mirror of `Manifest` for the platform-override merge. Each leaf
+/// is optional so the merge can distinguish "field absent in override" from
+/// "field present and set to its default". Arrays replace wholesale.
+pub const OverrideManifest = struct {
+    identifier: ?[]const u8 = null,
+    productName: ?[]const u8 = null,
+    version: ?[]const u8 = null,
+    app: ?OverrideApp = null,
+    security: ?OverrideSecurity = null,
+    build: ?OverrideBuild = null,
+    bundle: ?OverrideBundle = null,
+};
+
 test "Manifest defaults fill a minimal manifest" {
     const m = Manifest{ .identifier = "com.example.app", .productName = "App", .version = "0.1.0" };
     try std.testing.expectEqual(@as(u32, 800), m.app.windowDefaults.width);
@@ -251,4 +347,33 @@ test "Manifest defaults fill a minimal manifest" {
     try std.testing.expectEqual(@as(usize, 2), m.bundle.targets.len);
     try std.testing.expect(m.bundle.macos.hardenedRuntime);
     try std.testing.expectEqualStrings("'self'", m.security.csp.scriptSrc[0]);
+}
+
+// Comptime recursive walker: descends every nested struct on the base side
+// and asserts the corresponding optional-wrapped Override mirror has the same
+// field set, recursively. A new field on App/Bundle/Csp/etc. with no matching
+// Override<X> field fails this at COMPILE TIME, not silently at runtime.
+fn assertParallel(comptime Base: type, comptime Override: type) void {
+    const bf = @typeInfo(Base).@"struct".fields;
+    const of = @typeInfo(Override).@"struct".fields;
+    comptime std.debug.assert(bf.len == of.len);
+    inline for (bf) |b| {
+        comptime var found_idx: ?usize = null;
+        inline for (of, 0..) |o, j| if (comptime std.mem.eql(u8, b.name, o.name)) {
+            found_idx = j;
+        };
+        comptime std.debug.assert(found_idx != null);
+        // If the base field is itself a struct, recurse into its override mirror
+        // (which is wrapped in an optional in the Override<X> shape).
+        const BT = b.type;
+        const OT = of[found_idx.?].type;
+        if (@typeInfo(BT) == .@"struct" and @typeInfo(OT) == .optional) {
+            const Inner = @typeInfo(OT).optional.child;
+            if (@typeInfo(Inner) == .@"struct") assertParallel(BT, Inner);
+        }
+    }
+}
+
+test "OverrideManifest mirrors every Manifest field recursively" {
+    comptime assertParallel(Manifest, OverrideManifest);
 }
