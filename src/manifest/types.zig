@@ -356,20 +356,32 @@ test "Manifest defaults fill a minimal manifest" {
 fn assertParallel(comptime Base: type, comptime Override: type) void {
     const bf = @typeInfo(Base).@"struct".fields;
     const of = @typeInfo(Override).@"struct".fields;
-    comptime std.debug.assert(bf.len == of.len);
+    if (bf.len != of.len) @compileError(
+        "Override mirror field count differs from base — a field was added on one side without the other.",
+    );
     inline for (bf) |b| {
         comptime var found_idx: ?usize = null;
         inline for (of, 0..) |o, j| if (comptime std.mem.eql(u8, b.name, o.name)) {
             found_idx = j;
         };
-        comptime std.debug.assert(found_idx != null);
-        // If the base field is itself a struct, recurse into its override mirror
-        // (which is wrapped in an optional in the Override<X> shape).
+        if (found_idx == null) @compileError(
+            "Override mirror is missing a field present in the base: " ++ b.name,
+        );
+        // Invariant: every struct-typed BASE field maps to an optional-wrapped
+        // Override field whose inner type is a struct. Enforce it explicitly;
+        // a silent skip would let a non-optional override mirror slip through
+        // and break the merge semantics later.
         const BT = b.type;
         const OT = of[found_idx.?].type;
-        if (@typeInfo(BT) == .@"struct" and @typeInfo(OT) == .optional) {
+        if (@typeInfo(BT) == .@"struct") {
+            if (@typeInfo(OT) != .optional) @compileError(
+                "Override mirror for base struct field must be optional: " ++ b.name,
+            );
             const Inner = @typeInfo(OT).optional.child;
-            if (@typeInfo(Inner) == .@"struct") assertParallel(BT, Inner);
+            if (@typeInfo(Inner) != .@"struct") @compileError(
+                "Override mirror for base struct field must wrap a struct (Override<Inner>): " ++ b.name,
+            );
+            assertParallel(BT, Inner);
         }
     }
 }
