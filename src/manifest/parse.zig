@@ -155,6 +155,11 @@ pub fn parseAtBuildFromPaths(
         const kof = matchKnownOsOverride(base) orelse continue;
         if (target_kof) |tk| {
             if (kof == tk) {
+                // build.zig is expected to pin each per-OS basename at most
+                // once. A duplicate would silently take last-write-wins;
+                // assert at debug time so the bug surfaces in tests rather
+                // than as confusing runtime behaviour.
+                std.debug.assert(selected_path == null);
                 selected_path = op;
             }
         } else {
@@ -517,7 +522,6 @@ test "parseAtBuild returns FileNotFound when zigware.zon is absent" {
     );
 }
 
-// TODO(D-Task-7): rewrite this to assert m.productName == "LinuxProduct" after merge.merge lands.
 test "parseAtBuildFromPaths selects the override matching target_os" {
     // Setup: base is valid; the linux override is malformed; the macos override
     // is valid. With target_os=.linux, the malformed linux override must be the
@@ -548,6 +552,116 @@ test "parseAtBuildFromPaths selects the override matching target_os" {
             &diag,
         ),
     );
+}
+
+test "parseAtBuildFromPaths applies the selected override via merge" {
+    // The well-formed corpus has a valid base AND valid per-OS overrides,
+    // so the selection result reaches merge. With target_os=.linux, the
+    // merged productName must come from the linux override.
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const overrides = [_][]const u8{
+        "tests/manifest/parseatbuild_override/zigware.linux.zon",
+        "tests/manifest/parseatbuild_override/zigware.macos.zon",
+    };
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    const m = try parseAtBuildFromPaths(
+        gpa,
+        io,
+        "tests/manifest/parseatbuild_override/zigware.zon",
+        &overrides,
+        &.{},
+        .linux,
+        .Debug,
+        &diag,
+    );
+    defer freeManifest(gpa, m);
+
+    try std.testing.expectEqualStrings("LinuxProduct", m.productName);
+}
+
+test "parseAtBuild selects the override matching target_os" {
+    // The io.Dir variant discovers overrides by scanning the directory.
+    // With target_os=.macos, the merged productName must come from the
+    // macos override.
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var fixture = try std.Io.Dir.cwd().openDir(
+        io,
+        "tests/manifest/parseatbuild_override",
+        .{},
+    );
+    defer fixture.close(io);
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    const m = try parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    defer freeManifest(gpa, m);
+
+    try std.testing.expectEqualStrings("MacOsProduct", m.productName);
+}
+
+test "parseAtBuild emits override_for_target_dropped per recognized override when target has no mapping" {
+    // target_os=.freebsd has no override mapping. Both zigware.linux.zon
+    // and zigware.macos.zon are recognised, so the dir scan must emit one
+    // warning per recognised override file. The result is still a valid
+    // Manifest (the base parses and validates).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var fixture = try std.Io.Dir.cwd().openDir(
+        io,
+        "tests/manifest/parseatbuild_override",
+        .{},
+    );
+    defer fixture.close(io);
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    const m = try parseAtBuild(gpa, io, fixture, .freebsd, .Debug, &diag);
+    defer freeManifest(gpa, m);
+
+    var dropped: usize = 0;
+    for (diag.items.items) |d| {
+        if (d.code == .override_for_target_dropped) dropped += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), dropped);
+    try std.testing.expect(!diag.hasErrors());
+}
+
+test "parseAtBuild silently ignores unrelated files in the dir" {
+    // The fixture contains a stray README.md. The dir scan must skip any
+    // file whose basename does not match `zigware.<known_os>.zon`. With a
+    // matched target_os, no override_for_target_dropped warnings should
+    // fire at all (the stray file is invisible to the scan).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var fixture = try std.Io.Dir.cwd().openDir(
+        io,
+        "tests/manifest/parseatbuild_override",
+        .{},
+    );
+    defer fixture.close(io);
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    const m = try parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    defer freeManifest(gpa, m);
+
+    var dropped: usize = 0;
+    for (diag.items.items) |d| {
+        if (d.code == .override_for_target_dropped) dropped += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), dropped);
 }
 
 test "parseAtBuildFromPaths emits override_for_target_dropped per supplied override when target_os has no mapping" {

@@ -25,8 +25,18 @@ pub fn main(init: std.process.Init) !void {
 
     var diag: types.Diagnostics = .{};
     defer diag.deinit(gpa);
+    // NOTE: target_os here is the codegen exe's compile target, which build.zig
+    // sets equal to the build's user-selected target via standardTargetOptions.
+    // Cross-compiling the codegen for a non-host target would also require an
+    // emulator to run it; the supported path is a native build on the build host.
     const tag = @import("builtin").target.os.tag;
-    const empty_caps: []const []const u8 = &.{}; // capability ids are passed by build.zig via addFileArg in a future iteration
+    // Capability cross-check is currently NOT performed at codegen time: the
+    // codegen passes an empty capability id set to the validator. Adding
+    // security.capabilities entries to zigware.zon would cause spurious
+    // unknown_capability_ref errors here. build.zig pins src/capabilities/*.zon
+    // via addFileArg (for cache invalidation), but does not yet thread the
+    // basenames through argv. Resolve before sub-project E ships capabilities.
+    const empty_caps: []const []const u8 = &.{};
     const m = parse.parseAtBuildFromPaths(gpa, io, base_path, override_paths, empty_caps, tag, .Debug, &diag) catch |e| {
         for (diag.items.items) |d| std.debug.print("manifest: {s}{s}{s}\n", .{
             d.message,

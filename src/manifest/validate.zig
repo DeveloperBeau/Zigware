@@ -78,6 +78,7 @@ pub fn validate(
     for (m.app.windows, 0..) |w, i| {
         if (w.label.len == 0) {
             const path = try std.fmt.allocPrint(gpa, "app.windows[{d}].label", .{i});
+            errdefer gpa.free(path);
             try diag.add(gpa, .{
                 .code = .empty_window_label,
                 .message = "window label is empty",
@@ -95,6 +96,7 @@ pub fn validate(
             if (prior.label.len == 0) continue;
             if (std.mem.eql(u8, prior.label, w.label)) {
                 const path = try std.fmt.allocPrint(gpa, "app.windows[{d}].label", .{i});
+                errdefer gpa.free(path);
                 try diag.add(gpa, .{
                     .code = .duplicate_window_label,
                     .message = "window label is duplicated",
@@ -119,6 +121,7 @@ pub fn validate(
         }
         if (!found) {
             const path = try std.fmt.allocPrint(gpa, "security.capabilities[{d}]", .{i});
+            errdefer gpa.free(path);
             try diag.add(gpa, .{
                 .code = .unknown_capability_ref,
                 .message = "capability identifier has no matching file under src/capabilities/",
@@ -141,6 +144,7 @@ pub fn validate(
     // devUrl without beforeDevCommand: WARNING (does not flip `ok`).
     if (m.build.devUrl != null and m.build.beforeDevCommand == null) {
         const path = try gpa.dupe(u8, "build.devUrl");
+        errdefer gpa.free(path);
         try diag.add(gpa, .{
             .code = .dev_url_without_command,
             .is_error = false,
@@ -162,7 +166,9 @@ fn emit(
     path: []const u8,
 ) std.mem.Allocator.Error!void {
     var d = template;
-    d.path = try gpa.dupe(u8, path);
+    const path_owned = try gpa.dupe(u8, path);
+    errdefer gpa.free(path_owned);
+    d.path = path_owned;
     try diag.add(gpa, d);
 }
 
@@ -449,4 +455,32 @@ test "validate does not emit dev_url_without_command when both fields are set" {
     m.build = .{ .devUrl = "http://localhost:5173", .beforeDevCommand = "bun run dev" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .dev_url_without_command));
+}
+
+// Build a manifest that fires several path-allocating diagnostics so the OOM
+// sweep below hits multiple allocation sites (identifier, duplicate window
+// label, unknown capability ref, dev_url_without_command warning). Each site
+// must roll back the just-allocated path string when `Diagnostics.add` errors,
+// or the testing allocator surfaces the leak.
+fn oomTestImpl(gpa: std.mem.Allocator) !void {
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    var m = baseValid();
+    // Trigger invalid_identifier (alloc), duplicate_window_label (alloc),
+    // unknown_capability_ref (alloc), and dev_url_without_command (alloc).
+    m.identifier = "bad_id";
+    m.app = .{ .windows = &.{
+        .{ .label = "main", .title = "M" },
+        .{ .label = "dup", .title = "A" },
+        .{ .label = "dup", .title = "B" },
+    } };
+    m.security = .{ .capabilities = &.{ "missing.one", "missing.two" } };
+    m.build = .{ .devUrl = "http://localhost:5173" };
+
+    _ = try validate(gpa, m, .Debug, &.{}, &diag);
+}
+
+test "validate under checkAllAllocationFailures has zero leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, oomTestImpl, .{});
 }
