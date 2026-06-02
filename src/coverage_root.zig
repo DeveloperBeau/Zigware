@@ -19,4 +19,15 @@ test {
     _ = @import("registry.zig");
     _ = @import("command_ctx.zig");
     _ = @import("commands/builtin.zig");
+    _ = @import("security/capability.zig");
+    _ = @import("security/defaults.zig");
+    _ = @import("security/grant_table.zig");
+    _ = @import("security/gates.zig");
+    _ = @import("security/navigation.zig");
+    _ = @import("security/scope/glob.zig");
+    _ = @import("security/scope/path.zig");
+    _ = @import("security/scope/host.zig");
+    _ = @import("security/scope/argv.zig");
+    _ = @import("security/scope/label.zig");
+    _ = @import("manifest/types.zig");
 }

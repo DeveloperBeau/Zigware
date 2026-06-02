@@ -3,6 +3,12 @@ const backend_mod = @import("platform/backend.zig");
 const assets = @import("assets.zig");
 const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
+const security_cap = @import("security/capability.zig");
+const security_grant = @import("security/grant_table.zig");
+const security_defaults = @import("security/defaults.zig");
+const security_gates = @import("security/gates.zig");
+const security_navigation = @import("security/navigation.zig");
+const manifest_types = @import("manifest/types.zig");
 
 const zigware_js = @embedFile("frontend/zigware.js");
 const app_js = @embedFile("frontend/app.js");
@@ -37,7 +43,48 @@ pub fn App(comptime B: type) type {
         /// an init-scope local, so its address is stable for the bridge's life.
         state: builtin.State = .{},
 
+        /// C's capability state. The App compiles one immutable GrantTable at init
+        /// and holds it for the app lifetime. `owns_grants` => deinit frees it
+        /// (production owns it; a test that injects its own table may keep
+        /// ownership). base_dir/bases are valid handles for the path scope engine;
+        /// v0.1.0 commands are .none so they are unused live.
+        grants: *security_grant.GrantTable,
+        base_dir: std.Io.Dir,
+        bases: security_gates.Bases,
+        is_debug: bool,
+        owns_grants: bool,
+
+        /// Production entry: grants only core:default. The GUI sha256 demo is
+        /// therefore denied at G2 (the demo is rebuilt with real capabilities in a
+        /// later sub-project). D later replaces this with a manifest-parsed
+        /// GrantTable + the real app-support base_dir; v0.1.0 commands are all
+        /// .none so base_dir/bases are unused but must be valid handles.
         pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
+            const app_caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = &.{"main"}, .permissions = &.{"core:default"} }};
+            var diags: manifest_types.Diagnostics = .{};
+            defer diags.deinit(alloc);
+            const grants = try alloc.create(security_grant.GrantTable);
+            errdefer alloc.destroy(grants);
+            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &security_defaults.builtin_catalog, .{}, &.{"main"}, &diags);
+            errdefer grants.deinit();
+            const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
+            return initWithGrants(alloc, io, backend, grants, bases, std.Io.Dir.cwd(), (@import("builtin").mode == .Debug), true);
+        }
+
+        /// Shared init body. `owns_grants` => deinit frees `grants`. Test callers
+        /// pass their own granting table (and own its lifetime if owns_grants is
+        /// false). On error this does NOT free `grants` — ownership transfers to
+        /// the App only on success, so the caller's errdefer frees it exactly once.
+        pub fn initWithGrants(
+            alloc: std.mem.Allocator,
+            io: std.Io,
+            backend: *B,
+            grants: *security_grant.GrantTable,
+            bases: security_gates.Bases,
+            base_dir: std.Io.Dir,
+            is_debug: bool,
+            owns_grants: bool,
+        ) !*Self {
             const self = try alloc.create(Self);
             errdefer alloc.destroy(self);
 
@@ -64,6 +111,10 @@ pub fn App(comptime B: type) type {
                 builtin.Commands,
                 &self.state,
                 .{},
+                grants,
+                bases,
+                base_dir,
+                is_debug,
             );
             errdefer bridge.deinit();
 
@@ -74,6 +125,11 @@ pub fn App(comptime B: type) type {
                 .bridge = bridge,
                 .window = window,
                 .state = .{},
+                .grants = grants,
+                .base_dir = base_dir,
+                .bases = bases,
+                .is_debug = is_debug,
+                .owns_grants = owns_grants,
             };
 
             backend.setCallbacks(.{
@@ -115,6 +171,10 @@ pub fn App(comptime B: type) type {
             self.backend.terminate();
             self.backend.setCallbacks(deadCallbacks()); // sentinel live during the drain (M14)
             self.bridge.deinit(); // joins the worker pool
+            if (self.owns_grants) {
+                self.grants.deinit();
+                self.alloc.destroy(self.grants);
+            }
             self.backend.markJoined(); // App owns the join handshake: every
             // App(B) teardown satisfies backend.deinit's joined assert without
             // per-test markJoined. Bridge-only tests (TestBridge) call it manually.
@@ -177,19 +237,13 @@ pub fn App(comptime B: type) type {
             }
         }
 
-        /// Deny-by-default (M6): allow only the app://localhost origin; cancel
-        /// everything else. C tightens this to capability-aware per-origin
-        /// policy. startsWith("app://") would let any host under the scheme
-        /// through (app://evil/, app://localhost.attacker.com/), so we match the
-        /// origin exactly: the localhost host followed by a path separator, or
-        /// the bare origin with no path.
-        fn onNavigation(_: *anyopaque, url: []const u8) backend_mod.NavigationDecision {
-            if (std.mem.startsWith(u8, url, "app://localhost/") or
-                std.mem.eql(u8, url, "app://localhost"))
-            {
-                return .allow;
-            }
-            return .cancel;
+        /// Deny-by-default (M6): C's navigation guard allows only app://localhost
+        /// (plus, in debug, this window's dev URL); everything else cancels. The
+        /// dead-sentinel `deadNavigation` still returns `.cancel` during teardown
+        /// (ctx is the sentinel, NOT an App, so it is never cast to *Self).
+        fn onNavigation(ctx: *anyopaque, url: []const u8) backend_mod.NavigationDecision {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return security_navigation.decideNavigation(self.grants.originsFor("main"), url, self.is_debug);
         }
     };
 }
@@ -197,10 +251,21 @@ pub fn App(comptime B: type) type {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 const NullBackend = @import("platform/null.zig").NullBackend;
+const fixtures = @import("security_test_fixtures.zig");
 
+const dummy_bases = security_gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
+
+/// The App tests drive sha256/echoBytes through the bridge gate, so makeApp grants
+/// the fixture commands (core:default alone denies them at G2). owns_grants=true:
+/// the App frees the grants in deinit, so teardown must NOT free them again.
 fn makeApp() !struct { backend: *NullBackend, app: *App(NullBackend) } {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-    const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
+    const grants = try fixtures.buildTestGrants(std.testing.allocator);
+    const app = App(NullBackend).initWithGrants(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
     return .{ .backend = backend, .app = app };
 }
 
