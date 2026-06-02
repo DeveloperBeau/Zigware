@@ -6,6 +6,7 @@ comptime {
     _ = @import("security/capability.zig");
     _ = @import("security/defaults.zig");
     _ = @import("security/scope/glob.zig");
+    _ = @import("security/grant_table.zig");
 }
 
 test {
@@ -13,6 +14,7 @@ test {
     _ = @import("security/capability.zig");
     _ = @import("security/defaults.zig");
     _ = @import("security/scope/glob.zig");
+    _ = @import("security/grant_table.zig");
 }
 
 const std = @import("std");
