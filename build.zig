@@ -216,6 +216,24 @@ pub fn build(b: *std.Build) void {
     const mt_tests = b.addTest(.{ .root_module = mt_mod });
     test_step.dependOn(&b.addRunArtifact(mt_tests).step);
 
+    // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
+    // source bytes produce identical Manifest values. The fixture lives at
+    // tests/manifest/embed_fixture/zigware.zon and is wired here as this
+    // module's zigware_manifest_zon import so embedded() resolves to the
+    // fixture, not the production effective manifest. parseAtBuild in turn
+    // reads the fixture dir at test time. Identical bytes on both sides keeps
+    // the comparison well-defined.
+    const embed_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/embed_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    embed_test_mod.addAnonymousImport("zigware_manifest_zon", .{
+        .root_source_file = b.path("tests/manifest/embed_fixture/zigware.zon"),
+    });
+    const embed_tests = b.addTest(.{ .root_module = embed_test_mod });
+    test_step.dependOn(&b.addRunArtifact(embed_tests).step);
+
     // Fuse-constants module: thin re-export of the embedded fuses so the
     // bridge/command layer can prune disabled branches at comptime. Tested
     // both through the manifest test root (via src/manifest_tests.zig) and

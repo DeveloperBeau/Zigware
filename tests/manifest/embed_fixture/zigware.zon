@@ -1,0 +1,7 @@
+.{
+    .identifier = "com.example.embed",
+    .productName = "Embed",
+    .version = "0.1.0",
+    .app = .{ .windows = .{.{ .label = "main", .title = "Embed Main" }} },
+    .build = .{ .frontendDist = "dist" },
+}
