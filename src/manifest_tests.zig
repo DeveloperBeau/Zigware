@@ -5,6 +5,7 @@ test {
     _ = @import("manifest/parse.zig");
     _ = @import("manifest/validate.zig");
     _ = @import("manifest/merge.zig");
+    _ = @import("manifest/schema_gen.zig");
 }
 
 test "manifest test root mounted" {
