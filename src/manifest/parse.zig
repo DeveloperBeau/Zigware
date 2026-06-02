@@ -16,8 +16,9 @@
 //!   `null`, no static-literal slice defaults exist); the override is freed
 //!   in-function before this routine returns.
 //!
-//! Task 5 leaves `merge` as a no-op stub that returns base verbatim. Tasks 6
-//! and 7 will replace validate and merge with their real implementations.
+//! `merge.merge` returns a fully `gpa`-owned deep-dup of base merged with the
+//! per-OS override (when present); both call sites free `base` immediately on
+//! the success path because the merged value no longer aliases into it.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -219,11 +220,10 @@ pub fn parseAtBuildFromPaths(
     }
     defer if (override_value) |ov| std.zon.parse.free(gpa, ov);
 
-    // Apply the (stubbed) merge. In Task 5 this returns base verbatim.
+    // Apply the merge. It returns a fully gpa-owned deep-dup of base merged
+    // with override, so the base allocation is disposable on the success path.
     const merged = try merge.merge(gpa, base_owned.?, override_value);
-    // The merge stub borrows from base; the returned Manifest IS base. Suppress
-    // the errdefer'd free of base — the returned `merged` is what the caller
-    // takes ownership of.
+    freeManifest(gpa, base_owned.?);
     base_owned = null;
 
     if (!(try validate.validate(gpa, merged, optimize, capability_ids, diag)) or diag.hasErrors()) {
@@ -474,8 +474,9 @@ fn parsePipeline(
     }
 
     const merged = try merge.merge(gpa, base_owned.?, override_value);
-    // merge stub returns base verbatim; the returned Manifest IS base, so the
-    // base errdefer must NOT fire on the success path.
+    // merge returns a fully gpa-owned deep-dup; the base allocation is
+    // disposable on the success path. (On error the errdefer above still fires.)
+    freeManifest(gpa, base_owned.?);
     base_owned = null;
 
     if (!(try validate.validate(gpa, merged, optimize, ids, diag)) or diag.hasErrors()) {
