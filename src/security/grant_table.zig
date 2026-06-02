@@ -271,7 +271,7 @@ test "shell family dropped when allowShell is off; fuse_requires_capability emit
     defer gt.deinit();
     try std.testing.expect(!gt.commandGranted("main", "shell.execute")); // grant gone
     var saw = false;
-    for (diags.list.items) |d| if (d.code == .fuse_requires_capability) {
+    for (diags.items.items) |d| if (d.code == .fuse_requires_capability) {
         saw = true;
     };
     try std.testing.expect(saw);
@@ -292,7 +292,7 @@ test "https origin dropped when allowRemoteContent off; emitted as diagnostic" {
     defer gt.deinit();
     try std.testing.expectEqual(@as(usize, 0), gt.originsFor("main").len); // dropped -> empty -> app_scheme only
     var saw = false;
-    for (diags.list.items) |d| if (d.code == .fuse_requires_capability) {
+    for (diags.items.items) |d| if (d.code == .fuse_requires_capability) {
         saw = true;
     };
     try std.testing.expect(saw);
@@ -321,7 +321,7 @@ test "capability_window_unknown emitted for an unmatched window glob" {
     var gt = try GrantTable.compile(std.testing.allocator, &caps, &defaults.builtin_catalog, .{}, &.{"main"}, &diags);
     defer gt.deinit();
     var saw = false;
-    for (diags.list.items) |d| if (d.code == .capability_window_unknown) {
+    for (diags.items.items) |d| if (d.code == .capability_window_unknown) {
         saw = true;
     };
     try std.testing.expect(saw);
