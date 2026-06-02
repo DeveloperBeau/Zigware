@@ -138,6 +138,20 @@ pub fn build(b: *std.Build) void {
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
+    // Manifest test root: src/manifest/*.zig files import each other and cannot
+    // be rooted as standalone logic-test modules. The manifest test root mounts
+    // them under one binary. addLogicTest is not usable here because parse.zig's
+    // embedded() forces @import("zigware_manifest_zon") to resolve at compile
+    // time of parse.zig; the module needs the anonymous import wired.
+    const mt_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mt_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
+    const mt_tests = b.addTest(.{ .root_module = mt_mod });
+    test_step.dependOn(&b.addRunArtifact(mt_tests).step);
+
     // coverage-exe: the full headless logic surface. Rooted at app.zig, which
     // transitively imports bridge, null backend, assets, backend contract,
     // protocol, allowlist, jobs, and commands. The pure macOS helpers
