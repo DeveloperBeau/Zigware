@@ -8,6 +8,9 @@ comptime {
     _ = @import("security/scope/glob.zig");
     _ = @import("security/scope/path.zig");
     _ = @import("security/grant_table.zig");
+    _ = @import("security/scope/host.zig");
+    _ = @import("security/scope/argv.zig");
+    _ = @import("security/scope/label.zig");
 }
 
 test {
@@ -17,6 +20,9 @@ test {
     _ = @import("security/scope/glob.zig");
     _ = @import("security/scope/path.zig");
     _ = @import("security/grant_table.zig");
+    _ = @import("security/scope/host.zig");
+    _ = @import("security/scope/argv.zig");
+    _ = @import("security/scope/label.zig");
 }
 
 const std = @import("std");
