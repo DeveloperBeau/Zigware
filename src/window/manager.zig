@@ -314,3 +314,32 @@ test "op wrappers translate to the seam for a live window" {
     try mgr.setFullscreen("main", true);
     try std.testing.expect(be.windows.items[e.handle].fullscreen);
 }
+
+// Fault-injection sweep over create. The backend AND the manager share the SAME
+// allocator the harness injects, so a single failing index covers every
+// allocation in create's path: the label dupe, the url/title dupeZ, the
+// label-script Allocating writer, the seam createWindow's url/title/script
+// dupes and list growth, the entry create, and both map puts. On every failing
+// index create must return error.OutOfMemory and leave nothing allocated; on
+// the success run the entry is created. Teardown (mgr.deinit, then
+// be.markJoined + be.deinit) only frees, so it never trips the stuck allocator,
+// and create's no-op destroyWindow means the backend's own dupes are reclaimed
+// by be.deinit (not a leak). `be`'s `try` sits above its defer, so a fail on
+// the very first alloc (the backend struct) returns with nothing registered.
+fn createOomAttempt(alloc: std.mem.Allocator) !void {
+    const be = try NullBackend.init(alloc, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = WindowManager(NullBackend).init(alloc, be, std.testing.io);
+    defer mgr.deinit();
+    const e = try mgr.create(.{ .label = "main", .url = "app://localhost/index.html", .title = "Main" });
+    // Reached only on the leak-free success run the harness ends with.
+    try std.testing.expectEqualStrings("main", e.label);
+    try std.testing.expectEqual(@as(usize, 1), mgr.liveCount());
+}
+
+test "create under checkAllAllocationFailures: every alloc-failure path leaks nothing" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, createOomAttempt, .{});
+}
