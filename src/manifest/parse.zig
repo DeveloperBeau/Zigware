@@ -25,7 +25,7 @@ const types = @import("types.zig");
 const validate = @import("validate.zig");
 const merge = @import("merge.zig");
 
-const Manifest = types.Manifest;
+pub const Manifest = types.Manifest;
 const OverrideManifest = types.OverrideManifest;
 const Diagnostics = types.Diagnostics;
 

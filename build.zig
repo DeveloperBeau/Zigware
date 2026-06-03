@@ -33,11 +33,42 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     exe_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
-    b.installArtifact(exe);
+    // The CLI exe (added below) keeps the `zigware` name; the app installs under
+    // a distinct sub-path so exactly one artifact lands at zig-out/bin/zigware.
+    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = "zigware-app" }).step);
 
     const run_cmd = b.addRunArtifact(exe);
     const run_step = b.step("run", "Run zigware");
     run_step.dependOn(&run_cmd.step);
+
+    // --- zigware CLI (no Cocoa/WebKit; shells out to `zig build`) ---
+    // The CLI needs D's *parser* (it reads the END-USER's zigware.zon at runtime),
+    // not just the Manifest type. parse.zig/types.zig/validate.zig/merge.zig
+    // cross-import BY PATH and must all live in ONE compilation, so root a
+    // dedicated module at parse.zig (it transitively pulls in its siblings by
+    // path) and satisfy its `zigware_manifest_zon` anonymous import with the raw
+    // zigware.zon — the CLI never calls embedded(), so the placeholder suffices.
+    const manifest_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/parse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    manifest_mod.addAnonymousImport("zigware_manifest_zon", .{
+        .root_source_file = b.path("zigware.zon"),
+    });
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // Expose D's parser+type to the CLI leaves under the name `zigware_manifest`.
+    cli_mod.addImport("zigware_manifest", manifest_mod);
+    const cli_exe = b.addExecutable(.{ .name = "zigware", .root_module = cli_mod });
+    b.installArtifact(cli_exe);
+    const cli_run = b.addRunArtifact(cli_exe);
+    if (b.args) |args| cli_run.addArgs(args);
+    const cli_step = b.step("cli", "Run the zigware CLI");
+    cli_step.dependOn(&cli_run.step);
 
     const test_step = b.step("test", "Run tests");
 
