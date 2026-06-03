@@ -74,6 +74,13 @@ pub fn App(comptime B: type) type {
         /// `*WindowManager(B)` into the same field.
         manager: WindowManager(B),
         lifecycle: Lifecycle(B),
+        /// The default ("main") window's create options, captured from the first
+        /// manifest window during init. Under keep_running_on_last_close, a
+        /// `reopen` after every window has closed recreates this one window from
+        /// the manifest. Its slice fields (label/url/title) point at static data
+        /// (comptime .zon on the production path, string literals in tests), so
+        /// the stored value stays valid for the App's life with no dupe.
+        default_window: WindowManager(B).Options,
         shutdown_done: std.atomic.Value(bool) = .init(false),
         /// The single app State injected into every command handler. A field, not
         /// an init-scope local, so its address is stable for the bridge's life.
@@ -170,6 +177,7 @@ pub fn App(comptime B: type) type {
                 .bridge = undefined,
                 .manager = WindowManager(B).init(alloc, backend, io),
                 .lifecycle = undefined,
+                .default_window = undefined,
                 .state = .{},
                 .grants = grants,
                 .base_dir = base_dir,
@@ -188,7 +196,7 @@ pub fn App(comptime B: type) type {
             // handle is never the actual reply target.
             var boot: ?B.WindowHandle = null;
             for (windows) |w| {
-                const e = try self.manager.create(.{
+                const opts = WindowManager(B).Options{
                     .label = w.label,
                     .url = w.url,
                     .title = w.title,
@@ -197,8 +205,14 @@ pub fn App(comptime B: type) type {
                     .decorations = w.decorations,
                     .title_bar_style = w.titleBarStyle,
                     .show = w.show,
-                });
-                if (boot == null) boot = e.handle;
+                };
+                const e = try self.manager.create(opts);
+                if (boot == null) {
+                    boot = e.handle;
+                    // The first manifest window is the default ("main"): store its
+                    // opts so a later reopen can recreate exactly this window.
+                    self.default_window = opts;
+                }
             }
             // D's validator guarantees at least one window (no_main_window), so
             // boot is always set on the production path; guard anyway so a test
@@ -348,7 +362,10 @@ pub fn App(comptime B: type) type {
         ///   will_terminate     -> orderedShutdown (always) + App.shutdown,
         ///   window_all_closed   -> policy decides; shutdown only if it terminated
         ///                          (keep_running stays alive — E's macOS default),
-        ///   reopen              -> policy handler (recreate the default window),
+        ///   reopen              -> under keep_running with no live windows, the App
+        ///                          recreates the default window from the manifest
+        ///                          (app-owned, since app.zig holds the manifest),
+        ///                          then runs the policy hook,
         ///   did_launch          -> nothing.
         fn onLifecycle(ctx: *anyopaque, event: backend_mod.LifecycleEvent) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
@@ -361,7 +378,24 @@ pub fn App(comptime B: type) type {
                     self.lifecycle.handle(event); // policy decides terminate-or-stay
                     if (self.lifecycle.didTerminate()) self.shutdown();
                 },
-                .reopen => self.lifecycle.handle(event),
+                .reopen => {
+                    // Spec: reopen under keep_running recreates the default window
+                    // from the D manifest. The recreate is app-owned (app.zig holds
+                    // the manifest), so it lives here rather than in the lifecycle's
+                    // fn-pointer reopen_handler, which can't close over the manifest.
+                    // Guard precisely: only keep_running (quit_on_last_close already
+                    // terminated; explicit lets the app decide), and only when no
+                    // window is live (a reopen with a window already open is a
+                    // no-op). create maps the recreated window, so the fail-closed
+                    // bridge accepts its messages; a create error is logged, never a
+                    // crash.
+                    if (self.lifecycle.policy == .keep_running_on_last_close and self.manager.liveCount() == 0) {
+                        _ = self.manager.create(self.default_window) catch |err| {
+                            std.log.warn("reopen: recreate default window failed: {}", .{err});
+                        };
+                    }
+                    self.lifecycle.handle(event);
+                },
                 .did_launch => {},
             }
         }
@@ -608,6 +642,44 @@ test "E: quit_on_last_close terminates on window_all_closed" {
     defer teardownMulti(h);
     h.backend.simulateLifecycle(.window_all_closed);
     try std.testing.expectEqual(@as(usize, 1), h.backend.countEvents(.terminated));
+}
+
+test "E: reopen under keep_running recreates the default window from the manifest" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    // Drive every window closed directly: under keep_running, window_all_closed
+    // does NOT close anything, so reach liveCount 0 by closing each label.
+    try h.app.manager.close("main");
+    try h.app.manager.close("viewer");
+    try std.testing.expectEqual(@as(usize, 0), h.app.manager.liveCount());
+    // The OS reports the last window gone; keep_running stays alive (no terminate).
+    h.backend.simulateLifecycle(.window_all_closed);
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countEvents(.terminated));
+
+    const before = h.backend.countEvents(.created); // 2 (both initial windows)
+    h.backend.simulateLifecycle(.reopen); // recreates the default window
+    try std.testing.expectEqual(before + 1, h.backend.countEvents(.created));
+    try std.testing.expectEqual(@as(usize, 1), h.app.manager.liveCount());
+    // The recreated window is the default ("main"), mapped so the bridge routes it.
+    try std.testing.expect(h.app.manager.lookup("main") != null);
+}
+
+test "E: reopen with a window still live is a no-op (no second window)" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    const before = h.backend.countEvents(.created); // 2 windows still live
+    h.backend.simulateLifecycle(.reopen);
+    try std.testing.expectEqual(before, h.backend.countEvents(.created));
+    try std.testing.expectEqual(@as(usize, 2), h.app.manager.liveCount());
+}
+
+test "E: reopen under quit_on_last_close does not recreate (the app terminated)" {
+    const h = try makeAppMulti(.quit_on_last_close);
+    defer teardownMulti(h);
+    h.backend.simulateLifecycle(.window_all_closed); // terminates + shuts down
+    const before = h.backend.countEvents(.created);
+    h.backend.simulateLifecycle(.reopen); // reaches the dead sentinel, never the App
+    try std.testing.expectEqual(before, h.backend.countEvents(.created));
 }
 
 test "E: each configured label routes its own invoke reply" {
