@@ -10,6 +10,8 @@ pub const NullBackend = struct {
     pub const SetTitleError = seam.SetTitleError;
     pub const LifecycleEvent = seam.LifecycleEvent;
 
+    pub const Event = enum { created, shown, destroyed, terminated };
+
     const Eval = struct { window_id: u64, js: []const u8 };
     const FakeWindow = struct {
         id: u64, // monotonic attested id (finding H8/M14); NOT a pointer
@@ -38,6 +40,7 @@ pub const NullBackend = struct {
     eval_log: std.ArrayList(Eval) = .empty, // record, read by tests on the test thread
     injected_scripts: std.ArrayList([]const u8) = .empty,
     lifecycle_calls: std.ArrayList(LifecycleEvent) = .empty,
+    events: std.ArrayList(Event) = .empty,
     eval_drops: usize = 0, // count of evalJS payloads dropped on OOM (finding H9)
     post_terminate_drops: usize = 0, // pending entries pumpMain dropped after terminate (H11 accounting)
     terminated: std.atomic.Value(bool) = .init(false),
@@ -81,6 +84,7 @@ pub const NullBackend = struct {
         for (self.injected_scripts.items) |s| self.alloc.free(s);
         self.injected_scripts.deinit(self.alloc);
         self.lifecycle_calls.deinit(self.alloc);
+        self.events.deinit(self.alloc);
         const a = self.alloc;
         a.destroy(self);
     }
@@ -126,6 +130,7 @@ pub const NullBackend = struct {
             .shown = opts.show,
         });
         self.next_window_id += 1;
+        self.events.append(self.alloc, .created) catch {};
 
         // Window appended; commit script copies to the reserved slots.
         // appendAssumeCapacity is infallible because we reserved above.
@@ -134,7 +139,9 @@ pub const NullBackend = struct {
         return self.windows.items.len - 1;
     }
 
-    pub fn destroyWindow(_: *NullBackend, _: WindowHandle) void {}
+    pub fn destroyWindow(self: *NullBackend, _: WindowHandle) void {
+        self.events.append(self.alloc, .destroyed) catch {};
+    }
 
     pub fn setTitle(self: *NullBackend, h: WindowHandle, title: [:0]const u8) SetTitleError!void {
         const new_title = try self.alloc.dupe(u8, title);
@@ -153,6 +160,7 @@ pub const NullBackend = struct {
 
     pub fn showWindow(self: *NullBackend, h: WindowHandle) void {
         self.windows.items[h].shown = true;
+        self.events.append(self.alloc, .shown) catch {};
     }
 
     pub fn focusWindow(_: *NullBackend, _: WindowHandle) void {}
@@ -230,6 +238,7 @@ pub const NullBackend = struct {
 
     pub fn terminate(self: *NullBackend) void {
         self.terminated.store(true, .release);
+        self.events.append(self.alloc, .terminated) catch {};
     }
 
     pub fn nativeWindow(_: *NullBackend, _: WindowHandle) ?*anyopaque {
@@ -280,6 +289,15 @@ pub const NullBackend = struct {
     }
 
     // ── Test inspection ───────────────────────────────────────────────────────
+
+    /// Count events of `kind` in the append-only events log (test infra).
+    pub fn countEvents(self: *NullBackend, kind: Event) usize {
+        var n: usize = 0;
+        for (self.events.items) |e| {
+            if (e == kind) n += 1;
+        }
+        return n;
+    }
 
     /// Count eval_log entries containing `needle`. Call after pumpMain. Uses
     /// std.mem.indexOf (O(n*m) substring search); fine for test bodies.
@@ -733,4 +751,22 @@ test "simulateLifecycle records the call and invokes the callback (instance ctx,
     b.simulateLifecycle(.did_launch);
     try std.testing.expectEqual(@as(?seam.LifecycleEvent, .did_launch), capture.last_event);
     try std.testing.expectEqual(@as(usize, 1), b.lifecycle_calls.items.len);
+}
+
+test "NullBackend records an ordered events log for create/show/destroy/terminate" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    const h0 = try be.createWindow(.{ .url = "app://localhost/index.html" });
+    be.showWindow(h0);
+    be.destroyWindow(h0);
+    be.terminate();
+    try std.testing.expectEqual(@as(usize, 4), be.events.items.len);
+    try std.testing.expectEqual(NullBackend.Event.created, be.events.items[0]);
+    try std.testing.expectEqual(NullBackend.Event.shown, be.events.items[1]);
+    try std.testing.expectEqual(NullBackend.Event.destroyed, be.events.items[2]);
+    try std.testing.expectEqual(NullBackend.Event.terminated, be.events.items[3]);
+    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.destroyed));
 }
