@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const objc = @import("objc");
 const protocol = @import("../../protocol.zig"); // for MAX_MESSAGE_LEN at the inbound seam
 const assoc = @import("assoc.zig");
@@ -10,6 +9,7 @@ const scheme_mod = @import("scheme.zig");
 const delegate_mod = @import("delegate.zig");
 const dispatch = @import("dispatch.zig");
 const origin = @import("origin.zig");
+const fuses = @import("../../manifest/fuses.zig");
 
 var handler_backend_key: u8 = 0;
 
@@ -230,7 +230,7 @@ pub const MacOSBackend = struct {
         errdefer _ = objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(webview, objc.sel("release"));
         _ = objc.msgSend(*const fn (objc.id, objc.SEL, objc.id) callconv(.c) void)(window, objc.sel("setContentView:"), webview);
 
-        if (builtin.mode == .Debug) {
+        if (comptime fuses.debug_inspector) {
             _ = objc.msgSend(*const fn (objc.id, objc.SEL, bool) callconv(.c) void)(webview, objc.sel("setInspectable:"), true);
         }
 
