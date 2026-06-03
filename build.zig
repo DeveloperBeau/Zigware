@@ -156,10 +156,11 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
-    // bridge.zig's TestBridge harness builds a WindowManager (E), which
-    // @embedFiles the frontend JS; the test compilation needs those embeds.
-    addEmbedTest(b, test_step, target, optimize, "src/bridge.zig");
-    addEmbedTest(b, test_step, target, optimize, "src/window_tests.zig");
+    // src/bridge.zig and src/window_tests.zig build a WindowManager (E), and
+    // manager.zig now imports manifest/fuses.zig (the allow_eval gate), which
+    // resolves @import("zigware_manifest_zon"). They therefore need wireManifest
+    // in addition to the frontend embeds, so they are registered via
+    // addEmbedManifestTest after effective_zon is defined (see below).
     // src/app.zig and src/sec_regression.zig both transitively compile
     // manifest/parse.zig (app.zig now calls parse.embedded()), so they need
     // wireManifest in addition to the frontend embeds; addEmbedTest exposes no
@@ -301,6 +302,10 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
+    // bridge.zig and window_tests.zig compile manager.zig, which imports
+    // manifest/fuses.zig and so needs the effective manifest wired too.
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/window_tests.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts

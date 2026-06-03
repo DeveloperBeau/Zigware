@@ -4,9 +4,29 @@ const D = @import("../manifest/types.zig");
 const win = @import("window.zig");
 const protocol = @import("../protocol.zig");
 const NullBackend = @import("../platform/null.zig").NullBackend;
+const fuses = @import("../manifest/fuses.zig");
 
 const zigware_js = @embedFile("frontend/zigware.js");
 const window_js = @embedFile("frontend/window.js");
+
+/// Static, F-chosen source (never user data; stays clear of the G6 output-encoding
+/// boundary). Lives under the single root namespace window.Zigware. Referenced ONLY
+/// under `comptime fuses.allow_eval`, so a default build (allowEval = false) compiles
+/// the string out of the binary entirely.
+const dev_client_src =
+    \\window.Zigware = window.Zigware || {};
+    \\window.Zigware.__dev = {
+    \\  reload() { location.reload(); },
+    \\  rehandshake() { /* reserved: v0.2 process-preserving bridge re-handshake */ },
+    \\};
+;
+
+/// Number of dev-client user_scripts entries the manager injects: 1 when the
+/// allowEval fuse is set at comptime, else 0. The injection itself is gated on the
+/// same comptime condition, so the 4th user_scripts entry is present iff allow_eval.
+pub fn dev_client_count() usize {
+    return if (comptime fuses.allow_eval) 1 else 0;
+}
 
 pub const default_show_fallback_ms: u32 = 5000;
 
@@ -83,7 +103,16 @@ pub fn WindowManager(comptime B: type) type {
             var label_script_aw: std.Io.Writer.Allocating = .init(self.gpa);
             defer label_script_aw.deinit();
             buildLabelScript(&label_script_aw.writer, opts.label) catch return error.OutOfMemory;
-            const user_scripts = [_][]const u8{ zigware_js, window_js, label_script_aw.writer.buffered() };
+            // The dev-client entry is appended ONLY under the comptime allow_eval
+            // gate; dev_client_src is referenced nowhere else, so a default build
+            // (allowEval = false) compiles the string out entirely. Invariant: the
+            // 4th user_scripts entry is present iff allow_eval. Core IPC evalJS is
+            // untouched — only this injection is gated.
+            const base_scripts = [_][]const u8{ zigware_js, window_js, label_script_aw.writer.buffered() };
+            const user_scripts = if (comptime fuses.allow_eval)
+                base_scripts ++ [_][]const u8{dev_client_src}
+            else
+                base_scripts;
 
             const handle = self.backend.createWindow(.{
                 .url = url_z,
