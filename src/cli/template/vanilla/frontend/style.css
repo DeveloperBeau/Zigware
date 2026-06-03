@@ -1,0 +1,45 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+
+.app {
+  max-width: 32rem;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+}
+
+.hint {
+  color: #888;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.out {
+  margin-top: 1.5rem;
+  font-family: ui-monospace, monospace;
+}
+
+.err {
+  margin-top: 1.5rem;
+  color: #c0392b;
+}
