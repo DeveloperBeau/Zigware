@@ -176,9 +176,16 @@ pub fn Bridge(comptime B: type) type {
             // Resolve the attested label ONCE, before any reject path, so every
             // early reject (oversize, malformed, unknown command, gate deny, G5)
             // routes its terminal _reject to the window that made the call, never
-            // the bootstrap "main" handle. labelFor falls back to "main" for an
-            // unknown id (pre-E parity) and for the single-window (manager==null) path.
-            const label = self.labelFor(window_id);
+            // the bootstrap "main" handle.
+            //
+            // With a manager wired (E), an unresolved id is UNATTRIBUTABLE: it must
+            // not borrow main's grants and its reply must not mis-route to main, so
+            // we DROP the message here, exactly like handleReserved fails closed.
+            // Without a manager (pre-E single-window PoC), any id resolves to "main".
+            const label = if (self.manager) |m|
+                (m.labelFor(window_id) orelse return) // unknown/closed window: drop
+            else
+                "main";
 
             // Layer-2 message-size cap (H1). onMessageImp enforces it first at
             // the objc seam; this is the defense-in-depth check for any caller.
@@ -252,16 +259,6 @@ pub fn Bridge(comptime B: type) type {
 
         fn workerCount() usize {
             return @min(@max(std.Thread.getCpuCount() catch 4, 1), 8);
-        }
-
-        /// Resolve a window id to its stable label. v0.1.0 has the single attested
-        /// "main" window (A ships it, B seeded main_window_id). Any id maps to
-        /// "main"; E generalizes this to a real windowId->label map.
-        fn labelFor(self: *Self, window_id: u64) []const u8 {
-            if (self.manager) |m| {
-                if (m.labelFor(window_id)) |l| return l;
-            }
-            return "main";
         }
 
         /// Best-effort scan for a numeric `"id": N` in raw (possibly malformed)
@@ -746,6 +743,25 @@ test "E: a gate deny from a window routes its reject to that same window" {
     for (t.backend.eval_log.items) |e| {
         if (std.mem.indexOf(u8, e.js, "_reject(3, ") != null)
             try std.testing.expectEqual(t.id_b, e.window_id);
+    }
+}
+
+test "E: a message from an unattributable window id is dropped (fail closed)" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    // 999 is neither a's nor b's id. Under a WIRED manager it is unattributable,
+    // so the message must be DROPPED: no gating as "main", no resolve and no reject
+    // routed anywhere. Were it coerced to "main", the well-formed sha256 call would
+    // have produced a terminal _resolve(8, ...).
+    t.bridge.handleMessage(999, "app://localhost", "{\"id\":8,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countResolveExactly(8));
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(8));
+    // Nothing for id 8 reached any window: no terminal frame for the dropped id was
+    // ever emitted, so in particular none mis-routed to main.
+    for (t.backend.eval_log.items) |e| {
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "_resolve(8, ") == null);
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "_reject(8, ") == null);
     }
 }
 
