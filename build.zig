@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     exe_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     exe_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    exe_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
     b.installArtifact(exe);
 
@@ -65,7 +66,6 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
     addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
     addLogicTest(b, test_step, target, optimize, "src/security_tests.zig");
-    addLogicTest(b, test_step, target, optimize, "src/window_tests.zig");
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
@@ -90,6 +90,7 @@ pub fn build(b: *std.Build) void {
             m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
             m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
             m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
+            m.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
@@ -97,6 +98,7 @@ pub fn build(b: *std.Build) void {
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
     addEmbedTest(b, test_step, target, optimize, "src/app.zig");
     addEmbedTest(b, test_step, target, optimize, "src/sec_regression.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/window_tests.zig");
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
@@ -280,6 +282,7 @@ pub fn build(b: *std.Build) void {
     cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     cov_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    cov_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
     cov_mod.addImport("objc", objc_mod);
     wireManifest(cov_mod, effective_zon);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
