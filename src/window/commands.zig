@@ -4,6 +4,7 @@ const gates = @import("../security/gates.zig");
 const cap = @import("../security/capability.zig");
 const Bridge = @import("../bridge.zig").Bridge;
 const builtin = @import("../commands/builtin.zig");
+const D = @import("../manifest/types.zig");
 
 const State = builtin.State; // window commands share the app State; they use ctx.services
 
@@ -14,6 +15,9 @@ pub const CreateArgs = struct {
     width: u32 = 800,
     height: u32 = 600,
     decorations: bool = true,
+    // camelCase to match the JS wire and D.Window. std.json decodes the enum
+    // from a string, so a JS caller sends e.g. { "titleBarStyle": "hidden_inset" }.
+    titleBarStyle: D.TitleBarStyle = .default,
     show: bool = false,
 };
 pub const LabelArg = struct { label: []const u8 };
@@ -80,6 +84,7 @@ pub fn WindowCommands(comptime B: type) type {
                 .width = args.width,
                 .height = args.height,
                 .decorations = args.decorations,
+                .title_bar_style = args.titleBarStyle,
                 .show = args.show,
             }) catch |e| return .{ .err = mapErr(e) };
             return .{ .ok = .{ .label = args.label } };
@@ -394,6 +399,44 @@ test "window.create rejects a duplicate label with window.label_in_use" {
     t.call(t.id_main, "{\"id\":2,\"cmd\":\"window.create\",\"args\":{\"label\":\"viewer\",\"url\":\"app://localhost/v\"}}");
     try std.testing.expect(rejectCarries(t.backend, 2, "window.label_in_use"));
     // No SECOND seam window was created on the duplicate.
+    try std.testing.expectEqual(before + 1, t.backend.countEvents(.created));
+}
+
+test "CreateArgs decodes a camelCase titleBarStyle string into the enum" {
+    // Direct decode assertion: a JS caller sends the camelCase key with a string
+    // value; std.json maps it onto D.TitleBarStyle. A non-default value is chosen
+    // so a decode that silently dropped the field would fail this assertion.
+    const parsed = try std.json.parseFromSlice(
+        CreateArgs,
+        std.testing.allocator,
+        "{\"label\":\"viewer\",\"titleBarStyle\":\"hidden_inset\"}",
+        .{},
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(D.TitleBarStyle.hidden_inset, parsed.value.titleBarStyle);
+    // The default holds when the field is omitted.
+    const parsed2 = try std.json.parseFromSlice(
+        CreateArgs,
+        std.testing.allocator,
+        "{\"label\":\"viewer\"}",
+        .{},
+    );
+    defer parsed2.deinit();
+    try std.testing.expectEqual(D.TitleBarStyle.default, parsed2.value.titleBarStyle);
+}
+
+test "window.create with a runtime titleBarStyle resolves and creates the window" {
+    var t = try WinHarness.init();
+    defer t.deinit();
+    const before = t.backend.countEvents(.created);
+    // "main" is manage-granted; "viewer" is in scope. The titleBarStyle string
+    // decodes through CreateArgs and is plumbed into the manager's create opts.
+    // NullBackend's FakeWindow does not record the titlebar style, so the
+    // assertion is that the create RESOLVED and a single seam window was created;
+    // the string->enum decode is asserted directly above.
+    t.call(t.id_main, "{\"id\":12,\"cmd\":\"window.create\",\"args\":{\"label\":\"viewer\",\"url\":\"app://localhost/v\",\"titleBarStyle\":\"hidden\"}}");
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(12));
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(12));
     try std.testing.expectEqual(before + 1, t.backend.countEvents(.created));
 }
 

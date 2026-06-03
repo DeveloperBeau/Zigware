@@ -515,6 +515,53 @@ test "a real short-fallback watchdog fires and shows the window (spawn/sleep/fre
     // Determinism for the SHOW assertion is covered by fireFallback above.
 }
 
+test "the watchdog thread drives the show end-to-end (timer -> dispatchMain -> fireMain -> showWindow)" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = tm(be);
+    mgr.fallback_ms = 10; // tiny, so the timer expires quickly
+    defer mgr.deinit();
+    const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
+
+    // Poll the SYNCHRONIZED signal `e.shown` under map_mutex, the same mutex
+    // transitionReady writes it under, until the timer thread expires and drives
+    // the show (watchdogBody -> dispatchMain -> fireMain -> fireFallback ->
+    // transitionReady -> showWindow; NullBackend dispatchMain runs inline on the
+    // watchdog thread, so the show happens once the thread expires). We do NOT
+    // cancel first and we never call fireFallback directly, so this proves the
+    // THREAD path. The bound is generous (400 x 5ms = ~2s) so a slow CI run cannot
+    // flake; an early break keeps the fast path fast.
+    //
+    // DEVIATION (forced by soundness): we poll `e.shown` under map_mutex rather
+    // than `be.countEvents(.shown)`, because the NullBackend event log is appended
+    // by showWindow WITHOUT a lock. Reading it from this thread while the watchdog
+    // thread appends would be a data race (a torn read, or a realloc-induced UAF
+    // when the append grows the buffer). `e.shown` is written under map_mutex, so
+    // polling it under the same mutex is race-free.
+    var spun: usize = 0;
+    while (spun < 400) : (spun += 1) {
+        mgr.map_mutex.lockUncancelable(mgr.io);
+        const done = e.shown;
+        mgr.map_mutex.unlock(mgr.io);
+        if (done) break;
+        std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(5), .awake) catch {};
+    }
+
+    // Join the (already-fired) thread before touching the unlocked event log. The
+    // cancel store is harmless here: we've already observed shown==true, so the
+    // fire happened; join just reaps the thread after its showWindow append
+    // returned, establishing the happens-before that makes the reads below safe.
+    mgr.cancelWatchdog(e);
+
+    // Single-threaded now: assert the thread reached expiry and drove the show.
+    try std.testing.expect(e.shown);
+    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+    // mgr.deinit at teardown finds watchdog == null (already reaped) and no-ops.
+}
+
 // Fault-injection sweep over create. The backend AND the manager share the SAME
 // allocator the harness injects, so a single failing index covers every
 // allocation in create's path: the label dupe, the url/title dupeZ, the
