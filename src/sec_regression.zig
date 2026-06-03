@@ -21,6 +21,7 @@ const protocol = @import("protocol.zig");
 const assets = @import("assets.zig");
 const fixtures = @import("security_test_fixtures.zig");
 const security_gates = @import("security/gates.zig");
+const manifest_types = @import("manifest/types.zig");
 
 const dummy_bases = security_gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
@@ -38,12 +39,15 @@ const Harness = struct {
     fn init() !Harness {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
         const grants = try fixtures.buildTestGrants(std.testing.allocator);
-        const app = App(NullBackend).initWithGrants(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+        // One "main" window with quit_on_last_close so the existing single-window
+        // shutdown expectations hold (E's production default is keep-running).
+        const windows = [_]manifest_types.Window{.{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true }};
+        const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 5000) catch |err| {
             grants.deinit();
             std.testing.allocator.destroy(grants);
             return err;
         };
-        const main_id = backend.windowId(app.window);
+        const main_id = app.manager.lookup("main").?.window_id;
         return .{ .backend = backend, .app = app, .main_id = main_id };
     }
     fn settle(self: *Harness) void {
@@ -308,7 +312,7 @@ test "attack: simulate* after app.deinit never reaches the freed App (fail-close
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     defer backend.deinit();
     const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
-    const main_id = backend.windowId(app.window);
+    const main_id = app.manager.lookup("main").?.window_id;
     app.deinit(); // runs App.shutdown: installs the fail-closed sentinel callbacks + markJoined
     // After shutdown, backend.terminated is set, so simulate* short-circuit; even
     // if they did not, the fail-closed sentinel returns 404 / no-op and never
@@ -613,12 +617,13 @@ test "I2: a 1000-message flood stays within a bounded transient budget (concurre
     // excess as "busy" (core:default would deny every sha256 at G2 before G5).
     // Build on `a` so the App (owns_grants=true) frees them with the same allocator.
     const grants = try fixtures.buildTestGrants(a);
-    const app = App(NullBackend).initWithGrants(a, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+    const windows = [_]manifest_types.Window{.{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true }};
+    const app = App(NullBackend).initWithConfig(a, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         a.destroy(grants);
         return err;
     };
-    const main_id = backend.windowId(app.window);
+    const main_id = app.manager.lookup("main").?.window_id;
     defer {
         app.deinit();
         backend.deinit();
@@ -990,7 +995,7 @@ test "live gate: an ungranted command is denied with command.not_granted" {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     defer backend.deinit();
     const app = try App(NullBackend).init(std.testing.allocator, std.testing.io, backend);
-    const main_id = backend.windowId(app.window);
+    const main_id = app.manager.lookup("main").?.window_id;
     backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     app.bridge.drainForTest();
     backend.pumpMain();

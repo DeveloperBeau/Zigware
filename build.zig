@@ -95,12 +95,15 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
-    addEmbedTest(b, test_step, target, optimize, "src/app.zig");
     // bridge.zig's TestBridge harness builds a WindowManager (E), which
     // @embedFiles the frontend JS; the test compilation needs those embeds.
     addEmbedTest(b, test_step, target, optimize, "src/bridge.zig");
-    addEmbedTest(b, test_step, target, optimize, "src/sec_regression.zig");
     addEmbedTest(b, test_step, target, optimize, "src/window_tests.zig");
+    // src/app.zig and src/sec_regression.zig both transitively compile
+    // manifest/parse.zig (app.zig now calls parse.embedded()), so they need
+    // wireManifest in addition to the frontend embeds; addEmbedTest exposes no
+    // module handle, so they are registered explicitly after effective_zon is
+    // defined (see the addEmbedManifestTest calls below the manifest wiring).
 
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
@@ -206,6 +209,37 @@ pub fn build(b: *std.Build) void {
 
     const emit_eff_step = b.step("emit-effective-manifest", "Emit the merged effective manifest .zon");
     emit_eff_step.dependOn(&emit_eff_run.step);
+
+    // app.zig now imports manifest/parse.zig and calls parse.embedded(), so both
+    // the production executable module and the app test module must resolve
+    // @import("zigware_manifest_zon") to the MERGED+validated effective manifest
+    // (NOT the raw zigware.zon the codegen exe consumes). exe_mod was created
+    // near the top of build(); addExecutable captured it by reference, so wiring
+    // the anonymous import here (after effective_zon exists) is in time.
+    wireManifest(exe_mod, effective_zon);
+
+    // src/app.zig and src/sec_regression.zig both need the frontend embeds AND
+    // wireManifest (app.zig calls parse.embedded(); sec_regression imports App).
+    // addEmbedTest exposes no module handle for wireManifest, so they are
+    // registered explicitly here, after effective_zon is defined.
+    const addEmbedManifestTest = struct {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, zon: std.Build.LazyPath, src: []const u8) void {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path(src),
+                .target = t,
+                .optimize = o,
+            });
+            m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
+            m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
+            m.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
+            wireManifest(m, zon);
+            const tt = bb.addTest(.{ .root_module = m });
+            ts.dependOn(&bb.addRunArtifact(tt).step);
+        }
+    }.add;
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts
