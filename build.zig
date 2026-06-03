@@ -120,6 +120,12 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/dev.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/build.zig");
+    // init.zig imports only std at stub time; bare registrar suffices. A8 swaps this to
+    // addLogicTestWithTemplates once the template embeds + template_index.zig land so C4's
+    // init.run tests can resolve the anonymous template imports.
+    addLogicTest(b, test_step, target, optimize, "src/cli/init.zig");
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
