@@ -138,6 +138,131 @@ pub fn build(b: *std.Build) void {
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_mod });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
+    // ─── Manifest module wiring ──────────────────────────────────────────────
+    //
+    // The build-time codegen reads zigware.zon (and any per-OS overrides), runs
+    // the merge+validate pipeline, and emits a single .zon literal that every
+    // CONSUMING module imports via @import("zigware_manifest_zon"). Production
+    // embedded() therefore returns the merged+validated manifest, not the raw
+    // source. The codegen exe itself is the one exception: it consumes the RAW
+    // source because parse.zig declares embedded() and that @import resolves at
+    // parse.zig COMPILATION time, which would otherwise be a chicken-and-egg.
+    //
+    // The codegen module is rooted directly at emit_effective.zig; parse.zig,
+    // validate.zig, merge.zig, and types.zig are reached via file-path imports
+    // and so become members of the same module. The plan's separate manifest_mod
+    // / types_mod structure is incompatible with how those files cross-import
+    // each other (e.g. parse.zig does `@import("types.zig")` by path), because
+    // a file can only belong to one module per compilation.
+    const emit_eff_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/emit_effective.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // parse.zig (a file member of emit_eff_mod via the codegen's relative
+    // import) declares embedded() with @import("zigware_manifest_zon"), so the
+    // anonymous import must be wired here. The codegen never CALLS embedded();
+    // the wire only satisfies the compile-time @import resolution.
+    emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
+
+    const emit_eff_exe = b.addExecutable(.{ .name = "emit_effective_manifest", .root_module = emit_eff_mod });
+    const emit_eff_run = b.addRunArtifact(emit_eff_exe);
+    // argv[1] = output path (materialised as a LazyPath downstream consumers can wire).
+    const effective_zon: std.Build.LazyPath = emit_eff_run.addOutputFileArg("zigware.effective.zon");
+    // argv[2] = base manifest path; pinned via addFileArg so an edit invalidates the cache.
+    emit_eff_run.addFileArg(b.path("zigware.zon"));
+    // argv[3..] = per-OS override paths; pin every existing one. build.zig's
+    // configure-phase filesystem reads use b.build_root.handle + b.graph.io;
+    // std.fs.cwd() is not in 0.16.
+    const root = b.build_root.handle;
+    const bio = b.graph.io;
+    for ([_][]const u8{ "zigware.macos.zon", "zigware.linux.zon", "zigware.windows.zon" }) |name| {
+        if (root.access(bio, name, .{})) {
+            emit_eff_run.addFileArg(b.path(name));
+        } else |_| {}
+    }
+    // Capability files (src/capabilities/*.zon) are read by parseAtBuild via
+    // presence enumeration. Pin each one currently present so a change re-runs
+    // the codegen. A missing dir means no files are added; the loader's
+    // missing-dir branch yields an empty present-set.
+    {
+        var cap_dir = root.openDir(bio, "src/capabilities", .{ .iterate = true }) catch null;
+        if (cap_dir) |*dir| {
+            defer dir.close(bio);
+            var it = dir.iterate();
+            while (it.next(bio) catch null) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.name, ".zon")) continue;
+                const sub = b.fmt("src/capabilities/{s}", .{entry.name});
+                emit_eff_run.addFileArg(b.path(sub));
+            }
+        }
+    }
+
+    const emit_eff_step = b.step("emit-effective-manifest", "Emit the merged effective manifest .zon");
+    emit_eff_step.dependOn(&emit_eff_run.step);
+
+    // Manifest test root: src/manifest/*.zig files import each other and cannot
+    // be rooted as standalone logic-test modules. The manifest test root mounts
+    // them under one binary. addLogicTest is not usable here because parse.zig's
+    // embedded() forces @import("zigware_manifest_zon") to resolve at compile
+    // time of parse.zig; the module needs the anonymous import wired.
+    const mt_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireManifest(mt_mod, effective_zon);
+    const mt_tests = b.addTest(.{ .root_module = mt_mod });
+    test_step.dependOn(&b.addRunArtifact(mt_tests).step);
+
+    // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
+    // source bytes produce identical Manifest values. The fixture lives at
+    // tests/manifest/embed_fixture/zigware.zon and is wired here as this
+    // module's zigware_manifest_zon import so embedded() resolves to the
+    // fixture, not the production effective manifest. parseAtBuild in turn
+    // reads the fixture dir at test time. Identical bytes on both sides keeps
+    // the comparison well-defined.
+    const embed_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/embed_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    embed_test_mod.addAnonymousImport("zigware_manifest_zon", .{
+        .root_source_file = b.path("tests/manifest/embed_fixture/zigware.zon"),
+    });
+    const embed_tests = b.addTest(.{ .root_module = embed_test_mod });
+    test_step.dependOn(&b.addRunArtifact(embed_tests).step);
+
+    // Fuse-constants module: thin re-export of the embedded fuses so the
+    // bridge/command layer can prune disabled branches at comptime. Tested
+    // both through the manifest test root (via src/manifest_tests.zig) and
+    // through its own standalone test binary so the comptime-lock fires
+    // even if the test root's import is removed in a refactor.
+    const fuses_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/fuses.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireManifest(fuses_mod, effective_zon);
+    const fuses_tests = b.addTest(.{ .root_module = fuses_mod });
+    test_step.dependOn(&b.addRunArtifact(fuses_tests).step);
+
+    // JSON Schema emitter: produces zigware-manifest.schema.json at the repo
+    // root for editor autocomplete. Reflection-driven; a new Manifest field
+    // shows up in the schema on the next `zig build manifest-schema`.
+    // schema_gen.zig reaches types via `@import("types.zig")` (file path), so
+    // no module-level types import is needed here.
+    const schema_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/schema_gen.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const schema_exe = b.addExecutable(.{ .name = "manifest_schema", .root_module = schema_mod });
+    const schema_run = b.addRunArtifact(schema_exe);
+    const schema_step = b.step("manifest-schema", "Generate zigware-manifest.schema.json");
+    schema_step.dependOn(&schema_run.step);
+
     // coverage-exe: the full headless logic surface. Rooted at app.zig, which
     // transitively imports bridge, null backend, assets, backend contract,
     // protocol, allowlist, jobs, and commands. The pure macOS helpers
@@ -155,8 +280,17 @@ pub fn build(b: *std.Build) void {
     cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
     cov_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     cov_mod.addImport("objc", objc_mod);
+    wireManifest(cov_mod, effective_zon);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});
     const cov_step = b.step("coverage-exe", "Build the logic-tests binary for kcov");
     cov_step.dependOn(&cov_install.step);
+}
+
+/// Wires the build-time codegen output onto a module so `@import("zigware_manifest_zon")`
+/// resolves to the merged+validated effective manifest at compile time. Every
+/// module that transitively compiles src/manifest/parse.zig (except the codegen
+/// exe itself) MUST have this called on it.
+fn wireManifest(mod: *std.Build.Module, zon: std.Build.LazyPath) void {
+    mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = zon });
 }

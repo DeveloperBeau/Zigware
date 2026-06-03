@@ -1,0 +1,6 @@
+.{
+    .identifier = "com.example.app",
+    .productName = "Base",
+    .version = "0.1.0",
+    .app = .{ .windows = .{.{ .label = "main", .title = "Main" }} },
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Zigware Manifest",
+  "type": "object",
+  "properties": {
+    "identifier": {"type": "string"},
+    "productName": {"type": "string"},
+    "version": {"type": "string"},
+    "app": {
+      "type": "object",
+      "properties": {
+        "windowDefaults": {
+          "type": "object",
+          "properties": {
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
+            "show": {"type": "boolean"},
+            "titleBarStyle": {"enum": ["default", "hidden", "hidden_inset"]},
+            "decorations": {"type": "boolean"}
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "windows": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "label": {"type": "string"},
+            "url": {"type": "string"},
+            "title": {"type": "string"},
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
+            "decorations": {"type": "boolean"},
+            "titleBarStyle": {"enum": ["default", "hidden", "hidden_inset"]},
+            "show": {"type": "boolean"}
+          },
+          "required": ["label", "title"],
+          "additionalProperties": false
+        }},
+        "quitOnLastWindowClosed": {"enum": ["keep_running_on_last_close", "quit_on_last_close", "explicit"]},
+        "windowShowFallbackMs": {"type": "integer"}
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "csp": {
+          "type": "object",
+          "properties": {
+            "defaultSrc": {"type": "array", "items": {"type": "string"}},
+            "scriptSrc": {"type": "array", "items": {"type": "string"}},
+            "styleSrc": {"type": "array", "items": {"type": "string"}},
+            "connectSrc": {"type": "array", "items": {"type": "string"}},
+            "imgSrc": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "fuses": {
+          "type": "object",
+          "properties": {
+            "allowRemoteContent": {"type": "boolean"},
+            "allowEval": {"type": "boolean"},
+            "allowShell": {"type": "boolean"},
+            "debugInspector": {"type": "boolean"}
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "beforeDevCommand": {"type": "string"},
+        "beforeBuildCommand": {"type": "string"},
+        "devUrl": {"type": "string"},
+        "frontendDist": {"type": "string"}
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "bundle": {
+      "type": "object",
+      "properties": {
+        "targets": {"type": "array", "items": {"enum": ["app", "dmg"]}},
+        "icon": {"type": "array", "items": {"type": "string"}},
+        "category": {"type": "string"},
+        "copyright": {"type": "string"},
+        "macos": {
+          "type": "object",
+          "properties": {
+            "signingIdentity": {"type": "string"},
+            "hardenedRuntime": {"type": "boolean"},
+            "entitlements": {"type": "string"},
+            "providerShortName": {"type": "string"},
+            "minimumSystemVersion": {"type": "string"}
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "required": ["identifier", "productName", "version"],
+  "additionalProperties": false
+}

@@ -30,4 +30,9 @@ test {
     _ = @import("security/scope/argv.zig");
     _ = @import("security/scope/label.zig");
     _ = @import("manifest/types.zig");
+    _ = @import("manifest/parse.zig");
+    _ = @import("manifest/validate.zig");
+    _ = @import("manifest/merge.zig");
+    _ = @import("manifest/schema_gen.zig");
+    _ = @import("manifest/fuses.zig");
 }
