@@ -65,19 +65,20 @@ pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: t
         pub fn dispatch(
             bridge: anytype,
             state: *State,
+            label: []const u8,
             name: []const u8,
             id: u64,
             args_json: []const u8,
         ) void {
             inline for (comptime declFns(UserCommands)) |d| {
                 if (std.mem.eql(u8, d.name, name)) {
-                    dispatchOne(@field(UserCommands, d.name), bridge, state, id, args_json);
+                    dispatchOne(@field(UserCommands, d.name), bridge, state, label, id, args_json);
                     return;
                 }
             }
             // Unknown command never reaches here: the gate (Task 5) checks the
             // allowlist first. Defensive structured reject just in case.
-            bridge.emitErrorReject(id, "unknown_command", "no such command", null);
+            bridge.emitErrorReject(label, id, "unknown_command", "no such command", null);
             bridge.releaseCall(id);
         }
     };
@@ -158,7 +159,7 @@ fn validate(comptime State: type, comptime UserCommands: type) void {
 /// Run one command. Comptime-specialized to `handler`'s arg type and return
 /// type. Sync handlers run inline; Async(...) handlers submit a heap thunk to
 /// bridge.pool. Arg decode failure becomes a structured `bad_args` reject.
-fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, id: u64, args_json: []const u8) void {
+fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, label: []const u8, id: u64, args_json: []const u8) void {
     const FT = @TypeOf(handler);
     const fn_info = @typeInfo(FT).@"fn";
     const Ret = fn_info.return_type.?;
@@ -173,36 +174,49 @@ fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, id: u
             state: *StateT,
             id: u64,
             args_json: []u8, // arena-free copy owned by this ctx
+            label: []u8, // owned copy of the attested routing label
 
             fn run(opaque_ctx: *anyopaque, cancel: *std.atomic.Value(bool)) void {
                 const jc: *@This() = @ptrCast(@alignCast(opaque_ctx));
                 // Cache bridge+id BEFORE freeing jc: releaseCall must run after
                 // destroy(jc), and reading jc.bridge/jc.id post-destroy is a UAF
                 // (Round-2 BLOCKER 1) that leaks the reservation in ReleaseSafe.
+                // jc.label follows the SAME window as args_json: read only before
+                // destroy(jc); runHandler arena-dupes it, so the routing copy it
+                // uses outlives the terminal emit.
                 const br = jc.bridge;
                 const cid = jc.id;
-                runHandler(handler, Inner, br, jc.state, cid, jc.args_json, cancel);
+                runHandler(handler, Inner, br, jc.state, jc.label, cid, jc.args_json, cancel);
                 br.alloc.free(jc.args_json);
+                br.alloc.free(jc.label);
                 br.alloc.destroy(jc);
                 br.releaseCall(cid);
             }
         };
         const jc = bridge.alloc.create(JobCtx) catch {
-            bridge.emitErrorReject(id, "internal", "out of memory", null);
+            bridge.emitErrorReject(label, id, "internal", "out of memory", null);
             bridge.releaseCall(id);
             return;
         };
         const args_copy = bridge.alloc.dupe(u8, args_json) catch {
             bridge.alloc.destroy(jc);
-            bridge.emitErrorReject(id, "internal", "out of memory", null);
+            bridge.emitErrorReject(label, id, "internal", "out of memory", null);
             bridge.releaseCall(id);
             return;
         };
-        jc.* = .{ .bridge = bridge, .state = state, .id = id, .args_json = args_copy };
-        bridge.pool.submit(.{ .id = id, .ctx = jc, .run = JobCtx.run }) catch {
+        const label_copy = bridge.alloc.dupe(u8, label) catch {
             bridge.alloc.free(args_copy);
             bridge.alloc.destroy(jc);
-            bridge.emitErrorReject(id, "queue_full", "server busy", null);
+            bridge.emitErrorReject(label, id, "internal", "out of memory", null);
+            bridge.releaseCall(id);
+            return;
+        };
+        jc.* = .{ .bridge = bridge, .state = state, .id = id, .args_json = args_copy, .label = label_copy };
+        bridge.pool.submit(.{ .id = id, .ctx = jc, .run = JobCtx.run }) catch {
+            bridge.alloc.free(args_copy);
+            bridge.alloc.free(label_copy);
+            bridge.alloc.destroy(jc);
+            bridge.emitErrorReject(label, id, "queue_full", "server busy", null);
             bridge.releaseCall(id);
         };
         return;
@@ -210,21 +224,38 @@ fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, id: u
 
     // Sync: run inline on the message thread, then release the reservation.
     var dummy_cancel = std.atomic.Value(bool){ .raw = false };
-    runHandler(handler, Inner, bridge, state, id, args_json, &dummy_cancel);
+    runHandler(handler, Inner, bridge, state, label, id, args_json, &dummy_cancel);
     bridge.releaseCall(id);
 }
 
 /// Decode args, build the Ctx, call the handler, encode the terminal result.
 /// `Inner` is the handler return type after unwrapping Async. Shared by the
 /// sync inline path and the async worker path.
-fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, state: anytype, id: u64, args_json: []const u8, cancel: *std.atomic.Value(bool)) void {
+fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, state: anytype, label: []const u8, id: u64, args_json: []const u8, cancel: *std.atomic.Value(bool)) void {
     const StateT = @typeInfo(@TypeOf(state)).pointer.child;
     var arena = std.heap.ArenaAllocator.init(bridge.alloc);
     defer arena.deinit();
     const a = arena.allocator();
 
+    // Route replies by a copy that survives a handler self-freeing its own entry.
+    // A sync window.close on its OWN label frees the manager entry whose label
+    // slice `label` borrows; the per-call arena outlives the terminal emit, so a
+    // copy here keeps sink.label/window_label/encodeResult routing valid (the
+    // re-resolve then finds the window gone and drops: the correct self-close).
+    // OOM falls back to the borrow.
+    const route = a.dupe(u8, label) catch label;
+
     var sink_ctx = bridge.makeSink(id); // SinkCtx BY VALUE (B1); this frame outlives the call
-    var ctx = Ctx(StateT){ .arena = a, .state = state, .id = id, .cancel = cancel, .emit = &sink_ctx.sink };
+    sink_ctx.sink.label = route; // terminal + sink replies route to the caller's window
+    var ctx = Ctx(StateT){
+        .arena = a,
+        .state = state,
+        .id = id,
+        .cancel = cancel,
+        .emit = &sink_ctx.sink,
+        .window_label = route,
+        .services = @ptrCast(bridge),
+    };
 
     const FT = @TypeOf(handler);
     const fn_info = @typeInfo(FT).@"fn";
@@ -234,7 +265,7 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
         if (fn_info.params.len == 2) {
             const ArgsT = fn_info.params[1].type.?;
             const parsed_args = std.json.parseFromSliceLeaky(ArgsT, a, args_json, protocol.JSON_PARSE_OPTIONS) catch {
-                bridge.emitErrorReject(id, "bad_args", "could not decode arguments", null);
+                bridge.emitErrorReject(route, id, "bad_args", "could not decode arguments", null);
                 return;
             };
             break :blk callMaybeAsync(handler, Inner, &ctx, parsed_args);
@@ -243,7 +274,7 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
         }
     };
 
-    encodeResult(Inner, bridge, &ctx, id, result);
+    encodeResult(Inner, bridge, &ctx, route, id, result);
 }
 
 /// Call handler with or without args; unwrap Async if present. Returns Inner.
@@ -264,21 +295,21 @@ fn isBytes(comptime T: type) bool {
 /// the per-call bin_seq space (H2) and emit a _bin frame through the same sink
 /// as streamed chunks. Routes every string through std.json.Stringify or
 /// jsString (via protocol), so G6 holds. `ctx` is the live per-call Ctx.
-fn encodeResult(comptime Inner: type, bridge: anytype, ctx: anytype, id: u64, result: Inner) void {
+fn encodeResult(comptime Inner: type, bridge: anytype, ctx: anytype, label: []const u8, id: u64, result: Inner) void {
     if (comptime isBytes(Inner)) {
-        emitBytes(ctx, bridge, id, result);
+        emitBytes(ctx, bridge, label, id, result);
         return;
     }
     if (comptime isResult(Inner)) {
         switch (result) {
             .ok => |v| {
-                if (comptime isBytes(@TypeOf(v))) emitBytes(ctx, bridge, id, v) else emitOk(@TypeOf(v), bridge, ctx.arena, id, v);
+                if (comptime isBytes(@TypeOf(v))) emitBytes(ctx, bridge, label, id, v) else emitOk(@TypeOf(v), bridge, ctx.arena, label, id, v);
             },
-            .err => |e| bridge.emitErrorReject(id, e.code, e.message, e.payload_json),
+            .err => |e| bridge.emitErrorReject(label, id, e.code, e.message, e.payload_json),
         }
         return;
     }
-    emitOk(Inner, bridge, ctx.arena, id, result);
+    emitOk(Inner, bridge, ctx.arena, label, id, result);
 }
 
 /// Park the terminal bytes via ctx.binaryChunk so they share the per-call
@@ -287,12 +318,12 @@ fn encodeResult(comptime Inner: type, bridge: anytype, ctx: anytype, id: u64, re
 /// sink as the streamed chunks. On budget overflow it returns false (nothing
 /// emitted), so we reject queue_full; otherwise resolve null and the shim
 /// settles once it has pulled every advertised seq.
-fn emitBytes(ctx: anytype, bridge: anytype, id: u64, b: ctxmod.Bytes) void {
+fn emitBytes(ctx: anytype, bridge: anytype, label: []const u8, id: u64, b: ctxmod.Bytes) void {
     if (!ctx.binaryChunk(b.data, b.mime)) {
-        bridge.emitErrorReject(id, "queue_full", "binary buffer full", null);
+        bridge.emitErrorReject(label, id, "queue_full", "binary buffer full", null);
         return;
     }
-    bridge.emitResolve(id, "null");
+    bridge.emitResolve(label, id, "null");
 }
 
 /// True if T is Result(X) for some X (union(enum){ok,err} with our CommandError).
@@ -305,14 +336,14 @@ fn isResult(comptime T: type) bool {
 }
 
 /// Serialize a success value to JSON and emit a _resolve via the bridge.
-fn emitOk(comptime T: type, bridge: anytype, arena: std.mem.Allocator, id: u64, value: T) void {
+fn emitOk(comptime T: type, bridge: anytype, arena: std.mem.Allocator, label: []const u8, id: u64, value: T) void {
     var aw: std.Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     std.json.Stringify.value(value, .{}, &aw.writer) catch {
-        bridge.emitErrorReject(id, "internal", "could not encode result", null);
+        bridge.emitErrorReject(label, id, "internal", "could not encode result", null);
         return;
     };
-    bridge.emitResolve(id, aw.writer.buffered());
+    bridge.emitResolve(label, id, aw.writer.buffered());
 }
 
 // ─── Test fixtures ──────────────────────────────────────────────────────────
@@ -344,14 +375,14 @@ const StubBridge = struct {
     last: std.ArrayList(u8) = .empty,
     backend_label: []const u8 = "main",
 
-    fn emitResolve(self: *StubBridge, id: u64, json: []const u8) void {
+    fn emitResolve(self: *StubBridge, _: []const u8, id: u64, json: []const u8) void {
         var aw: std.Io.Writer.Allocating = .init(self.alloc);
         defer aw.deinit();
         protocol.encodeResolve(&aw.writer, id, json) catch return;
         self.last.clearRetainingCapacity();
         self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
     }
-    fn emitErrorReject(self: *StubBridge, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
+    fn emitErrorReject(self: *StubBridge, _: []const u8, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
         var aw: std.Io.Writer.Allocating = .init(self.alloc);
         defer aw.deinit();
         protocol.encodeErrorReject(&aw.writer, id, code, message, payload) catch return;
@@ -405,7 +436,7 @@ test "sync command decodes args, runs, resolves" {
     var st = TestState{};
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
-    Reg.dispatch(&b, &st, "add", 1, "{\"a\":2,\"b\":3}");
+    Reg.dispatch(&b, &st, "main", "add", 1, "{\"a\":2,\"b\":3}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(1, ") != null);
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "5") != null);
 }
@@ -416,7 +447,7 @@ test "state injection reaches the handler" {
     var st = TestState{ .offset = 100 };
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
-    Reg.dispatch(&b, &st, "addState", 2, "{\"a\":5}");
+    Reg.dispatch(&b, &st, "main", "addState", 2, "{\"a\":5}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "105") != null);
 }
 
@@ -426,7 +457,7 @@ test "Result.err produces a structured reject" {
     var st = TestState{};
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
-    Reg.dispatch(&b, &st, "readNote", 3, "{\"id\":0}");
+    Reg.dispatch(&b, &st, "main", "readNote", 3, "{\"id\":0}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"not_found\"") != null);
 }
 
@@ -436,7 +467,7 @@ test "malformed args become a bad_args reject" {
     var st = TestState{};
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
-    Reg.dispatch(&b, &st, "add", 4, "{\"a\":\"not a number\"}");
+    Reg.dispatch(&b, &st, "main", "add", 4, "{\"a\":\"not a number\"}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"bad_args\"") != null);
 }
 
@@ -449,7 +480,7 @@ test "async command runs on the pool and resolves" {
     var st = TestState{};
     var b = stubBridge(std.testing.allocator, pool);
     defer b.last.deinit(std.testing.allocator);
-    Reg.dispatch(&b, &st, "slowAdd", 5, "{\"a\":4,\"b\":6}");
+    Reg.dispatch(&b, &st, "main", "slowAdd", 5, "{\"a\":4,\"b\":6}");
     pool.waitIdle();
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(5, ") != null);
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "10") != null);

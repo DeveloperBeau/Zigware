@@ -32,6 +32,10 @@ pub fn isReservedInboundName(name: []const u8) bool {
     return false;
 }
 
+/// The reserved inbound name the page sends when its document is ready to show.
+/// The bridge gates it (G1) and routes the ready signal by the attested window.
+pub const ready_message_name = "__zigware_ready";
+
 /// Per-value length cap and duplicate-field policy passed to std.json on every
 /// parse in the codebase (finding H2). Bounds a single giant string field and
 /// makes duplicate-key handling deterministic (first wins).
@@ -231,6 +235,18 @@ pub fn encodeStream(w: *std.Io.Writer, id: u64, json: []const u8) !void {
 /// window.Zigware._streamEnd(id)
 pub fn encodeStreamEnd(w: *std.Io.Writer, id: u64) !void {
     try w.print("window.Zigware._streamEnd({d});", .{id});
+}
+
+/// window.Zigware._emit(<event-lit>, <json-literal payload>). The push channel
+/// for emit/emitAll: `event` is escaped through jsString (THE injection
+/// boundary; the event name is untrusted display data), the payload through
+/// writeJsonAsJsLiteral (already std.json output from the caller).
+pub fn encodeEmit(w: *std.Io.Writer, event: []const u8, json_payload: []const u8) !void {
+    try w.writeAll("window.Zigware._emit(");
+    try jsString(w, event);
+    try w.writeAll(", ");
+    try writeJsonAsJsLiteral(w, json_payload);
+    try w.writeAll(");");
 }
 
 /// window.Zigware._reject(id, {code, message, payload?})
@@ -595,6 +611,13 @@ test "encodeStreamEnd emits a per-id _streamEnd call" {
     defer aw.deinit();
     try encodeStreamEnd(&aw.writer, 7);
     try std.testing.expectEqualStrings("window.Zigware._streamEnd(7);", aw.writer.buffered());
+}
+
+test "encodeEmit escapes the event name and passes the payload as a JS literal" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encodeEmit(&aw.writer, "theme", "{\"dark\":true}");
+    try std.testing.expectEqualStrings("window.Zigware._emit(\"theme\", {\"dark\":true});", aw.writer.buffered());
 }
 
 test "encodeErrorReject builds a structured {code,message,payload} reject" {

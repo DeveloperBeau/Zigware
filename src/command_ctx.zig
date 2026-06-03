@@ -99,6 +99,13 @@ pub fn Ctx(comptime State: type) type {
         id: u64,
         cancel: *std.atomic.Value(bool),
         emit: *EmitSink,
+        /// The attested label of the window that made this call. Set by the
+        /// bridge per call (defaults to "main" for the pre-E single-window path
+        /// and for the existing Ctx literals in tests). G4 scope checks read it.
+        window_label: []const u8 = "main",
+        /// Type-erased `*Bridge(B)`; the window.* built-ins cast it back to reach
+        /// the manager. Null for non-window handlers and pre-E call sites.
+        services: ?*anyopaque = null,
         /// Monotonic per-call binary sequence, bumped by binaryChunk.
         bin_seq: u32 = 0,
 

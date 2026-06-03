@@ -39,3 +39,18 @@ pub fn buildTestGrants(alloc: std.mem.Allocator) !*GrantTable {
     gt.* = try GrantTable.compile(alloc, &caps, &test_catalog, .{}, &.{"main"}, &diags);
     return gt;
 }
+
+/// Build a GrantTable covering two window labels "a" and "b" for the E
+/// multi-window routing/impersonation/ready tests. ONE capability spans both
+/// labels (so scopeFor/originsFor keep n<=1 matched cap per label) granting the
+/// fixture commands with an app_scheme origin. Caller owns the returned table:
+/// `gt.deinit()` then `alloc.destroy(gt)`.
+pub fn buildTestGrantsMulti(alloc: std.mem.Allocator) !*GrantTable {
+    const gt = try alloc.create(GrantTable);
+    errdefer alloc.destroy(gt);
+    var diags: manifest.Diagnostics = .{};
+    defer diags.deinit(alloc);
+    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "a", "b" }, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
+    gt.* = try GrantTable.compile(alloc, &caps, &test_catalog, .{}, &.{ "a", "b" }, &diags);
+    return gt;
+}

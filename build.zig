@@ -60,7 +60,6 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/registry.zig");
-    addLogicTest(b, test_step, target, optimize, "src/bridge.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
@@ -97,6 +96,9 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
     addEmbedTest(b, test_step, target, optimize, "src/app.zig");
+    // bridge.zig's TestBridge harness builds a WindowManager (E), which
+    // @embedFiles the frontend JS; the test compilation needs those embeds.
+    addEmbedTest(b, test_step, target, optimize, "src/bridge.zig");
     addEmbedTest(b, test_step, target, optimize, "src/sec_regression.zig");
     addEmbedTest(b, test_step, target, optimize, "src/window_tests.zig");
 
