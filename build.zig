@@ -84,6 +84,23 @@ pub fn build(b: *std.Build) void {
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
     }.add;
+
+    // Manifest-aware logic-test registrar: mirrors addLogicTest plus the one addImport
+    // that resolves @import("zigware_manifest").Manifest in the test module. Used by the
+    // CLI leaves that consume D's parsed manifest type (csp.zig now; dev/build in A3).
+    const addLogicTestWithManifest = struct {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, src: []const u8) void {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path(src),
+                .target = t,
+                .optimize = o,
+            });
+            m.addImport("zigware_manifest", mm);
+            const tt = bb.addTest(.{ .root_module = m });
+            ts.dependOn(&bb.addRunArtifact(tt).step);
+        }
+    }.add;
+
     addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
     addLogicTest(b, test_step, target, optimize, "src/command_ctx.zig");
@@ -96,6 +113,13 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
     addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
     addLogicTest(b, test_step, target, optimize, "src/security_tests.zig");
+
+    // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
+    addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
+    addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");
+    addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
+    addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
