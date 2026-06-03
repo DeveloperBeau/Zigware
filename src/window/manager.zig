@@ -336,6 +336,34 @@ pub fn WindowManager(comptime B: type) type {
             const e = self.by_label.get(label) orelse return;
             self.cancelWatchdog(e);
         }
+
+        /// Close every live window, ordered, idempotent (close guards via
+        /// entry.closing). Snapshots labels into owned dupes first so the iterator
+        /// is not invalidated and no freed-key is hashed mid-loop. Does NOT set
+        /// `shutting_down`: closeAll runs on the quit path (orderedShutdown) but
+        /// also indirectly on app shutdown; setting the flag here would permanently
+        /// disable the watchdog, so a later `reopen` (keep-running policy) window
+        /// would never fire its fallback. Only `deinit` (truly terminal) sets it.
+        /// Each close() cancels its own watchdog, so teardown still joins cleanly.
+        pub fn closeAll(self: *Self) void {
+            var labels: std.ArrayList([]u8) = .empty;
+            defer {
+                for (labels.items) |l| self.gpa.free(l);
+                labels.deinit(self.gpa);
+            }
+            {
+                self.map_mutex.lockUncancelable(self.io);
+                defer self.map_mutex.unlock(self.io);
+                var it = self.by_label.keyIterator();
+                while (it.next()) |k| {
+                    const dup = self.gpa.dupe(u8, k.*) catch continue;
+                    labels.append(self.gpa, dup) catch {
+                        self.gpa.free(dup);
+                    };
+                }
+            }
+            for (labels.items) |l| self.close(l) catch {};
+        }
     };
 }
 
