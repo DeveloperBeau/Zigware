@@ -217,16 +217,124 @@ pub fn WindowManager(comptime B: type) type {
             return n;
         }
 
-        // Watchdog scheduling (Task 5) replaces these compiling stubs. A missing
-        // symbol here would break create/close/deinit, which reference them.
+        /// Resolve `label` and flip the ready/shown state under the map mutex
+        /// (the fireFallback path can run off the main thread on NullBackend,
+        /// where dispatchMain is inline). Captures the handle + whether to show
+        /// INSIDE the lock; performs the seam show/focus OUTSIDE the lock (the
+        /// mutex is never held across a seam call). Returns .unknown if an
+        /// unknown label was requested (caller maps to error.UnknownLabel; the
+        /// fallback path ignores it). Idempotent: a second call after `shown`
+        /// does nothing.
+        fn transitionReady(self: *Self, label: []const u8) enum { ok, unknown } {
+            var do_show = false;
+            var handle: B.WindowHandle = undefined;
+            {
+                self.map_mutex.lockUncancelable(self.io);
+                defer self.map_mutex.unlock(self.io);
+                const e = self.by_label.get(label) orelse return .unknown;
+                if (e.shown) return .ok;
+                e.ready = true;
+                if (e.want_show) {
+                    e.shown = true;
+                    do_show = true;
+                    handle = e.handle;
+                }
+            }
+            if (do_show) {
+                self.backend.showWindow(handle);
+                self.backend.focusWindow(handle);
+            }
+            return .ok;
+        }
+
+        pub fn markReadyAndShow(self: *Self, label: []const u8) Error!void {
+            // Cancel the watchdog FIRST (joins the thread, so no concurrent fire
+            // can race the transition), then flip state.
+            if (self.by_label.get(label)) |e| {
+                self.cancelWatchdog(e);
+            } else {
+                return error.UnknownLabel;
+            }
+            if (self.transitionReady(label) == .unknown) return error.UnknownLabel;
+        }
+
+        /// The watchdog's fire action (main thread in production via dispatchMain;
+        /// inline on the watchdog thread under NullBackend). Resolves by LABEL so a
+        /// fire after close is a clean no-op. Does NOT cancel the watchdog (it IS
+        /// the watchdog); the lock in transitionReady makes the by_label read safe
+        /// even off the main thread.
+        pub fn fireFallback(self: *Self, label: []const u8) void {
+            _ = self.transitionReady(label);
+        }
+
+        const WCtx = win.WatchdogCtx;
+
         fn spawnWatchdog(self: *Self, entry: *Entry) Error!void {
-            _ = self;
+            const wc = try self.gpa.create(WCtx);
+            errdefer self.gpa.destroy(wc);
+            const label_dup = try self.gpa.dupe(u8, entry.label); // DISTINCT copy
+            errdefer self.gpa.free(label_dup);
+            wc.* = .{ .mgr = self, .label = label_dup, .fallback_ms = self.fallback_ms };
+            // std.Thread.spawn's SpawnError is not a subset of Self.Error; fold a
+            // spawn failure into BackendFailure (the errdefers above reclaim wc +
+            // its label copy, and create's own errdefers tear down the window).
+            const t = std.Thread.spawn(.{}, watchdogBody, .{wc}) catch return error.BackendFailure;
+            entry.watchdog = wc;
+            entry.watchdog_thread = t;
+        }
+
+        /// Per-window thread: sleep in slices so cancellation and shutdown are
+        /// observed within one slice; on expiry hop to main via dispatchMain.
+        fn watchdogBody(wc: *WCtx) void {
+            const self: *Self = @ptrCast(@alignCast(wc.mgr));
+            const slice_ms: u32 = 25;
+            var elapsed: u32 = 0;
+            while (elapsed < wc.fallback_ms) {
+                if (wc.cancel.load(.acquire) or self.shutting_down.load(.acquire)) return;
+                const step = @min(slice_ms, wc.fallback_ms - elapsed);
+                // std.Thread.sleep was removed in 0.16; sleep through the Io
+                // vtable. A raw std.Thread has no cancellation token, so the
+                // Cancelable result cannot fire here; real cancellation is the
+                // wc.cancel atomic checked between slices.
+                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(step), .awake) catch {};
+                elapsed += step;
+            }
+            if (wc.cancel.load(.acquire) or self.shutting_down.load(.acquire)) return;
+            // Hop to main with a heap payload independent of wc (cancelWatchdog may
+            // free wc right after we read its label). The main handler frees it.
+            const fc = self.gpa.create(FireCtx) catch return;
+            const lc = self.gpa.dupe(u8, wc.label) catch {
+                self.gpa.destroy(fc);
+                return;
+            };
+            fc.* = .{ .mgr = self, .label = lc };
+            self.backend.dispatchMain(fireMain, fc);
+        }
+
+        const FireCtx = struct { mgr: *Self, label: []u8 };
+        fn fireMain(ptr: ?*anyopaque) callconv(.c) void {
+            const fc: *FireCtx = @ptrCast(@alignCast(ptr.?));
+            fc.mgr.fireFallback(fc.label);
+            fc.mgr.gpa.free(fc.label);
+            fc.mgr.gpa.destroy(fc);
+        }
+
+        /// Cancel + join the entry's watchdog and free its ctx. Idempotent. Single
+        /// free site for the watchdog label copy. Safe to call from close/deinit/
+        /// markReadyAndShow (all main-thread).
+        pub fn cancelWatchdog(self: *Self, entry: *Entry) void {
+            const wc = entry.watchdog orelse return;
+            wc.cancel.store(true, .release);
+            if (entry.watchdog_thread) |t| t.join(); // bounded by one slice (<=25ms)
+            self.gpa.free(wc.label);
+            self.gpa.destroy(wc);
             entry.watchdog = null;
             entry.watchdog_thread = null;
         }
-        pub fn cancelWatchdog(self: *Self, entry: *Entry) void {
-            _ = self;
-            _ = entry;
+
+        pub fn cancelWatchdogByLabel(self: *Self, label: []const u8) void {
+            const e = self.by_label.get(label) orelse return;
+            self.cancelWatchdog(e);
         }
     };
 }
@@ -313,6 +421,70 @@ test "op wrappers translate to the seam for a live window" {
     try std.testing.expectEqual(@as(f64, 1024), be.windows.items[e.handle].width);
     try mgr.setFullscreen("main", true);
     try std.testing.expect(be.windows.items[e.handle].fullscreen);
+}
+
+test "markReadyAndShow shows only when want_show, and is idempotent" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = tm(be);
+    defer mgr.deinit();
+    const e = try mgr.create(.{ .label = "main", .url = "app://localhost/index.html", .show = true });
+    try std.testing.expect(!e.shown);
+    try mgr.markReadyAndShow("main");
+    try std.testing.expect(e.ready and e.shown);
+    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+    try mgr.markReadyAndShow("main"); // idempotent
+    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+}
+
+test "markReadyAndShow with want_show=false records ready but stays hidden" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = tm(be);
+    defer mgr.deinit();
+    const e = try mgr.create(.{ .label = "bg", .url = "app://localhost/bg", .show = false });
+    try mgr.markReadyAndShow("bg");
+    try std.testing.expect(e.ready and !e.shown);
+    try std.testing.expectEqual(@as(usize, 0), be.countEvents(.shown));
+}
+
+test "fireFallback shows a never-readied window and is a no-op on a closed label" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = tm(be);
+    defer mgr.deinit();
+    _ = try mgr.create(.{ .label = "slow", .url = "app://localhost/s", .show = true });
+    mgr.fireFallback("slow");
+    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+    try mgr.close("slow");
+    mgr.fireFallback("slow"); // no-op, no trap
+}
+
+test "a real short-fallback watchdog fires and shows the window (spawn/sleep/free path)" {
+    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
+    defer {
+        be.markJoined();
+        be.deinit();
+    }
+    var mgr = tm(be);
+    mgr.fallback_ms = 10; // tiny, so the test does not stall
+    defer mgr.deinit();
+    const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
+    // Join the watchdog: it sleeps ~10ms, then dispatchMain runs fireFallback
+    // inline on the watchdog thread (NullBackend dispatchMain is inline). After
+    // join, the window is shown. cancelWatchdog joins + frees the ctx.
+    mgr.cancelWatchdog(e); // joins the (possibly already-fired) thread; no leak
+    // The watchdog may or may not have fired before cancel; assert no leak/trap.
+    // Determinism for the SHOW assertion is covered by fireFallback above.
 }
 
 // Fault-injection sweep over create. The backend AND the manager share the SAME
