@@ -27,6 +27,16 @@ These cover the macOS backend paths a memory-safety review flagged as having no 
 11. Open a window at a non-default size and toggle `setContentSize:`. Confirm the geometry is correct. A wrong NSRect or NSSize struct-ABI cast would garble the frame.
 12. Launch with a deliberately malformed initial URL. Confirm the nil-URL guard logs and skips the load instead of crashing. There must be no ObjC exception and no crash. To find the guard log line, run the app with stderr captured and `grep -F 'createWindow: malformed url, skipping initial loadRequest:'` over the output.
 
+## Multi-window and quit policy (GUI only)
+
+These cover the window-lifecycle paths that need a live AppKit session: ready-to-show first paint, runtime window creation, the keep-running quit policy, and reopen. Run them on a Mac once a multi-window GUI build exists.
+
+13. Launch the app. The main window must appear only after its first paint, not as an empty white frame that then fills in. Watch for a white flash on open; there must be none. This verifies the ready-to-show flow holds the window hidden until the page signals ready.
+14. Open Web Inspector and run `Zigware.Window.create({ label: "viewer", url: "app://localhost/index.html" })` in the Console. A second window opens and becomes visible once it paints, on the same ready-to-show path as the main window.
+15. With the default quit policy (`keep_running_on_last_close`), close every window. The process must keep running and stay in the Dock. There must be no exit and no crash report in Console.app.
+16. With the app still running and no windows open, click the Dock icon. This delivers `reopen`, which must recreate the default window. The new window appears ready-to-show, same as a fresh launch.
+17. Rebuild with `quitOnLastWindowClosed: .quit_on_last_close` in the manifest. Open one window, then close it. Closing the last window must now quit the process cleanly: a clean exit, no crash report, and no allocator-leak warnings on stderr.
+
 ## Automated coverage
 - `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.
 - `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.

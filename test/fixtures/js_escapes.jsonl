@@ -5,3 +5,4 @@
 {"in":"\u2028\u2029","out":"\"\\u2028\\u2029\""}
 {"in":"a\\b\nc\td","out":"\"a\\\\b\\nc\\td\""}
 {"in":"ßünîçødé","out":"\"ßünîçødé\""}
+{"in":"Report <\/script><script> \" \u2028 end","out":"\"Report <\\\/script><script> \\\" \\u2028 end\""}

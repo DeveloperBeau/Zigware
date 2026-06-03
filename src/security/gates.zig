@@ -81,29 +81,49 @@ pub fn evaluate(
         return .{ .deny = .{ .gate = .g2_command, .code = "command.not_granted", .message = "command not granted to this window" } };
     }
     // G4 scope.
-    switch (ctx.scope_input) {
+    return g4(grants, ctx.window_label, ctx.command, ctx.scope_input, bases, io, base_dir);
+}
+
+fn g4(
+    grants: *const GrantTable,
+    window_label: []const u8,
+    command: []const u8,
+    scope_input: ScopeInput,
+    bases: Bases,
+    io: std.Io,
+    base_dir: std.Io.Dir,
+) Decision {
+    switch (scope_input) {
         .none => return .allow,
         .path => |p| {
-            const set = grants.scopeFor(ctx.window_label, ctx.command);
+            const set = grants.scopeFor(window_label, command);
             if (path.pathMatches(io, base_dir, set, p, bases)) return .allow;
             return .{ .deny = .{ .gate = .g4_scope, .code = "scope.path.no_match", .message = "path out of scope" } };
         },
         .host => |h| {
-            const set = grants.scopeFor(ctx.window_label, ctx.command);
+            const set = grants.scopeFor(window_label, command);
             if (host.hostMatches(set, h)) return .allow;
             return .{ .deny = .{ .gate = .g4_scope, .code = "scope.host.no_match", .message = "host out of scope" } };
         },
         .argv => |av| {
-            const set = grants.scopeFor(ctx.window_label, ctx.command);
+            const set = grants.scopeFor(window_label, command);
             if (argv.argvMatches(set, av)) return .allow;
             return .{ .deny = .{ .gate = .g4_scope, .code = "scope.argv.no_match", .message = "argv out of scope" } };
         },
         .label => |l| {
-            const set = grants.scopeFor(ctx.window_label, ctx.command);
+            const set = grants.scopeFor(window_label, command);
             if (label.labelMatches(set, l)) return .allow;
             return .{ .deny = .{ .gate = .g4_scope, .code = "scope.label.no_match", .message = "target window out of scope" } };
         },
     }
+}
+
+pub fn originAllowed(grants: *const GrantTable, window_label: []const u8, origin: []const u8, is_debug: bool) bool {
+    return originTrusted(grants.originsFor(window_label), origin, is_debug);
+}
+
+pub fn checkScope(grants: *const GrantTable, window_label: []const u8, command: []const u8, scope_input: ScopeInput, bases: Bases, io: std.Io, base_dir: std.Io.Dir) Decision {
+    return g4(grants, window_label, command, scope_input, bases, io, base_dir);
 }
 
 const defaults = @import("defaults.zig");
@@ -116,6 +136,24 @@ fn gt(caps: []const cap.Capability) !GrantTable {
 
 fn ctxFor(origin: []const u8, command: []const u8, is_debug: bool) InvokeContext {
     return .{ .window_label = "main", .origin = origin, .command = command, .scope_input = .none, .is_debug = is_debug };
+}
+
+test "originAllowed mirrors evaluate's G1 for a window label" {
+    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .permissions = &.{"core:default"} }};
+    var table = try gt(&caps);
+    defer table.deinit();
+    try std.testing.expect(originAllowed(&table, "main", "app://localhost", false));
+    try std.testing.expect(!originAllowed(&table, "main", "https://evil.example", false));
+}
+
+test "checkScope runs only G4 and denies an out-of-scope label" {
+    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .permissions = &.{"core:default"} }};
+    var table = try gt(&caps);
+    defer table.deinit();
+    const bases = Bases{ .appdata = "/a", .home = "/h", .appconfig = "/c" };
+    const d = checkScope(&table, "main", "window.create", .{ .label = "secret" }, bases, std.testing.io, std.Io.Dir.cwd());
+    try std.testing.expectEqual(Gate.g4_scope, d.deny.gate);
+    try std.testing.expectEqualStrings("scope.label.no_match", d.deny.code);
 }
 
 test "G1: app:// origin allowed, foreign denied" {

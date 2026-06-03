@@ -9,9 +9,40 @@ const security_defaults = @import("security/defaults.zig");
 const security_gates = @import("security/gates.zig");
 const security_navigation = @import("security/navigation.zig");
 const manifest_types = @import("manifest/types.zig");
+const parse = @import("manifest/parse.zig");
+const window_manager = @import("window/manager.zig");
+const window_lifecycle = @import("window/lifecycle.zig");
+const window_commands = @import("window/commands.zig");
+const D = manifest_types;
+const WindowManager = window_manager.WindowManager;
+const Lifecycle = window_lifecycle.Lifecycle;
 
-const zigware_js = @embedFile("frontend/zigware.js");
-const app_js = @embedFile("frontend/app.js");
+// The bootstrap window now carries the manager-injected user-scripts (zigware.js
+// + window.js + the per-window label constant); WindowManager.create owns those
+// @embedFile injections, so app.zig no longer embeds the frontend JS itself.
+// app.js (the PoC demo script) is intentionally NOT injected: the demo is rebuilt
+// against real capabilities in a later sub-project, so E stops shipping it rather
+// than letting the PoC demo constrain the window layer.
+
+/// The shipping command surface registered with the bridge: every builtin demo
+/// command plus the `window.*` namespace, composed via dotted decl names so the
+/// registry registers each command under its decl name (e.g. `window.create`).
+/// A builtin command dropped from this list is silently unregistered, so every
+/// builtin.Commands decl (sha256, echoBytes, echo) is re-exported explicitly.
+fn AppCommands(comptime B: type) type {
+    const W = window_commands.WindowCommands(B);
+    return struct {
+        pub const sha256 = builtin.Commands.sha256;
+        pub const echoBytes = builtin.Commands.echoBytes;
+        pub const echo = builtin.Commands.echo;
+        pub const @"window.create" = W.@"window.create";
+        pub const @"window.close" = W.@"window.close";
+        pub const @"window.focus" = W.@"window.focus";
+        pub const @"window.setTitle" = W.@"window.setTitle";
+        pub const @"window.setSize" = W.@"window.setSize";
+        pub const @"window.setFullscreen" = W.@"window.setFullscreen";
+    };
+}
 
 /// A process-lifetime static the fail-closed sentinel callbacks read as their
 /// ctx. It is never dereferenced as an App; it exists only so the sentinel ctx
@@ -37,7 +68,19 @@ pub fn App(comptime B: type) type {
         io: std.Io,
         backend: *B,
         bridge: *Bridge(B),
-        window: B.WindowHandle,
+        /// The multi-window manager and quit-policy lifecycle, held BY VALUE so
+        /// their addresses are stable for the App's life: the bridge holds a
+        /// `*WindowManager(B)` into `manager`, and `lifecycle` holds a
+        /// `*WindowManager(B)` into the same field.
+        manager: WindowManager(B),
+        lifecycle: Lifecycle(B),
+        /// The default ("main") window's create options, captured from the first
+        /// manifest window during init. Under keep_running_on_last_close, a
+        /// `reopen` after every window has closed recreates this one window from
+        /// the manifest. Its slice fields (label/url/title) point at static data
+        /// (comptime .zon on the production path, string literals in tests), so
+        /// the stored value stays valid for the App's life with no dupe.
+        default_window: WindowManager(B).Options,
         shutdown_done: std.atomic.Value(bool) = .init(false),
         /// The single app State injected into every command handler. A field, not
         /// an init-scope local, so its address is stable for the bridge's life.
@@ -60,22 +103,53 @@ pub fn App(comptime B: type) type {
         /// GrantTable + the real app-support base_dir; v0.1.0 commands are all
         /// .none so base_dir/bases are unused but must be valid handles.
         pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
-            const app_caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = &.{"main"}, .permissions = &.{"core:default"} }};
+            const manifest = parse.embedded();
+            const windows = manifest.app.windows;
+
+            // Collect the full label set so the GrantTable knows every window
+            // label, and compile ONE capability covering all of them with
+            // core:default (deny-by-default for cross-window manage; mirrors the
+            // PoC's per-"main" grant generalized to N labels). One cap per label
+            // set keeps scopeFor/originsFor at n<=1 matched cap per label.
+            var labels_list: std.ArrayList([]const u8) = .empty;
+            defer labels_list.deinit(alloc);
+            for (windows) |w| try labels_list.append(alloc, w.label);
+            const labels = labels_list.items;
+
+            const app_caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = labels, .permissions = &.{"core:default"} }};
             var diags: manifest_types.Diagnostics = .{};
             defer diags.deinit(alloc);
             const grants = try alloc.create(security_grant.GrantTable);
             errdefer alloc.destroy(grants);
-            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &security_defaults.builtin_catalog, .{}, &.{"main"}, &diags);
+            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &security_defaults.builtin_catalog, .{}, labels, &diags);
             errdefer grants.deinit();
             const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
-            return initWithGrants(alloc, io, backend, grants, bases, std.Io.Dir.cwd(), (@import("builtin").mode == .Debug), true);
+            return initWithConfig(
+                alloc,
+                io,
+                backend,
+                grants,
+                bases,
+                std.Io.Dir.cwd(),
+                (@import("builtin").mode == .Debug),
+                true,
+                windows,
+                manifest.app.quitOnLastWindowClosed,
+                manifest.app.windowShowFallbackMs,
+            );
         }
 
-        /// Shared init body. `owns_grants` => deinit frees `grants`. Test callers
-        /// pass their own granting table (and own its lifetime if owns_grants is
-        /// false). On error this does NOT free `grants` — ownership transfers to
-        /// the App only on success, so the caller's errdefer frees it exactly once.
-        pub fn initWithGrants(
+        /// Shared init body. Constructs the window manager BY VALUE (stable
+        /// address at `&self.manager`), creates every configured window through
+        /// it (so each window carries the gate-chain user-scripts + window.js +
+        /// its per-window label constant), wires the bridge to the manager, and
+        /// builds the quit-policy lifecycle. `owns_grants` => deinit frees
+        /// `grants`. On error this does NOT free `grants` — ownership transfers
+        /// to the App only on success, so the caller's errdefer frees it once.
+        ///
+        /// `windows` is the manifest window list (at least one, label "main");
+        /// `policy` and `fallback_ms` come from D's App config.
+        pub fn initWithConfig(
             alloc: std.mem.Allocator,
             io: std.Io,
             backend: *B,
@@ -84,31 +158,77 @@ pub fn App(comptime B: type) type {
             base_dir: std.Io.Dir,
             is_debug: bool,
             owns_grants: bool,
+            windows: []const D.Window,
+            policy: D.QuitPolicy,
+            fallback_ms: u32,
         ) !*Self {
             const self = try alloc.create(Self);
             errdefer alloc.destroy(self);
 
-            // v0.1.0 hardcodes the prod URL; F (dev server) and D (manifest)
-            // will move URL selection into init options so it flips by build mode.
-            const window = try backend.createWindow(.{
-                .url = "app://localhost/index.html",
-                .user_scripts = &.{ zigware_js, app_js },
-            });
-            // If a later init step fails, tear the window back down (M12).
-            // destroyWindow must be safe on a window whose webview/handler were
-            // wired but whose App never finished init.
-            errdefer backend.destroyWindow(window);
+            // Initialise the by-value fields whose addresses must be stable for
+            // the App's life. The manager is constructed in place at
+            // &self.manager so the watchdog ctx that create() spawns captures the
+            // final manager address, not a temporary that would be memcpy'd away.
+            // bridge/lifecycle are written below; nothing reads them before then.
+            self.* = .{
+                .alloc = alloc,
+                .io = io,
+                .backend = backend,
+                .bridge = undefined,
+                .manager = WindowManager(B).init(alloc, backend, io),
+                .lifecycle = undefined,
+                .default_window = undefined,
+                .state = .{},
+                .grants = grants,
+                .base_dir = base_dir,
+                .bases = bases,
+                .is_debug = is_debug,
+                .owns_grants = owns_grants,
+            };
+            self.manager.fallback_ms = fallback_ms;
+            // Free every created window (joining its watchdog) if a later step in
+            // this init fails. closeAll is idempotent and safe before deinit.
+            errdefer self.manager.deinit();
+
+            // Create the configured windows through the manager. The first
+            // window's handle seeds the bridge's pre-E fallback field; routing
+            // always goes through the manager once setManager runs, so that
+            // handle is never the actual reply target.
+            var boot: ?B.WindowHandle = null;
+            for (windows) |w| {
+                const opts = WindowManager(B).Options{
+                    .label = w.label,
+                    .url = w.url,
+                    .title = w.title,
+                    .width = w.width,
+                    .height = w.height,
+                    .decorations = w.decorations,
+                    .title_bar_style = w.titleBarStyle,
+                    .show = w.show,
+                };
+                const e = try self.manager.create(opts);
+                if (boot == null) {
+                    boot = e.handle;
+                    // The first manifest window is the default ("main"): store its
+                    // opts so a later reopen can recreate exactly this window.
+                    self.default_window = opts;
+                }
+            }
+            // D's validator guarantees at least one window (no_main_window), so
+            // boot is always set on the production path; guard anyway so a test
+            // passing an empty list fails loudly rather than dereferencing null.
+            const boot_handle = boot orelse return error.NoWindows;
 
             // &self.state is a valid, stable address right after alloc.create; the
-            // value is written by the self.* literal below before any message can
+            // value was written by the self.* literal above before any message can
             // arrive, so the bridge never reads it early.
             const bridge = try Bridge(B).init(
                 alloc,
                 io,
                 backend,
-                window,
+                boot_handle,
                 builtin.State,
-                builtin.Commands,
+                AppCommands(B),
                 &self.state,
                 .{},
                 grants,
@@ -117,20 +237,15 @@ pub fn App(comptime B: type) type {
                 is_debug,
             );
             errdefer bridge.deinit();
+            self.bridge = bridge;
 
-            self.* = .{
-                .alloc = alloc,
-                .io = io,
-                .backend = backend,
-                .bridge = bridge,
-                .window = window,
-                .state = .{},
-                .grants = grants,
-                .base_dir = base_dir,
-                .bases = bases,
-                .is_debug = is_debug,
-                .owns_grants = owns_grants,
-            };
+            // Route every per-window emit/reply and the attested labelFor through
+            // the manager. Done before setCallbacks so no inbound message is
+            // dispatched before the manager is wired (labelFor fails closed for
+            // unmapped ids under a wired manager).
+            bridge.setManager(&self.manager);
+
+            self.lifecycle = Lifecycle(B).init(backend, &self.manager, policy);
 
             backend.setCallbacks(.{
                 .ctx = self,
@@ -152,25 +267,40 @@ pub fn App(comptime B: type) type {
         }
 
         /// Ordered, exactly-once, infallible shutdown:
-        ///   1. terminate the backend (queued evals drop on pump),
-        ///   2. install the fail-closed sentinel callbacks FIRST, so any inbound
-        ///      IMP that fires during the join/drain window (delayed scheme task,
+        ///   1. close every window + terminate the backend — but only if the
+        ///      lifecycle did NOT already run the ordered shutdown (single owner:
+        ///      a will_terminate / quit-policy window_all_closed already did
+        ///      closeAll+terminate via Lifecycle.orderedShutdown; a bare deinit
+        ///      under keep-running has not, so we do it here),
+        ///   2. install the fail-closed sentinel callbacks, so any inbound IMP
+        ///      that fires during the join/drain window (delayed scheme task,
         ///      queued message, late lifecycle) hits the sentinel rather than the
         ///      bridge that is mid-teardown or the App that is about to be freed
         ///      (B3, M14),
-        ///   3. join the worker pool by deiniting the bridge,
-        ///   4. drain the main-thread queue.
+        ///   3. drain the main-thread queue AFTER closeAll: closeAll joins every
+        ///      watchdog thread, but a watchdog that already hopped leaves a
+        ///      queued fireMain on a real backend; pump it now, while the manager
+        ///      is still alive, so it cannot dereference a freed manager,
+        ///   4. join the worker pool by deiniting the bridge,
+        ///   5. deinit the manager AFTER the pool join (no worker can touch the
+        ///      maps once joined) and the post-closeAll pump.
         /// Idempotent via an atomic swap so concurrent will_terminate + deinit
         /// run the body exactly once (M5).
         fn shutdown(self: *Self) void {
             if (self.shutdown_done.swap(true, .acq_rel)) return;
-            // Step order is load-bearing: the sentinel must be installed before
-            // bridge.deinit/join so inbound IMPs during the drain hit the
-            // sentinel, not torn-down state. Guarded indirectly by the M5/B3
-            // tests and the leak detector.
-            self.backend.terminate();
+            // Single ordered-shutdown owner: if the lifecycle already closed every
+            // window and terminated, do not repeat it (closeAll/terminate are
+            // idempotent, but keeping one owner makes the ordering obvious).
+            if (!self.lifecycle.didTerminate()) {
+                self.manager.closeAll(); // joins every watchdog thread
+                self.backend.terminate();
+            }
             self.backend.setCallbacks(deadCallbacks()); // sentinel live during the drain (M14)
+            // Drain any fireMain a watchdog queued before it was joined, BEFORE
+            // the manager is deinit'd, so the queued work sees a live manager.
+            self.backend.pumpMain();
             self.bridge.deinit(); // joins the worker pool
+            self.manager.deinit(); // free entries/maps after the pool join
             if (self.owns_grants) {
                 self.grants.deinit();
                 self.alloc.destroy(self.grants);
@@ -227,13 +357,46 @@ pub fn App(comptime B: type) type {
             self.bridge.handleMessage(window_id, origin, text);
         }
 
-        /// Both window_all_closed and will_terminate run the FULL shutdown so a
-        /// force-quit that never delivers will_terminate still joins workers (M5).
+        /// Route lifecycle through the quit-policy Lifecycle, then drive the App
+        /// teardown off its terminate flag (single ordered-shutdown owner):
+        ///   will_terminate     -> orderedShutdown (always) + App.shutdown,
+        ///   window_all_closed   -> policy decides; shutdown only if it terminated
+        ///                          (keep_running stays alive — E's macOS default),
+        ///   reopen              -> under keep_running with no live windows, the App
+        ///                          recreates the default window from the manifest
+        ///                          (app-owned, since app.zig holds the manifest),
+        ///                          then runs the policy hook,
+        ///   did_launch          -> nothing.
         fn onLifecycle(ctx: *anyopaque, event: backend_mod.LifecycleEvent) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             switch (event) {
-                .window_all_closed, .will_terminate => self.shutdown(),
-                .did_launch, .reopen => {},
+                .will_terminate => {
+                    self.lifecycle.handle(event);
+                    self.shutdown();
+                },
+                .window_all_closed => {
+                    self.lifecycle.handle(event); // policy decides terminate-or-stay
+                    if (self.lifecycle.didTerminate()) self.shutdown();
+                },
+                .reopen => {
+                    // Spec: reopen under keep_running recreates the default window
+                    // from the D manifest. The recreate is app-owned (app.zig holds
+                    // the manifest), so it lives here rather than in the lifecycle's
+                    // fn-pointer reopen_handler, which can't close over the manifest.
+                    // Guard precisely: only keep_running (quit_on_last_close already
+                    // terminated; explicit lets the app decide), and only when no
+                    // window is live (a reopen with a window already open is a
+                    // no-op). create maps the recreated window, so the fail-closed
+                    // bridge accepts its messages; a create error is logged, never a
+                    // crash.
+                    if (self.lifecycle.policy == .keep_running_on_last_close and self.manager.liveCount() == 0) {
+                        _ = self.manager.create(self.default_window) catch |err| {
+                            std.log.warn("reopen: recreate default window failed: {}", .{err});
+                        };
+                    }
+                    self.lifecycle.handle(event);
+                },
+                .did_launch => {},
             }
         }
 
@@ -255,13 +418,20 @@ const fixtures = @import("security_test_fixtures.zig");
 
 const dummy_bases = security_gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
+// The single bootstrap window the PoC hardcoded now lives in D config; the
+// single-window tests reconstruct it as one `main` window with the
+// quit_on_last_close policy so window_all_closed still shuts the app down
+// (E's production default is keep_running_on_last_close, exercised by the
+// multi-window tests below).
+const single_window = [_]manifest_types.Window{.{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true }};
+
 /// The App tests drive sha256/echoBytes through the bridge gate, so makeApp grants
 /// the fixture commands (core:default alone denies them at G2). owns_grants=true:
 /// the App frees the grants in deinit, so teardown must NOT free them again.
 fn makeApp() !struct { backend: *NullBackend, app: *App(NullBackend) } {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const grants = try fixtures.buildTestGrants(std.testing.allocator);
-    const app = App(NullBackend).initWithGrants(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true) catch |err| {
+    const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
         return err;
@@ -269,16 +439,58 @@ fn makeApp() !struct { backend: *NullBackend, app: *App(NullBackend) } {
     return .{ .backend = backend, .app = app };
 }
 
+/// The attested id of the App's "main" window (replaces the removed single
+/// `app.window` handle field; routing now goes through the manager).
+fn mainId(app: *App(NullBackend)) u64 {
+    return app.manager.lookup("main").?.window_id;
+}
+
 fn teardown(backend: *NullBackend, app: *App(NullBackend)) void {
-    app.deinit(); // shutdown: terminate -> bridge.deinit (joins) -> pump -> sentinel
+    app.deinit(); // shutdown: closeAll -> pump -> bridge.deinit (joins) -> manager.deinit -> pump
     backend.markJoined();
     backend.deinit();
+}
+
+/// E multi-window App harness: builds an App via initWithConfig with two windows
+/// ("main" + "viewer") and the given quit policy. Grants cover both labels via a
+/// single capability. owns_grants=true: the App frees the grants in deinit.
+fn makeAppMulti(policy: manifest_types.QuitPolicy) !struct { backend: *NullBackend, app: *App(NullBackend) } {
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try buildAppGrantsMulti(std.testing.allocator);
+    const windows = [_]manifest_types.Window{
+        .{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true },
+        .{ .label = "viewer", .url = "app://localhost/v", .title = "Viewer", .show = true },
+    };
+    const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, policy, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    return .{ .backend = backend, .app = app };
+}
+
+fn teardownMulti(h: anytype) void {
+    teardown(h.backend, h.app);
+}
+
+/// A GrantTable covering labels "main" and "viewer" with one capability (so
+/// scopeFor/originsFor keep n<=1 matched cap per label), granting the fixture
+/// commands with an app_scheme origin.
+fn buildAppGrantsMulti(alloc: std.mem.Allocator) !*fixtures.GrantTable {
+    const cap = @import("security/capability.zig");
+    const gt = try alloc.create(fixtures.GrantTable);
+    errdefer alloc.destroy(gt);
+    var diags: manifest_types.Diagnostics = .{};
+    defer diags.deinit(alloc);
+    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "main", "viewer" }, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
+    gt.* = try fixtures.GrantTable.compile(alloc, &caps, &fixtures.test_catalog, .{}, &.{ "main", "viewer" }, &diags);
+    return gt;
 }
 
 test "end to end: simulated invoke resolves through the real pool into eval_log" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    const main_id = h.backend.windowId(h.app.window);
+    const main_id = mainId(h.app);
     h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     h.app.bridge.drainForTest();
     h.backend.pumpMain();
@@ -311,7 +523,7 @@ test "a stream-scheme request for a non-stream path 404s via serveStream/parseSt
 test "stream scheme routes to the bridge serveStream (app path)" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    const main_id = h.backend.windowId(h.app.window);
+    const main_id = mainId(h.app);
     h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"echoBytes\",\"args\":{\"n\":4}}");
     h.app.bridge.drainForTest();
     h.backend.pumpMain();
@@ -336,10 +548,13 @@ test "M6: navigation denies by default, allows only the app://localhost origin" 
 }
 
 test "L10: window_all_closed runs full shutdown (observed via post-event message drop)" {
+    // The PoC default (window_all_closed always quits) moved into D config; E's
+    // production default is keep_running_on_last_close. makeApp pins
+    // quit_on_last_close so window_all_closed still drives the full shutdown here.
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    const main_id = h.backend.windowId(h.app.window);
-    h.backend.simulateLifecycle(.window_all_closed); // full shutdown: joins + terminates
+    const main_id = mainId(h.app);
+    h.backend.simulateLifecycle(.window_all_closed); // quit_on_last_close: joins + terminates
     // Observe the downstream effect rather than reading terminated directly (L10):
     // a message after shutdown delivers nothing.
     h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
@@ -347,26 +562,29 @@ test "L10: window_all_closed runs full shutdown (observed via post-event message
     try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
 }
 
-test "M5: window_all_closed WITHOUT will_terminate still joins the pool (no leak)" {
+test "M5: will_terminate joins the pool without a will_terminate->deinit double-shutdown leak" {
     // The teardown helper's markJoined + backend.deinit assert the pool joined.
-    // If window_all_closed did not run the full shutdown, the bridge would not
-    // be deinit'd and std.testing.allocator would flag a leak at test exit.
+    // will_terminate ALWAYS runs the full shutdown regardless of quit policy
+    // (E's default is keep_running_on_last_close, under which window_all_closed
+    // would NOT shut down), so it is the policy-independent join trigger. If the
+    // shutdown did not run, the bridge would not be deinit'd and the testing
+    // allocator would flag a leak at test exit.
     const h = try makeApp();
-    h.backend.simulateLifecycle(.window_all_closed);
-    // No will_terminate. deinit's shutdown is a no-op (already done).
+    h.backend.simulateLifecycle(.will_terminate);
+    // deinit's shutdown is a no-op (already done via the lifecycle path).
     teardown(h.backend, h.app);
 }
 
 test "windowId of the main window matches the inbound id" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    try std.testing.expectEqual(@as(u64, 0), h.backend.windowId(h.app.window));
+    try std.testing.expectEqual(@as(u64, 0), mainId(h.app));
 }
 
 test "ordered shutdown under load drops in-flight emissions cleanly" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    const main_id = h.backend.windowId(h.app.window);
+    const main_id = mainId(h.app);
     var i: u64 = 0;
     while (i < 50) : (i += 1) {
         var buf: [128]u8 = undefined;
@@ -403,9 +621,78 @@ test "B3: simulate* after shutdown reaches the fail-closed sentinel, never the A
 test "inbound message after terminate is a no-op" {
     const h = try makeApp();
     defer teardown(h.backend, h.app);
-    const main_id = h.backend.windowId(h.app.window);
+    const main_id = mainId(h.app);
     h.backend.simulateLifecycle(.window_all_closed); // full shutdown
     h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":1,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
     h.backend.pumpMain();
     try std.testing.expectEqual(@as(usize, 0), h.backend.eval_log.items.len);
+}
+
+test "E: app creates the configured windows and applies keep-running policy" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    try std.testing.expectEqual(@as(usize, 2), h.backend.countEvents(.created));
+    h.backend.simulateLifecycle(.window_all_closed);
+    // keep_running_on_last_close: the last window closing does NOT terminate.
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countEvents(.terminated));
+}
+
+test "E: quit_on_last_close terminates on window_all_closed" {
+    const h = try makeAppMulti(.quit_on_last_close);
+    defer teardownMulti(h);
+    h.backend.simulateLifecycle(.window_all_closed);
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countEvents(.terminated));
+}
+
+test "E: reopen under keep_running recreates the default window from the manifest" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    // Drive every window closed directly: under keep_running, window_all_closed
+    // does NOT close anything, so reach liveCount 0 by closing each label.
+    try h.app.manager.close("main");
+    try h.app.manager.close("viewer");
+    try std.testing.expectEqual(@as(usize, 0), h.app.manager.liveCount());
+    // The OS reports the last window gone; keep_running stays alive (no terminate).
+    h.backend.simulateLifecycle(.window_all_closed);
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countEvents(.terminated));
+
+    const before = h.backend.countEvents(.created); // 2 (both initial windows)
+    h.backend.simulateLifecycle(.reopen); // recreates the default window
+    try std.testing.expectEqual(before + 1, h.backend.countEvents(.created));
+    try std.testing.expectEqual(@as(usize, 1), h.app.manager.liveCount());
+    // The recreated window is the default ("main"), mapped so the bridge routes it.
+    try std.testing.expect(h.app.manager.lookup("main") != null);
+}
+
+test "E: reopen with a window still live is a no-op (no second window)" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    const before = h.backend.countEvents(.created); // 2 windows still live
+    h.backend.simulateLifecycle(.reopen);
+    try std.testing.expectEqual(before, h.backend.countEvents(.created));
+    try std.testing.expectEqual(@as(usize, 2), h.app.manager.liveCount());
+}
+
+test "E: reopen under quit_on_last_close does not recreate (the app terminated)" {
+    const h = try makeAppMulti(.quit_on_last_close);
+    defer teardownMulti(h);
+    h.backend.simulateLifecycle(.window_all_closed); // terminates + shuts down
+    const before = h.backend.countEvents(.created);
+    h.backend.simulateLifecycle(.reopen); // reaches the dead sentinel, never the App
+    try std.testing.expectEqual(before, h.backend.countEvents(.created));
+}
+
+test "E: each configured label routes its own invoke reply" {
+    const h = try makeAppMulti(.keep_running_on_last_close);
+    defer teardownMulti(h);
+    const viewer_id = h.app.manager.lookup("viewer").?.window_id;
+    h.backend.simulateMessage(viewer_id, "app://localhost", "{\"id\":3,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    h.app.bridge.drainForTest();
+    h.backend.pumpMain();
+    // The resolve must land on the viewer window, not main.
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(3));
+    for (h.backend.eval_log.items) |e| {
+        if (std.mem.indexOf(u8, e.js, "_resolve(3, ") != null)
+            try std.testing.expectEqual(viewer_id, e.window_id);
+    }
 }

@@ -9,6 +9,7 @@ const security = struct {
     const gates = @import("security/gates.zig");
     const grant = @import("security/grant_table.zig");
 };
+const WindowManager = @import("window/manager.zig").WindowManager;
 
 pub const BridgeOptions = struct {
     /// Explicit worker count so tests are deterministic across CI hardware.
@@ -65,6 +66,11 @@ pub fn Bridge(comptime B: type) type {
         // resolves a label through this; E generalizes it to multi-window.
         main_window_id: u64,
 
+        // E: the multi-window source of truth. Null on the pre-E single-window
+        // path (labelFor/emitToLabel fall back to the bootstrap "main" window),
+        // wired by app.zig via setManager once the manager is constructed.
+        manager: ?*WindowManager(B) = null,
+
         // C's capability state (G1/G2/G4). The bridge ALWAYS holds a non-null
         // immutable GrantTable and ALWAYS evaluates (fail-closed; no pass-through).
         // base_dir/bases are a real opened dir + base tokens for the path scope
@@ -82,7 +88,7 @@ pub fn Bridge(comptime B: type) type {
 
         // Comptime-erased dispatch: a fn pointer the init fills from the registry
         // type, so Bridge(B) is not generic over State/UserCommands.
-        dispatchFn: *const fn (self: *Self, name: []const u8, id: u64, args_json: []const u8) void,
+        dispatchFn: *const fn (self: *Self, label: []const u8, name: []const u8, id: u64, args_json: []const u8) void,
         allow: Allowlist,
         state_ptr: *anyopaque,
 
@@ -119,9 +125,9 @@ pub fn Bridge(comptime B: type) type {
                 .state_ptr = state,
                 .allow = Reg.allowlist(),
                 .dispatchFn = struct {
-                    fn f(s: *Self, name: []const u8, id: u64, args_json: []const u8) void {
+                    fn f(s: *Self, label: []const u8, name: []const u8, id: u64, args_json: []const u8) void {
                         const st: *State = @ptrCast(@alignCast(s.state_ptr));
-                        Reg.dispatch(s, st, name, id, args_json);
+                        Reg.dispatch(s, st, label, name, id, args_json);
                     }
                 }.f,
             };
@@ -133,6 +139,14 @@ pub fn Bridge(comptime B: type) type {
             });
 
             return self;
+        }
+
+        /// Wire the multi-window manager (E). Called once at startup before any
+        /// inbound message is dispatched. With a manager set, labelFor resolves
+        /// the attested id to a real label and emitToLabel routes by that label;
+        /// without one, the bridge keeps the pre-E single-window behavior.
+        pub fn setManager(self: *Self, m: *WindowManager(B)) void {
+            self.manager = m;
         }
 
         /// INFALLIBLE by contract. Joins the pool (so no worker touches the
@@ -159,10 +173,24 @@ pub fn Bridge(comptime B: type) type {
         /// terminal emission (resolve or reject). Transient allocations use a
         /// per-message arena rooted on self.alloc.
         pub fn handleMessage(self: *Self, window_id: u64, origin: []const u8, text: []const u8) void {
+            // Resolve the attested label ONCE, before any reject path, so every
+            // early reject (oversize, malformed, unknown command, gate deny, G5)
+            // routes its terminal _reject to the window that made the call, never
+            // the bootstrap "main" handle.
+            //
+            // With a manager wired (E), an unresolved id is UNATTRIBUTABLE: it must
+            // not borrow main's grants and its reply must not mis-route to main, so
+            // we DROP the message here, exactly like handleReserved fails closed.
+            // Without a manager (pre-E single-window PoC), any id resolves to "main".
+            const label = if (self.manager) |m|
+                (m.labelFor(window_id) orelse return) // unknown/closed window: drop
+            else
+                "main";
+
             // Layer-2 message-size cap (H1). onMessageImp enforces it first at
             // the objc seam; this is the defense-in-depth check for any caller.
             if (text.len > protocol.MAX_MESSAGE_LEN) {
-                if (scanId(text)) |id| self.emitErrorReject(id, "internal", "message too large", null);
+                if (scanId(text)) |id| self.emitErrorReject(label, id, "internal", "message too large", null);
                 return;
             }
 
@@ -173,23 +201,26 @@ pub fn Bridge(comptime B: type) type {
             const msg = protocol.decode(a, text, protocol.MAX_MESSAGE_LEN) catch {
                 // Malformed: if a numeric "id" is scannable, send one correlated
                 // reject so the page-side promise settles instead of hanging.
-                if (scanId(text)) |id| self.emitErrorReject(id, "internal", "bad message", null);
+                if (scanId(text)) |id| self.emitErrorReject(label, id, "internal", "bad message", null);
                 return;
             };
             // msg is arena-owned; no msg.deinit needed.
 
-            // Reserved inbound names (e.g. __zigware_ready from E) never hit the gate.
-            if (protocol.isReservedInboundName(msg.cmd)) return;
+            // Reserved inbound names (e.g. __zigware_ready from E) never hit the
+            // command gate; they take a dedicated path that re-derives the target
+            // ONLY from the attested window id and enforces G1 origin trust.
+            if (protocol.isReservedInboundName(msg.cmd)) {
+                self.handleReserved(window_id, origin, msg.cmd);
+                return;
+            }
 
             if (!self.allow.contains(msg.cmd)) {
-                self.emitErrorReject(msg.id, "unknown_command", "no such command", null);
+                self.emitErrorReject(label, msg.id, "unknown_command", "no such command", null);
                 return;
             }
 
             // G1/G2/G4 (C). Runs after the allowlist (G3) and BEFORE the G5
             // reservation, so a denied request never reserves a budget slot.
-            // window_id resolves to the single "main" label in v0.1.0 (B's map).
-            const label = self.labelFor(window_id);
             const decision = security.gates.evaluate(self.grants, .{
                 .window_label = label,
                 .origin = origin,
@@ -200,29 +231,34 @@ pub fn Bridge(comptime B: type) type {
             switch (decision) {
                 .allow => {},
                 .deny => |r| {
-                    self.emitErrorReject(msg.id, r.code, r.message, null);
+                    self.emitErrorReject(label, msg.id, r.code, r.message, null);
                     return; // no reservation taken
                 },
             }
 
             // G5: reserve a slot under the budget. reserveCall emits the reject
             // itself on failure (duplicate id, budget exceeded, or OOM).
-            if (!self.reserveCall(msg.id)) return;
+            if (!self.reserveCall(label, msg.id)) return;
 
-            self.dispatchFn(self, msg.cmd, msg.id, msg.args_json);
+            self.dispatchFn(self, label, msg.cmd, msg.id, msg.args_json);
+        }
+
+        /// Handle a reserved inbound name (currently `__zigware_ready`). Derives
+        /// the target window ONLY from the attested `window_id` (never the message
+        /// body), enforces G1 origin trust BEFORE acting, then routes the ready
+        /// signal to that one window. No manager => pre-E single-window path => no
+        /// ready machinery, so this is a no-op there.
+        fn handleReserved(self: *Self, window_id: u64, origin: []const u8, name: []const u8) void {
+            const m = self.manager orelse return;
+            const label = m.labelFor(window_id) orelse return; // unknown/closed window
+            if (!security.gates.originAllowed(self.grants, label, origin, self.is_debug)) return; // G1
+            if (std.mem.eql(u8, name, protocol.ready_message_name)) {
+                m.markReadyAndShow(label) catch {}; // also cancels the watchdog
+            }
         }
 
         fn workerCount() usize {
             return @min(@max(std.Thread.getCpuCount() catch 4, 1), 8);
-        }
-
-        /// Resolve a window id to its stable label. v0.1.0 has the single attested
-        /// "main" window (A ships it, B seeded main_window_id). Any id maps to
-        /// "main"; E generalizes this to a real windowId->label map.
-        fn labelFor(self: *Self, window_id: u64) []const u8 {
-            _ = self;
-            _ = window_id;
-            return "main";
         }
 
         /// Best-effort scan for a numeric `"id": N` in raw (possibly malformed)
@@ -253,19 +289,19 @@ pub fn Bridge(comptime B: type) type {
         /// G5 reservation. Returns true if the call may proceed (slot reserved),
         /// false if it was rejected (duplicate id, budget exceeded, or OOM) — in
         /// which case this method has already emitted the terminal reject.
-        pub fn reserveCall(self: *Self, id: u64) bool {
+        pub fn reserveCall(self: *Self, label: []const u8, id: u64) bool {
             self.inflight_mutex.lockUncancelable(self.io);
             defer self.inflight_mutex.unlock(self.io);
             if (self.inflight.count() >= MAX_CONCURRENT) {
-                self.emitErrorReject(id, "queue_full", "server busy", null);
+                self.emitErrorReject(label, id, "queue_full", "server busy", null);
                 return false;
             }
             const gop = self.inflight.getOrPut(self.alloc, id) catch {
-                self.emitErrorReject(id, "queue_full", "server busy", null);
+                self.emitErrorReject(label, id, "queue_full", "server busy", null);
                 return false;
             };
             if (gop.found_existing) {
-                self.emitErrorReject(id, "internal", "duplicate id", null);
+                self.emitErrorReject(label, id, "internal", "duplicate id", null);
                 return false;
             }
             return true;
@@ -287,41 +323,75 @@ pub fn Bridge(comptime B: type) type {
             self.markBinSettled(id);
         }
 
-        fn emit(self: *Self, js: []const u8) void {
-            self.backend.evalJS(self.window, js);
+        /// The single choke point into backend.evalJS (G6: one call site). Routes
+        /// `js` to `label`'s window. With a manager, re-resolves the label to a
+        /// live handle under the map mutex; a window closed mid-flight drops the
+        /// JS (drop-after-close discipline). Without a manager (pre-E single
+        /// window), routes to the bootstrap handle so all existing tests stay green.
+        fn emitToLabel(self: *Self, label: []const u8, js: []const u8) void {
+            if (self.manager) |m| {
+                if (m.handleFor(label)) |h| self.backend.evalJS(h, js);
+                return; // window closed mid-flight: drop
+            }
+            self.backend.evalJS(self.window, js); // pre-E single-window fallback
         }
 
         /// Emit a minimal reject from a fixed stack buffer that CANNOT OOM, so
         /// every id always settles even under allocator failure (H5). Emits a
         /// constant `"error"` reason; correctness only needs the id and the
-        /// reject channel.
-        fn emitFixedReject(self: *Self, id: u64) void {
+        /// reject channel. Routes to the calling window by `label`.
+        fn emitFixedReject(self: *Self, label: []const u8, id: u64) void {
             var buf: [256]u8 = undefined;
             const js = std.fmt.bufPrint(&buf, "window.Zigware._reject({d}, \"error\");", .{id}) catch {
                 std.log.warn("bridge: fixed reject overflow for id {d}", .{id});
                 return;
             };
-            self.emit(js);
+            self.emitToLabel(label, js);
         }
 
-        pub fn emitResolve(self: *Self, id: u64, json: []const u8) void {
+        pub fn emitResolve(self: *Self, label: []const u8, id: u64, json: []const u8) void {
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
             defer aw.deinit();
             protocol.encodeResolve(&aw.writer, id, json) catch {
-                self.emitFixedReject(id);
+                self.emitFixedReject(label, id);
                 return;
             };
-            self.emit(aw.writer.buffered());
+            self.emitToLabel(label, aw.writer.buffered());
         }
 
-        pub fn emitErrorReject(self: *Self, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
+        pub fn emitErrorReject(self: *Self, label: []const u8, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
             var aw: std.Io.Writer.Allocating = .init(self.alloc);
             defer aw.deinit();
             protocol.encodeErrorReject(&aw.writer, id, code, message, payload) catch {
-                self.emitFixedReject(id);
+                self.emitFixedReject(label, id);
                 return;
             };
-            self.emit(aw.writer.buffered());
+            self.emitToLabel(label, aw.writer.buffered());
+        }
+
+        /// Push a `Zigware._emit(event, payload)` to ONE window by label. The app
+        /// push channel: `event` is escaped at the protocol boundary, `payload`
+        /// must already be std.json output (handler obligation). A serialize
+        /// failure or a closed window drops silently (no terminal contract here).
+        pub fn emit(self: *Self, label: []const u8, event: []const u8, json_payload: []const u8) void {
+            var aw: std.Io.Writer.Allocating = .init(self.alloc);
+            defer aw.deinit();
+            protocol.encodeEmit(&aw.writer, event, json_payload) catch return;
+            self.emitToLabel(label, aw.writer.buffered());
+        }
+
+        /// Push the same event to EVERY live window. Requires a manager (the
+        /// single-window path has only one window; broadcast there is the no-op
+        /// of doing nothing). Snapshots the live handles under the map mutex, then
+        /// evals OUTSIDE the lock (never hold the map lock across a seam call).
+        pub fn emitAll(self: *Self, event: []const u8, json_payload: []const u8) void {
+            const m = self.manager orelse return;
+            var aw: std.Io.Writer.Allocating = .init(self.alloc);
+            defer aw.deinit();
+            protocol.encodeEmit(&aw.writer, event, json_payload) catch return;
+            var buf: [32]B.WindowHandle = undefined;
+            const n = m.snapshotHandles(&buf);
+            for (buf[0..n]) |h| self.backend.evalJS(h, aw.writer.buffered());
         }
 
         /// Per-call sink context. The EmitSink is its first field so the static
@@ -343,8 +413,11 @@ pub fn Bridge(comptime B: type) type {
 
         fn sinkEvalJS(sink: *ctxmod.EmitSink, js: []const u8) void {
             const sc: *SinkCtx = @fieldParentPtr("sink", sink);
-            // The A-seam alive check lives in backend.evalJS (dropped after teardown).
-            sc.bridge.emit(js);
+            // Route by the per-call sink label (set by runHandler to the attested
+            // caller's window). The A-seam alive check lives in backend.evalJS
+            // (dropped after teardown); emitToLabel additionally drops on a window
+            // closed mid-flight.
+            sc.bridge.emitToLabel(sink.label, js);
         }
 
         fn sinkParkBinary(sink: *ctxmod.EmitSink, id: u64, seq: u32, bytes: []const u8) bool {
@@ -500,12 +573,20 @@ const fixtures = @import("security_test_fixtures.zig");
 
 const dummy_bases = security.gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
+const Manager = WindowManager(NullBackend);
+
 const TestBridge = struct {
     backend: *NullBackend,
     bridge: *Bridge(NullBackend),
     window_id: u64,
     state: *builtin.State,
     grants: *fixtures.GrantTable,
+    // E multi-window harness fields. null on the pre-E single-window init().
+    manager: ?*Manager = null,
+    id_a: u64 = 0,
+    id_b: u64 = 0,
+    handle_a: NullBackend.WindowHandle = undefined,
+    handle_b: NullBackend.WindowHandle = undefined,
 
     fn init() !TestBridge {
         const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
@@ -540,6 +621,58 @@ const TestBridge = struct {
         return .{ .backend = backend, .bridge = bridge, .window_id = backend.windowId(win), .state = state, .grants = grants };
     }
 
+    /// E multi-window harness: a bridge wired to a heap WindowManager owning two
+    /// windows "a" and "b" (both want_show=true). The manager is heap-allocated
+    /// (like every other field) so its address is stable after this returns by
+    /// value; bridge.setManager(mgr) routes labelFor/emitToLabel through it.
+    fn initMulti() !TestBridge {
+        const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+        // Bootstrap window for the bridge's required `window` field; routing goes
+        // through the manager, so this handle is never the reply target.
+        const boot = try backend.createWindow(.{ .url = "app://localhost/index.html" });
+        const state = try std.testing.allocator.create(builtin.State);
+        state.* = .{};
+        const grants = try fixtures.buildTestGrantsMulti(std.testing.allocator);
+        const bridge = try Bridge(NullBackend).init(
+            std.testing.allocator,
+            std.testing.io,
+            backend,
+            boot,
+            builtin.State,
+            builtin.Commands,
+            state,
+            .{ .worker_count = 4 },
+            grants,
+            dummy_bases,
+            std.Io.Dir.cwd(),
+            false,
+        );
+        backend.setCallbacks(.{
+            .ctx = bridge,
+            .onSchemeRequest = schemeReq,
+            .onMessage = noopMessage,
+            .onLifecycle = noopLifecycle,
+            .onNavigation = noopNavigation,
+        });
+        const mgr = try std.testing.allocator.create(Manager);
+        mgr.* = Manager.init(std.testing.allocator, backend, std.testing.io);
+        bridge.setManager(mgr);
+        const ea = try mgr.create(.{ .label = "a", .url = "app://localhost/a", .show = true });
+        const eb = try mgr.create(.{ .label = "b", .url = "app://localhost/b", .show = true });
+        return .{
+            .backend = backend,
+            .bridge = bridge,
+            .window_id = backend.windowId(boot),
+            .state = state,
+            .grants = grants,
+            .manager = mgr,
+            .id_a = ea.window_id,
+            .id_b = eb.window_id,
+            .handle_a = ea.handle,
+            .handle_b = eb.handle,
+        };
+    }
+
     fn schemeReq(ctx: *anyopaque, req: backend_mod.Request) backend_mod.Response {
         const bridge: *Bridge(NullBackend) = @ptrCast(@alignCast(ctx));
         switch (req.source) {
@@ -564,6 +697,14 @@ const TestBridge = struct {
 
     fn deinit(self: *TestBridge) void {
         self.bridge.deinit(); // joins workers; backend.deinit asserts joined
+        // Tear the manager down AFTER the bridge joins its pool but BEFORE the
+        // backend deinits: mgr.deinit cancels/joins watchdog threads and frees
+        // entries, which still touch the (live) backend. A manager outliving the
+        // backend would let a waking watchdog touch freed backend state.
+        if (self.manager) |m| {
+            m.deinit();
+            std.testing.allocator.destroy(m);
+        }
         self.grants.deinit();
         std.testing.allocator.destroy(self.grants);
         std.testing.allocator.destroy(self.state);
@@ -574,6 +715,93 @@ const TestBridge = struct {
 
 // countResolveExactly / countRejectExactly are pub methods on NullBackend, so
 // both these bridge tests and the regression suite call them the same way.
+
+// ─── E: multi-window routing, impersonation resistance, ready signal ──────────
+
+test "E: a reply routes to the originating window by attested id" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    t.bridge.handleMessage(t.id_b, "app://localhost", "{\"id\":7,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(7));
+    // Every _resolve(7,…) frame must land in window b (the caller), never a.
+    for (t.backend.eval_log.items) |e| {
+        if (std.mem.indexOf(u8, e.js, "_resolve(7, ") != null)
+            try std.testing.expectEqual(t.id_b, e.window_id);
+    }
+}
+
+test "E: a gate deny from a window routes its reject to that same window" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    // Untrusted origin from window b: G1 denies, and the reject must carry b's id,
+    // proving the hoisted per-call label drives the early-reject routing (not the
+    // bootstrap handle, not window a).
+    t.bridge.handleMessage(t.id_b, "https://evil.example", "{\"id\":3,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(3));
+    for (t.backend.eval_log.items) |e| {
+        if (std.mem.indexOf(u8, e.js, "_reject(3, ") != null)
+            try std.testing.expectEqual(t.id_b, e.window_id);
+    }
+}
+
+test "E: a message from an unattributable window id is dropped (fail closed)" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    // 999 is neither a's nor b's id. Under a WIRED manager it is unattributable,
+    // so the message must be DROPPED: no gating as "main", no resolve and no reject
+    // routed anywhere. Were it coerced to "main", the well-formed sha256 call would
+    // have produced a terminal _resolve(8, ...).
+    t.bridge.handleMessage(999, "app://localhost", "{\"id\":8,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countResolveExactly(8));
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(8));
+    // Nothing for id 8 reached any window: no terminal frame for the dropped id was
+    // ever emitted, so in particular none mis-routed to main.
+    for (t.backend.eval_log.items) |e| {
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "_resolve(8, ") == null);
+        try std.testing.expect(std.mem.indexOf(u8, e.js, "_reject(8, ") == null);
+    }
+}
+
+test "E: emit targets one window; emitAll targets all" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    t.bridge.emit("a", "ping", "{\"n\":1}");
+    t.bridge.emitAll("theme", "{\"dark\":true}");
+    t.backend.pumpMain();
+    var a_ping: usize = 0;
+    var a_theme: usize = 0;
+    var b_theme: usize = 0;
+    for (t.backend.eval_log.items) |e| {
+        if (std.mem.indexOf(u8, e.js, "ping") != null and e.window_id == t.id_a) a_ping += 1;
+        if (std.mem.indexOf(u8, e.js, "theme") != null and e.window_id == t.id_a) a_theme += 1;
+        if (std.mem.indexOf(u8, e.js, "theme") != null and e.window_id == t.id_b) b_theme += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), a_ping);
+    try std.testing.expectEqual(@as(usize, 1), a_theme);
+    try std.testing.expectEqual(@as(usize, 1), b_theme);
+}
+
+test "E: __zigware_ready shows only the attested window, ignoring the body label" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    // Body claims label "a"; the bridge must derive the target from the attested
+    // id_b alone and show only window b.
+    t.bridge.handleMessage(t.id_b, "app://localhost", "{\"id\":0,\"cmd\":\"__zigware_ready\",\"args\":{\"label\":\"a\"}}");
+    t.backend.pumpMain();
+    try std.testing.expect(t.backend.windows.items[t.handle_b].shown);
+    try std.testing.expect(!t.backend.windows.items[t.handle_a].shown);
+}
+
+test "E: __zigware_ready from an untrusted origin is rejected (G1) and shows nothing" {
+    var t = try TestBridge.initMulti();
+    defer t.deinit();
+    t.bridge.handleMessage(t.id_b, "https://evil.example", "{\"id\":0,\"cmd\":\"__zigware_ready\",\"args\":{}}");
+    t.backend.pumpMain();
+    try std.testing.expect(!t.backend.windows.items[t.handle_b].shown);
+}
 
 test "happy path: invoke sha256 emits ordered progress then exactly one resolve" {
     var t = try TestBridge.init();

@@ -22,6 +22,10 @@ pub const builtin_permissions = [_]Permission{
     .{ .identifier = "http:request", .commands_allow = &.{"http.fetch"} },
     // Core window controls for the window's OWN label (no cross-window scope).
     .{ .identifier = "core:window:own", .commands_allow = &.{ "window.setTitle", "window.setSize" } },
+    // Cross-window management verbs. NOT in core:default (deny-by-default): a
+    // window must be explicitly granted core:window:manage to spawn/close/focus
+    // other windows. setTitle/setSize remain in core:window:own (own label).
+    .{ .identifier = "core:window:manage", .commands_allow = &.{ "window.create", "window.close", "window.focus", "window.setFullscreen" } },
     // Core compute: the public compute surface plus cancellation. No external
     // resource, so .none scope.
     .{ .identifier = "core:compute:cancel", .commands_allow = &.{"compute.cancel"} },
@@ -56,6 +60,13 @@ test "builtin_catalog: core:default resolves and grants no fs/http/shell" {
         try std.testing.expect(!std.mem.startsWith(u8, m, "http:"));
         try std.testing.expect(!std.mem.startsWith(u8, m, "shell:"));
     }
+}
+
+test "core:window:manage exists and is excluded from core:default" {
+    const cat = builtin_catalog;
+    try std.testing.expect(cat.permission("core:window:manage") != null);
+    const def = cat.set("core:default").?;
+    for (def.members) |m| try std.testing.expect(!std.mem.eql(u8, m, "core:window:manage"));
 }
 
 test "builtin permissions include the scoped families for later sub-projects" {
