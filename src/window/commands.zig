@@ -472,3 +472,123 @@ test "own-window fast path: a core:default window sets its OWN title; close on s
     try std.testing.expect(rejectCarries(t.backend, 11, "command.not_granted"));
     try std.testing.expectEqual(destroyed_before, t.backend.countEvents(.destroyed));
 }
+
+// ─── Trust-boundary fuzz: window.create args across the full gate chain ─────────
+//
+// Manual driver (0.16's `--fuzz` is broken; mirrors bridge.zig's manual fuzz
+// drivers). Drives window.create on the manage-granted "main" window with
+// adversarial label/url/title VALUES carried inside well-formed JSON envelopes,
+// through the real G1->G2->G4 chain in handleMessage and the WindowCommands
+// handler. The adversarial bytes (NUL, "../", control chars, raw U+2028, a
+// quote, an oversized > 4096 label, duplicate-different-case) are confined to
+// the args object and escaped into the message through protocol.jsString (whose
+// output is also valid JSON), so the decoded value carries the raw bytes while
+// the envelope still parses.
+//
+// Invariant proven for EVERY iteration: the call's id settles EXACTLY ONCE
+// (resolve XOR reject, never both, never zero) and nothing panics. The id is
+// emitted FIRST so the bridge's scanId always correlates a decode-failure (e.g.
+// an oversized value tripping JSON_PARSE_OPTIONS.max_value_len) back to a
+// terminal reject instead of a silent drop. A teeth counter proves a
+// non-trivial number of well-formed-but-denied inputs actually reached the G4
+// scope-deny path (scope.label.no_match / scope.host.no_match).
+
+const FUZZ_ITERS: usize = 10_000;
+
+// Adversarial value fragments. Each is a RAW byte string; the generator escapes
+// it into the JSON envelope via protocol.jsString, so the decoded label/url/
+// title receives these exact bytes. The handler/gate chain must tolerate all of
+// them without a panic or a double-settle.
+const oversized_label = "x" ** 4097; // > JSON_PARSE_OPTIONS.max_value_len (4096)
+const adversarial_fragments = [_][]const u8{
+    "viewer", // in-scope label -> resolve (first) / label_in_use (rest)
+    "Viewer", // duplicate-different-case: NOT the same key as "viewer"
+    "VIEWER",
+    "secret", // out-of-scope label -> G4 scope.label.no_match
+    "../etc/passwd", // path traversal bytes in a label/url
+    "..\\..\\win",
+    "a\x00b", // embedded NUL
+    "ctrl\x01\x02\x07\x1f", // control characters
+    "line\u{2028}sep", // raw U+2028 LINE SEPARATOR
+    "para\u{2029}sep", // raw U+2029 PARAGRAPH SEPARATOR
+    "quote\"injection", // a double-quote in the value
+    "</script><script>x", // markup that must never escape the JS string
+    "app://localhost/ok", // an in-scope host URL
+    "https://evil.example/p", // out-of-scope host -> G4 scope.host.no_match
+    "tab\there", // a tab
+    "", // empty
+    oversized_label, // forces a decode failure (value-length cap)
+};
+
+// Pick a random fragment; the oversized one is rare (it is large and only needs
+// to exercise the decode-failure-reject path a handful of times).
+fn pickFragment(rand: std.Random) []const u8 {
+    const idx = rand.uintLessThan(usize, adversarial_fragments.len - 1);
+    // ~1/64 of picks use the oversized fragment (the last entry).
+    if (rand.uintLessThan(u8, 64) == 0) return adversarial_fragments[adversarial_fragments.len - 1];
+    return adversarial_fragments[idx];
+}
+
+test "fuzz: window.create tolerates adversarial label/url/title across the gate chain (manual driver)" {
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x57494e44); // 'WIND'
+    const rand = prng.random();
+    var t = try WinHarness.init();
+    defer t.deinit();
+
+    var g4_teeth: usize = 0; // well-formed-but-denied inputs that reached a G4 scope deny
+    var resolved: usize = 0;
+    var rejected: usize = 0;
+
+    var it: usize = 0;
+    while (it < FUZZ_ITERS) : (it += 1) {
+        const id: u64 = @as(u64, it) + 1; // unique, never zero, never reused
+
+        // Build a well-formed envelope with the id FIRST (so scanId always
+        // correlates even when a later value trips the decode cap) and the
+        // adversarial bytes confined to args, escaped through jsString.
+        var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        try aw.writer.print("{{\"id\":{d},\"cmd\":\"window.create\",\"args\":{{\"label\":", .{id});
+        try protocol.jsString(&aw.writer, pickFragment(rand));
+        // ~1/4 of envelopes omit url entirely (exercises the null-url branch).
+        const include_url = rand.uintLessThan(u8, 4) != 0;
+        if (include_url) {
+            try aw.writer.writeAll(",\"url\":");
+            try protocol.jsString(&aw.writer, pickFragment(rand));
+        }
+        try aw.writer.writeAll(",\"title\":");
+        try protocol.jsString(&aw.writer, pickFragment(rand));
+        try aw.writer.writeAll("}}");
+        const text = aw.writer.buffered();
+
+        // Snapshot the eval_log so we inspect ONLY this call's new frames.
+        const before = t.backend.eval_log.items.len;
+        t.call(t.id_main, text);
+        const new_frames = t.backend.eval_log.items[before..];
+
+        // Hard invariant: EXACTLY ONE terminal frame for this id, and it is a
+        // resolve XOR a reject (never both, never zero, never a panic).
+        try std.testing.expectEqual(@as(usize, 1), new_frames.len);
+        const js = new_frames[0].js;
+        const is_resolve = std.mem.indexOf(u8, js, "_resolve(") != null;
+        const is_reject = std.mem.indexOf(u8, js, "_reject(") != null;
+        try std.testing.expect(is_resolve != is_reject); // XOR
+        if (is_resolve) resolved += 1 else rejected += 1;
+
+        // Teeth: count rejects that carry a G4 scope-deny code. label_in_use,
+        // unknown_label, and "bad message" are NOT G4 and are excluded.
+        if (is_reject and (std.mem.indexOf(u8, js, "scope.label.no_match") != null or
+            std.mem.indexOf(u8, js, "scope.host.no_match") != null))
+        {
+            g4_teeth += 1;
+        }
+    }
+
+    // Every iteration settled exactly once.
+    try std.testing.expectEqual(FUZZ_ITERS, resolved + rejected);
+    // Teeth: a non-trivial number of well-formed inputs were denied AT G4. With
+    // the fragment mix above, out-of-scope labels alone flood scope.label.no_match,
+    // so the real count runs into the thousands; the floor only guards against a
+    // future change that silently stops exercising the gate.
+    try std.testing.expect(g4_teeth >= 100);
+}
