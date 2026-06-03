@@ -54,8 +54,11 @@ pub fn WindowCommands(comptime B: type) type {
         /// semantics for setTitle/setSize, which ship in core:default). G2 still
         /// gated the command itself in handleMessage, so close/focus/setFullscreen
         /// on self still require their granted permission. A DIFFERENT target
-        /// requires an explicit label scope. `window.create` always names a fresh
-        /// target distinct from the caller, so it never takes the fast path.
+        /// requires an explicit label scope. `window.create` normally names a
+        /// fresh target, but if a caller passes its OWN label the label fast path
+        /// is harmless: the url host gate still runs, and the manager rejects the
+        /// duplicate live label with `window.label_in_use`, so no out-of-scope
+        /// window is created.
         fn labelG4(b: *Br, ctx: *ctxmod.Ctx(State), command: []const u8, target: []const u8) ?ctxmod.CommandError {
             if (std.mem.eql(u8, target, ctx.window_label)) return null;
             const d = gates.checkScope(b.grants, ctx.window_label, command, .{ .label = target }, b.bases, b.io, b.base_dir);
