@@ -28,18 +28,6 @@ pub fn CreateOptions(comptime B: type) type {
     };
 }
 
-/// A small heap cell carrying everything a watchdog thread needs, independent of
-/// the WindowEntry lifetime. Owns its OWN label copy (distinct from the entry's
-/// map-key label) so freeing it never double-frees the entry's label. Non-generic
-/// (none of its fields use B): `mgr` is type-erased and cast back inside the
-/// manager. `WindowEntry(B).watchdog` is `?*WatchdogCtx`.
-pub const WatchdogCtx = struct {
-    mgr: *anyopaque, // *WindowManager(B); cast back inside the manager
-    label: []u8, // OWNED copy, freed exactly once by cancelWatchdog
-    cancel: std.atomic.Value(bool) = .{ .raw = false },
-    fallback_ms: u32,
-};
-
 /// One live window. Heap-allocated (`gpa.create`) and borrowed through the maps,
 /// so a returned `*WindowEntry` stays valid until that entry is closed.
 pub fn WindowEntry(comptime B: type) type {
@@ -51,9 +39,13 @@ pub fn WindowEntry(comptime B: type) type {
         shown: bool,
         ready: bool,
         closing: bool,
-        // Watchdog bookkeeping (Task 5). null once cancelled/fired-and-reaped.
-        watchdog: ?*WatchdogCtx = null,
-        watchdog_thread: ?std.Thread = null,
+        // Show-fallback bookkeeping. The fallback is a MAIN-THREAD TIMER (no OS
+        // thread). `fallback_timer` is the backend cancellation token; null once
+        // cancelled or fired. `fallback_ctx` is the manager's heap FireCtx (typed
+        // *anyopaque here because window.zig must not import the manager), freed
+        // exactly once by whichever of fireMain/cancelWatchdog runs first.
+        fallback_timer: ?u64 = null,
+        fallback_ctx: ?*anyopaque = null,
     };
 }
 

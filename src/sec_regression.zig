@@ -42,11 +42,10 @@ const Harness = struct {
         // One "main" window with quit_on_last_close so the existing single-window
         // shutdown expectations hold (E's production default is keep-running).
         const windows = [_]manifest_types.Window{.{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true }};
-        // fallback_ms = 0: no show-fallback watchdog thread. The fuzz driver
-        // builds a fresh Harness per iteration (>=10000 of them); one watchdog OS
-        // thread per Harness would spawn+join thousands of threads against the
-        // shared io, stalling teardown. These tests assert message-handling safety,
-        // not window visibility, so the fallback timer is unnecessary here.
+        // fallback_ms = 0: no show-fallback timer. The fuzz driver builds a fresh
+        // Harness per iteration (>=10000 of them); arming and cancelling a timer
+        // per Harness is pointless work for tests that assert message-handling
+        // safety, not window visibility, so skip it.
         const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 0) catch |err| {
             grants.deinit();
             std.testing.allocator.destroy(grants);

@@ -36,6 +36,7 @@ These cover the window-lifecycle paths that need a live AppKit session: ready-to
 15. With the default quit policy (`keep_running_on_last_close`), close every window. The process must keep running and stay in the Dock. There must be no exit and no crash report in Console.app.
 16. With the app still running and no windows open, click the Dock icon. This delivers `reopen`, which must recreate the default window. The new window appears ready-to-show, same as a fresh launch.
 17. Rebuild with `quitOnLastWindowClosed: .quit_on_last_close` in the manifest. Open one window, then close it. Closing the last window must now quit the process cleanly: a clean exit, no crash report, and no allocator-leak warnings on stderr.
+17a. Load a page that never signals ready (e.g. open the Console and run `Zigware.Window.create({ label: "slow", url: "app://localhost/index.html" })` against a build whose page omits the ready signal). The window must still appear on its own after the show-fallback delay, driven by the main-thread timer rather than a per-window thread. It must show exactly once, with no white flash and no second show.
 
 ## Web Inspector fuse (GUI only)
 

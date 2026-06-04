@@ -68,6 +68,12 @@ pub const MacOSBackend = struct {
     next_window_id: u64 = 0, // monotonic counter (H8)
     current_window_id: u64 = std.math.maxInt(u64),
 
+    // Main-thread show-fallback timers (the dispatchMainAfter seam). Keyed by a
+    // monotonic non-zero token so cancelMainTimer can find the dispatch source.
+    // All timer ops run on the main thread, so this map needs no lock.
+    timers: std.AutoHashMapUnmanaged(u64, dispatch.dispatch_source_t) = .empty,
+    next_timer_token: u64 = 1, // monotonic; 0 is never a valid token
+
     // Cached classes, each registered ONCE here (H7).
     handler_cls: objc.Class = null,
     scheme_cls: objc.Class = null,
@@ -144,6 +150,24 @@ pub const MacOSBackend = struct {
     /// responsibility to have drained or kept backend-free.
     pub fn deinit(self: *MacOSBackend) void {
         self.alive.store(false, .release);
+        // Retire any still-armed show-fallback timers WITHOUT firing them: cancel
+        // guarantees the handler will not run, so a late fallback cannot touch the
+        // freed backend. Free each heap context (caller-owned ctx is freed by the
+        // caller's own cancel path, not here). Do this before draining the queue.
+        {
+            var it = self.timers.iterator();
+            while (it.next()) |kv| {
+                const src = kv.value_ptr.*;
+                const ctx_ptr = dispatch.dispatch_get_context(src);
+                dispatch.dispatch_source_cancel(src);
+                dispatch.dispatch_release(src);
+                if (ctx_ptr) |p| {
+                    const tc: *MacTimerCtx = @ptrCast(@alignCast(p));
+                    self.alloc.destroy(tc);
+                }
+            }
+            self.timers.deinit(self.alloc);
+        }
         dispatch.drain(); // run/flush any in-flight hops; they see !alive and no-op
         // Null the backend pointer on every IMP instance so a late callback
         // (the objc instances are retained by the webview/config/NSApp and
@@ -321,6 +345,83 @@ pub const MacOSBackend = struct {
         dispatch.async_(work, ctx);
     }
 
+    /// Heap context for a one-shot main-thread timer. Carries the user work/ctx
+    /// plus the bookkeeping the event handler needs to retire its own source.
+    const MacTimerCtx = struct {
+        backend: *MacOSBackend,
+        token: u64,
+        work: *const fn (?*anyopaque) callconv(.c) void,
+        ctx: ?*anyopaque,
+    };
+
+    /// GCD event handler for a fired one-shot timer. Runs on the main queue. Runs
+    /// the user work, then retires the source: drop it from the map, cancel +
+    /// release it, and free this context. (A cancelled timer never reaches here —
+    /// dispatch_source_cancel guarantees the handler will not fire.)
+    fn timerFired(context: ?*anyopaque) callconv(.c) void {
+        const tc: *MacTimerCtx = @ptrCast(@alignCast(context.?));
+        const self = tc.backend;
+        tc.work(tc.ctx); // the user callback frees its own ctx (caller-owned)
+        if (self.timers.fetchRemove(tc.token)) |kv| {
+            dispatch.dispatch_source_cancel(kv.value);
+            dispatch.dispatch_release(kv.value);
+        }
+        self.alloc.destroy(tc);
+    }
+
+    /// Schedule `work(ctx)` on the main thread after `delay_ms` via a one-shot GCD
+    /// dispatch-source timer. Returns a non-zero token; cancelMainTimer(token)
+    /// retires it with a hard cancellation guarantee. On any allocation/create
+    /// failure, returns 0 (the caller treats 0 as not-scheduled and tears down).
+    /// `ctx` is caller-owned; this backend never frees it.
+    pub fn dispatchMainAfter(self: *MacOSBackend, delay_ms: u32, work: *const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) u64 {
+        const token = self.next_timer_token;
+        const tc = self.alloc.create(MacTimerCtx) catch return 0;
+        tc.* = .{ .backend = self, .token = token, .work = work, .ctx = ctx };
+
+        const src = dispatch.dispatch_source_create(
+            dispatch.DISPATCH_SOURCE_TYPE_TIMER(),
+            0,
+            0,
+            dispatch.dispatch_get_main_queue(),
+        );
+        if (src == null) {
+            self.alloc.destroy(tc);
+            return 0;
+        }
+        self.timers.put(self.alloc, token, src) catch {
+            dispatch.dispatch_source_cancel(src);
+            dispatch.dispatch_release(src);
+            self.alloc.destroy(tc);
+            return 0;
+        };
+
+        dispatch.dispatch_set_context(src, tc);
+        dispatch.dispatch_source_set_event_handler_f(src, timerFired);
+        const start = dispatch.dispatch_time(dispatch.DISPATCH_TIME_NOW, @as(i64, delay_ms) * @as(i64, @intCast(dispatch.NSEC_PER_MSEC)));
+        // interval = FOREVER => one-shot; the handler retires the source itself.
+        dispatch.dispatch_source_set_timer(src, start, dispatch.DISPATCH_TIMER_FOREVER, 0);
+        dispatch.dispatch_resume(src);
+        self.next_timer_token += 1;
+        return token;
+    }
+
+    /// Cancel the timer for `token`. After this returns (on the main thread), the
+    /// handler is GUARANTEED not to run (dispatch_source_cancel). Idempotent: an
+    /// unknown or already-fired token is a no-op. Frees the timer's heap context.
+    pub fn cancelMainTimer(self: *MacOSBackend, token: u64) void {
+        const kv = self.timers.fetchRemove(token) orelse return;
+        const src = kv.value;
+        // Recover and free the heap context before releasing the source.
+        const ctx_ptr = dispatch.dispatch_get_context(src);
+        dispatch.dispatch_source_cancel(src);
+        dispatch.dispatch_release(src);
+        if (ctx_ptr) |p| {
+            const tc: *MacTimerCtx = @ptrCast(@alignCast(p));
+            self.alloc.destroy(tc);
+        }
+    }
+
     pub fn pumpMain(_: *MacOSBackend) void {
         dispatch.drain();
     }
@@ -331,6 +432,9 @@ pub const MacOSBackend = struct {
 
     pub fn terminate(self: *MacOSBackend) void {
         self.alive.store(false, .release);
+        // Show-fallback timers are retired by closeAll/cancelMainTimer (the quit
+        // path cancels each window's timer before terminate) and any stragglers
+        // by deinit; they are intentionally NOT swept here.
     }
 
     pub fn nativeWindow(_: *MacOSBackend, h: WindowHandle) ?*anyopaque {
