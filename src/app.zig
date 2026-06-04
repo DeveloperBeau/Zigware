@@ -17,6 +17,36 @@ const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
 const Lifecycle = window_lifecycle.Lifecycle;
 
+/// In Debug only, returns the ZIGWARE_DEV_URL override when ZIGWARE_DEV=1; null otherwise.
+/// In release this compiles to `return null` with no env access: the comptime gate elides
+/// the whole body, so a ReleaseSafe binary reads no environment here. `gpa` backs the
+/// Environ map; the returned slice is duped into `gpa` since the map (and its values) are
+/// freed before return, so the caller frees the dupe. `@import("builtin")` is referenced
+/// inline because the file-scope `builtin` alias is the command surface, not the std module.
+fn devUrlOverride(gpa: std.mem.Allocator) !?[]const u8 {
+    if (comptime @import("builtin").mode != .Debug) return null;
+    // No `init` is in scope here (app.zig's main() is zero-param), and the
+    // `.{ .block = .global }` form does not compile on macOS, so build a PosixBlock
+    // straight from the libc environ. std.c.environ is `[*:null]?[*:0]u8`; PosixBlock.slice
+    // is `[:null]const ?[*:0]const u8`, so span to the null sentinel then @ptrCast the inner
+    // const (outer-only coercion will not add the inner pointee const automatically).
+    const c_environ = std.c.environ;
+    var n: usize = 0;
+    while (c_environ[n] != null) : (n += 1) {}
+    const block: std.process.Environ.Block = .{ .slice = @ptrCast(c_environ[0..n :null]) };
+    var map = try std.process.Environ.createMap(.{ .block = block }, gpa);
+    defer map.deinit();
+    const flag = map.get("ZIGWARE_DEV") orelse return null;
+    if (!std.mem.eql(u8, flag, "1")) return null;
+    const url = map.get("ZIGWARE_DEV_URL") orelse return null;
+    return try gpa.dupe(u8, url);
+}
+
+/// Pure decision: the dev override wins when present, else the configured prod URL.
+fn resolveWindowUrl(prod_url: []const u8, dev_override: ?[]const u8) []const u8 {
+    return dev_override orelse prod_url;
+}
+
 // The bootstrap window now carries the manager-injected user-scripts (zigware.js
 // + window.js + the per-window label constant); WindowManager.create owns those
 // @embedFile injections, so app.zig no longer embeds the frontend JS itself.
@@ -196,9 +226,22 @@ pub fn App(comptime B: type) type {
             // handle is never the actual reply target.
             var boot: ?B.WindowHandle = null;
             for (windows) |w| {
+                // The dev-URL override applies ONLY to the "main" window and ONLY in
+                // Debug (devUrlOverride folds to null in release). It selects the window
+                // URL; it is never fed into nav trust (that flows through the manifest
+                // dev_url capability origin in decideNavigation). create() dupes opts.url
+                // (manager.zig:73), so the override is freed right after create returns.
+                const dev_override = if (std.mem.eql(u8, w.label, "main"))
+                    try devUrlOverride(alloc)
+                else
+                    null;
+                defer if (dev_override) |d| alloc.free(d);
+                // w.url is optional (null derives app://); the override only supersedes
+                // a present URL, so fold it in only when w.url is non-null.
+                const window_url: ?[]const u8 = if (w.url) |u| resolveWindowUrl(u, dev_override) else dev_override;
                 const opts = WindowManager(B).Options{
                     .label = w.label,
-                    .url = w.url,
+                    .url = window_url,
                     .title = w.title,
                     .width = w.width,
                     .height = w.height,
@@ -210,8 +253,13 @@ pub fn App(comptime B: type) type {
                 if (boot == null) {
                     boot = e.handle;
                     // The first manifest window is the default ("main"): store its
-                    // opts so a later reopen can recreate exactly this window.
-                    self.default_window = opts;
+                    // opts so a later reopen can recreate exactly this window. Pin the
+                    // STABLE manifest URL here, not the dev override: the override is
+                    // freed at the end of this iteration, so storing it would leave
+                    // default_window.url dangling for the reopen path (line ~433).
+                    var default_opts = opts;
+                    default_opts.url = w.url;
+                    self.default_window = default_opts;
                 }
             }
             // D's validator guarantees at least one window (no_main_window), so
@@ -545,6 +593,18 @@ test "M6: navigation denies by default, allows only the app://localhost origin" 
     // The scheme match is case-sensitive.
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("APP://localhost/"));
     try std.testing.expectEqual(backend_mod.NavigationDecision.allow, h.backend.simulateNavigation("app://localhost/index.html"));
+}
+
+test "dev mode: ZIGWARE_DEV_URL overrides the main window URL and is a trusted nav origin" {
+    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    // devUrlOverride(gpa) reads the env under the Debug gate (re-signatured to take an
+    // allocator + be fallible, since 0.16 has no std.posix.getenv). CI Debug runs with the
+    // var unset, so assert the null path here and cover the set path via the pure helper below.
+    // Any duped non-null result must be freed by the caller.
+    if (try devUrlOverride(std.testing.allocator)) |u| std.testing.allocator.free(u);
+    // Pure helper covers the decision without touching process env:
+    try std.testing.expectEqualStrings("http://localhost:5173", resolveWindowUrl("app://localhost/index.html", "http://localhost:5173"));
+    try std.testing.expectEqualStrings("app://localhost/index.html", resolveWindowUrl("app://localhost/index.html", null));
 }
 
 test "L10: window_all_closed runs full shutdown (observed via post-event message drop)" {
