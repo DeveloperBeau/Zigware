@@ -26,6 +26,10 @@ pub const Code = enum {
     missing_identifier,
     invalid_identifier,
     invalid_version,
+    invalid_team_id,
+    invalid_bundle_version,
+    invalid_display_name,
+    invalid_minimum_system_version,
     no_main_window,
     duplicate_window_label,
     empty_window_label,
@@ -227,6 +231,12 @@ pub const Bundle = struct {
     icon: []const []const u8 = &.{},
     category: ?[]const u8 = null,
     copyright: ?[]const u8 = null,
+    /// Marketing/build version string. Maps to CFBundleVersion on macOS. When
+    /// null, G falls back to the top-level `version`.
+    bundleVersion: ?[]const u8 = null,
+    /// Override for the user-visible bundle name. When null, G falls back to
+    /// the top-level `productName`.
+    displayName: ?[]const u8 = null,
     macos: MacOsBundle = .{},
 };
 
@@ -240,6 +250,10 @@ pub const MacOsBundle = struct {
     entitlements: ?[]const u8 = null,
     /// notarytool provider short name / team id.
     providerShortName: ?[]const u8 = null,
+    /// Apple Developer Team ID, e.g. "ABCDE12345". Used by notarytool.
+    teamId: ?[]const u8 = null,
+    /// Whether G notarizes the signed artifacts. Defaults on.
+    notarize: bool = true,
     minimumSystemVersion: []const u8 = "11.0",
 };
 
@@ -312,6 +326,8 @@ pub const OverrideMacOsBundle = struct {
     hardenedRuntime: ?bool = null,
     entitlements: ?[]const u8 = null,
     providerShortName: ?[]const u8 = null,
+    teamId: ?[]const u8 = null,
+    notarize: ?bool = null,
     minimumSystemVersion: ?[]const u8 = null,
 };
 
@@ -323,6 +339,8 @@ pub const OverrideBundle = struct {
     icon: ?[]const []const u8 = null,
     category: ?[]const u8 = null,
     copyright: ?[]const u8 = null,
+    bundleVersion: ?[]const u8 = null,
+    displayName: ?[]const u8 = null,
     macos: ?OverrideMacOsBundle = null,
 };
 

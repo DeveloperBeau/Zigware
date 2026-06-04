@@ -28,6 +28,10 @@ const merge = @import("merge.zig");
 pub const Manifest = types.Manifest;
 const OverrideManifest = types.OverrideManifest;
 pub const Diagnostics = types.Diagnostics;
+/// Re-exported so the package module (which reaches the manifest only through
+/// the `zigware_manifest` module = this file) can run the canonical strict
+/// reverse-DNS check on signing/bundle identifiers.
+pub const isValidReverseDns = @import("validate.zig").isValidReverseDns;
 
 pub const LoadError = error{
     FileNotFound,

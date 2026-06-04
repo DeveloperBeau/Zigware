@@ -112,6 +112,8 @@ fn pickBundle(base: types.Bundle, ov: types.OverrideBundle) types.Bundle {
     if (ov.icon) |v| out.icon = v;
     if (ov.category) |v| out.category = v;
     if (ov.copyright) |v| out.copyright = v;
+    if (ov.bundleVersion) |v| out.bundleVersion = v;
+    if (ov.displayName) |v| out.displayName = v;
     if (ov.macos) |m| out.macos = pickMacOsBundle(base.macos, m);
     return out;
 }
@@ -122,6 +124,8 @@ fn pickMacOsBundle(base: types.MacOsBundle, ov: types.OverrideMacOsBundle) types
     if (ov.hardenedRuntime) |v| out.hardenedRuntime = v;
     if (ov.entitlements) |v| out.entitlements = v;
     if (ov.providerShortName) |v| out.providerShortName = v;
+    if (ov.teamId) |v| out.teamId = v;
+    if (ov.notarize) |v| out.notarize = v;
     if (ov.minimumSystemVersion) |v| out.minimumSystemVersion = v;
     return out;
 }
@@ -391,6 +395,8 @@ fn dupMacOsBundle(gpa: std.mem.Allocator, in: types.MacOsBundle) std.mem.Allocat
     errdefer if (out.entitlements) |s| gpa.free(s);
     out.providerShortName = try dupOptString(gpa, in.providerShortName);
     errdefer if (out.providerShortName) |s| gpa.free(s);
+    out.teamId = try dupOptString(gpa, in.teamId);
+    errdefer if (out.teamId) |s| gpa.free(s);
     out.minimumSystemVersion = try dupString(gpa, types.MacOsBundle, "minimumSystemVersion", in.minimumSystemVersion);
     return out;
 }
@@ -399,6 +405,7 @@ fn freeMacOsBundleDuped(gpa: std.mem.Allocator, m: types.MacOsBundle) void {
     if (m.signingIdentity) |s| gpa.free(s);
     if (m.entitlements) |s| gpa.free(s);
     if (m.providerShortName) |s| gpa.free(s);
+    if (m.teamId) |s| gpa.free(s);
     freeStringDuped(gpa, types.MacOsBundle, "minimumSystemVersion", m.minimumSystemVersion);
 }
 
@@ -412,6 +419,10 @@ fn dupBundle(gpa: std.mem.Allocator, in: types.Bundle) std.mem.Allocator.Error!t
     errdefer if (out.category) |s| gpa.free(s);
     out.copyright = try dupOptString(gpa, in.copyright);
     errdefer if (out.copyright) |s| gpa.free(s);
+    out.bundleVersion = try dupOptString(gpa, in.bundleVersion);
+    errdefer if (out.bundleVersion) |s| gpa.free(s);
+    out.displayName = try dupOptString(gpa, in.displayName);
+    errdefer if (out.displayName) |s| gpa.free(s);
     out.macos = try dupMacOsBundle(gpa, in.macos);
     return out;
 }
@@ -421,6 +432,8 @@ fn freeBundleDuped(gpa: std.mem.Allocator, b: types.Bundle) void {
     freeStringListDuped(gpa, types.Bundle, "icon", b.icon);
     if (b.category) |s| gpa.free(s);
     if (b.copyright) |s| gpa.free(s);
+    if (b.bundleVersion) |s| gpa.free(s);
+    if (b.displayName) |s| gpa.free(s);
     freeMacOsBundleDuped(gpa, b.macos);
 }
 
@@ -537,6 +550,34 @@ test "absent nested override leaves the base subtree untouched" {
     );
 }
 
+test "platform override carries the new macos/bundle fields and frees cleanly" {
+    const gpa = std.testing.allocator;
+    const base = Manifest{
+        .identifier = "com.example.app",
+        .productName = "BaseProduct",
+        .version = "0.1.0",
+        .app = .{ .windows = &.{.{ .label = "main", .title = "Main" }} },
+        .bundle = .{
+            .macos = .{ .teamId = "BASE", .notarize = true },
+            .bundleVersion = "1",
+            .displayName = "Base",
+        },
+    };
+    const override = OverrideManifest{
+        .bundle = .{
+            .macos = .{ .teamId = "OVR", .notarize = false },
+            .bundleVersion = "9",
+            .displayName = "Ovr",
+        },
+    };
+    const m = try merge(gpa, base, override);
+    defer parse.freeManifest(gpa, m);
+    try std.testing.expectEqualStrings("OVR", m.bundle.macos.teamId.?);
+    try std.testing.expect(!m.bundle.macos.notarize);
+    try std.testing.expectEqualStrings("9", m.bundle.bundleVersion.?);
+    try std.testing.expectEqualStrings("Ovr", m.bundle.displayName.?);
+}
+
 // OOM sweep: every allocation index must produce zero leaks, no invalid-frees,
 // and leave the inputs intact (the inputs are stack values composed of static
 // slices, so they need no separate cleanup here).
@@ -574,8 +615,11 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
             .icon = &base_icons,
             .category = "public.app-category.developer-tools",
             .copyright = "(c) 2026",
+            .bundleVersion = "1",
+            .displayName = "Base",
             .macos = .{
                 .signingIdentity = "Developer ID Application: X",
+                .teamId = "BASE",
                 .minimumSystemVersion = "12.0",
             },
         },
@@ -583,6 +627,11 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     const override = OverrideManifest{
         .productName = "DeepOverride",
         .security = .{ .csp = .{ .scriptSrc = &ov_script_src } },
+        .bundle = .{
+            .bundleVersion = "9",
+            .displayName = "Ovr",
+            .macos = .{ .teamId = "OVR", .notarize = false },
+        },
     };
     const m = try merge(gpa, base, override);
     parse.freeManifest(gpa, m);
