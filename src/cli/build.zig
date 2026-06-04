@@ -4,20 +4,12 @@ const dev = @import("dev.zig");
 const csp = @import("csp.zig");
 const assets_embed = @import("assets_embed.zig");
 const Manifest = @import("zigware_manifest").Manifest;
+const package = @import("package");
 
-pub const Arch = enum { host }; // universal (lipo arm64 + x86_64) reserved for v0.2
-
-pub const Artifacts = struct {
-    binary_path: []const u8,
-    app_name: []const u8,
-    bundle_id: []const u8,
-    version: []const u8,
-    icon_path: ?[]const u8,
-    entitlements_path: ?[]const u8,
-    signing_identity: ?[]const u8,
-    frontend_embedded: bool,
-    arch: Arch,
-};
+// Canonical handoff types live in the package module; re-export so existing
+// build.Artifacts / build.Arch references keep resolving to the one true type.
+pub const Artifacts = package.Artifacts;
+pub const Arch = package.Arch;
 
 pub const BuildOptions = struct {
     manifest: *const Manifest,

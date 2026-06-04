@@ -64,6 +64,19 @@ pub fn build(b: *std.Build) void {
     // Expose D's parser+type to the CLI leaves under the name `zigware_manifest`.
     cli_mod.addImport("zigware_manifest", manifest_mod);
 
+    // The packaging module owns the canonical Artifacts/Arch handoff types and the
+    // package() pipeline the build verb hands off to. It is its own module so the
+    // CLI imports it as `package` (a cross-module import; a bare path import would
+    // escape the cli module root). Its config leaf reaches the manifest through the
+    // same `zigware_manifest` name.
+    const package_mod = b.createModule(.{
+        .root_source_file = b.path("src/package/packager.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    package_mod.addImport("zigware_manifest", manifest_mod);
+    cli_mod.addImport("package", package_mod);
+
     // ─── Scaffold template embeds ────────────────────────────────────────────
     //
     // `init.zig` writes a scaffold from bytes baked into the CLI exe. The bytes
