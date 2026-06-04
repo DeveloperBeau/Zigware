@@ -27,7 +27,7 @@ const merge = @import("merge.zig");
 
 pub const Manifest = types.Manifest;
 const OverrideManifest = types.OverrideManifest;
-const Diagnostics = types.Diagnostics;
+pub const Diagnostics = types.Diagnostics;
 
 pub const LoadError = error{
     FileNotFound,

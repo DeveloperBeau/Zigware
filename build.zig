@@ -132,15 +132,18 @@ pub fn build(b: *std.Build) void {
     // literals and @import("template_index") that C4's init.run tests exercise. The
     // plain addLogicTest builds a zero-import module that cannot resolve those.
     const addLogicTestWithTemplates = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
                 .optimize = o,
             });
             wireTemplateEmbeds(bb, m, files, idx);
+            m.addImport("zigware_manifest", mm); // init.zig's tests parse the scaffolded zigware.zon via D's reader
             const tt = bb.addTest(.{ .root_module = m });
-            ts.dependOn(&bb.addRunArtifact(tt).step);
+            const run = bb.addRunArtifact(tt);
+            ts.dependOn(&run.step);
+            return run;
         }
     }.add;
 
@@ -168,7 +171,11 @@ pub fn build(b: *std.Build) void {
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
     // can resolve the anonymous template imports.
-    addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, "src/cli/init.zig");
+    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/init.zig");
+    // Isolated step so init.zig's fake-driven scaffolding tests can run without the
+    // App-based suites that hang on some hosts.
+    const test_init_step = b.step("test-init", "Run only the CLI init scaffolding tests");
+    test_init_step.dependOn(&init_test_run.step);
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
