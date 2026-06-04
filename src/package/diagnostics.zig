@@ -45,12 +45,14 @@ pub const NotarizeError = error{
 /// dmg errors. Intentionally UNIONS `SignError`/`NotarizeError` (unlike the pure
 /// `BundleError` leaf): `makeDmg` re-signs and re-notarizes the `.dmg`, so a
 /// `try sign(...)`/`try notarize(...)` inside it requires those sets here or the
-/// error set will not unify.
+/// error set will not unify. `config.CredError` is unioned too because `sign`
+/// rejects a missing identity with `MissingSigningIdentity` (a `CredError`
+/// member), so `makeDmg`'s re-entrant `try sign(...)` would not unify without it.
 pub const DmgError = error{
     HdiutilFailed,
     RunFailed,
     OutOfMemory,
-} || SignError || NotarizeError;
+} || SignError || NotarizeError || config.CredError;
 
 /// The full packaging error surface. `CredError`/`ConfigError` are NOT redefined
 /// here — they are config's vocabulary, unioned in (config needs nothing from
