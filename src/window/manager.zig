@@ -299,6 +299,14 @@ pub fn WindowManager(comptime B: type) type {
         const WCtx = win.WatchdogCtx;
 
         fn spawnWatchdog(self: *Self, entry: *Entry) Error!void {
+            // fallback_ms == 0 disables the show-fallback timer: no per-window
+            // thread is spawned, so the window relies solely on an explicit
+            // markReadyAndShow. The entry's watchdog fields stay null, so
+            // cancelWatchdog is a clean no-op. This is the right setting for
+            // backends that show synchronously (NullBackend) and for stress
+            // tests that create thousands of short-lived windows, where one OS
+            // thread per window would otherwise exhaust the scheduler and the io.
+            if (self.fallback_ms == 0) return;
             const wc = try self.gpa.create(WCtx);
             errdefer self.gpa.destroy(wc);
             const label_dup = try self.gpa.dupe(u8, entry.label); // DISTINCT copy
