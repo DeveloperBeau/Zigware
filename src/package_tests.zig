@@ -6,5 +6,6 @@ comptime {
     _ = @import("package/config.zig");
     _ = @import("package/bundle.zig");
     _ = @import("package/sign.zig");
-    // notarize.zig, dmg.zig added as their tasks land.
+    _ = @import("package/notarize.zig");
+    // dmg.zig added as its task lands.
 }

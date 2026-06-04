@@ -221,9 +221,13 @@ pub const NotaryIssue = struct {
 
 /// The slice of the notarytool JSON this module reads. `issues` DEFAULTS to an empty
 /// slice so both the `submit --wait` shape (status, no issues) and a bare
-/// `{"status":"Invalid"}` parse without an error. Unknown notarytool fields
-/// (`jobId`/`statusSummary`/`docUrl`/`architecture`/...) are ignored at parse time.
+/// `{"status":"Invalid"}` parse without an error. `id` DEFAULTS to an empty string:
+/// the `submit --wait` JSON carries the submission `id` the `notarytool log <id>`
+/// argv needs, while the `log` JSON (status + issues) omits it; one struct serves
+/// both parses. Unknown notarytool fields (`jobId`/`statusSummary`/`docUrl`/
+/// `architecture`/...) are ignored at parse time.
 pub const NotaryResult = struct {
+    id: []const u8 = "",
     status: []const u8 = "",
     issues: []const NotaryIssue = &.{},
 };
