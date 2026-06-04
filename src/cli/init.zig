@@ -118,10 +118,12 @@ fn printNextSteps(io: std.Io, opts: InitOptions) anyerror!void {
 const testing = std.testing;
 const manifest = @import("zigware_manifest");
 
-// Set to true in CI to also compile the scaffolded `dts` codegen step, proving
-// the vendored bindgen + sample command compile. Default off: it shells out to
-// `zig build` per template and is slow on a developer machine.
-const run_scaffold_build = false;
+// When true, each scaffolded template also runs its `dts` codegen step, proving
+// the vendored bindgen + sample command compile and that bindings.d.ts is
+// written. It shells out to `zig build` per template, so it is the slowest part
+// of the init suite, but it is the only check that a generated project actually
+// builds, so it runs by default.
+const run_scaffold_build = true;
 
 /// Collect the expected destination paths for a template (shared payload plus
 /// the template's own files), mirroring `run`'s strip/rename rules.
@@ -244,5 +246,18 @@ fn assertScaffoldDtsCompiles(io: std.Io, gpa: std.mem.Allocator, dir: []const u8
     });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
+    if (result.term.exited != 0) {
+        std.debug.print("scaffold `zig build dts` failed in {s}:\n{s}\n", .{ dir, result.stderr });
+    }
     try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, result.term);
+
+    // The step's whole job is to produce frontend/bindings.d.ts; an exit-0 that
+    // wrote nothing would still be a regression, so prove the file exists and is
+    // the generated declaration (not an empty or stray file).
+    var scaffold = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer scaffold.close(io);
+    const dts = try scaffold.readFileAlloc(io, "frontend/bindings.d.ts", gpa, .limited(64 * 1024));
+    defer gpa.free(dts);
+    try testing.expect(std.mem.indexOf(u8, dts, "export interface ZigCommands") != null);
+    try testing.expect(std.mem.indexOf(u8, dts, "greet:") != null);
 }

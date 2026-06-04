@@ -9,6 +9,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
+    // The vendored framework surface (command context types plus the wire
+    // protocol) exposed as a named `zigware` module. Rooted at the vendored
+    // command_ctx.zig, whose `@import("protocol.zig")` resolves as a sibling at
+    // the project root. Every module that touches the command types imports this
+    // ONE instance, so the codegen's `== CommandError` type checks hold.
+    const zigware_mod = b.createModule(.{
+        .root_source_file = b.path("command_ctx.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -17,6 +28,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.linkFramework("Cocoa", .{});
     exe_mod.linkFramework("WebKit", .{});
+    exe_mod.addImport("zigware", zigware_mod);
     // Frontend assets live outside src/, so expose them as anonymous imports that
     // @embedFile can reference by name.
     exe_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
@@ -36,6 +48,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    dts_mod.addImport("zigware", zigware_mod);
     const dts_exe = b.addExecutable(.{ .name = "bindgen", .root_module = dts_mod });
     const dts_run = b.addRunArtifact(dts_exe);
     const dts_step = b.step("dts", "Generate frontend/bindings.d.ts");
@@ -47,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("zigware", zigware_mod);
     const unit_tests = b.addTest(.{ .root_module = test_mod });
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
