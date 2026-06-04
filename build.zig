@@ -177,6 +177,14 @@ pub fn build(b: *std.Build) void {
     const test_init_step = b.step("test-init", "Run only the CLI init scaffolding tests");
     test_init_step.dependOn(&init_test_run.step);
 
+    // main.zig wires the verbs together: it imports init.zig (template embeds +
+    // template_index) and the manifest module, so its test root needs the same
+    // template-aware wiring as init. Its fake-free tests (exitCodeFor / SIGINT) run
+    // without any App-based suite, so they get an isolated step too.
+    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/main.zig");
+    const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
+    test_main_step.dependOn(&main_test_run.step);
+
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
         const m = b.createModule(.{
