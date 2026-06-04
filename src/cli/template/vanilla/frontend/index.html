@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{name}}</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>{{name}}</h1>
+      <p class="hint">Type a name and call the Zig command.</p>
+      <div class="row">
+        <input id="name" class="field" value="world" placeholder="name" aria-label="name" />
+        <button id="greet" class="btn" type="button">Greet</button>
+      </div>
+      <p id="out" class="out"></p>
+      <p id="err" class="err"></p>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
