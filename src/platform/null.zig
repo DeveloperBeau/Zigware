@@ -13,17 +13,6 @@ pub const NullBackend = struct {
     pub const Event = enum { created, shown, destroyed, terminated };
 
     const Eval = struct { window_id: u64, js: []const u8 };
-    /// A scheduled main-thread timer (the show-fallback seam). Fired by pumpMain
-    /// when its deadline passes, or by the fireTimers test helper immediately.
-    /// `ctx` is CALLER-owned: this backend never frees it (the caller frees it on
-    /// the cancel path; the `work` callback frees it on the fire path).
-    const Timer = struct {
-        token: u64,
-        work: *const fn (?*anyopaque) callconv(.c) void,
-        ctx: ?*anyopaque,
-        deadline_ns: i128,
-        cancelled: bool = false,
-    };
     const FakeWindow = struct {
         id: u64, // monotonic attested id (finding H8/M14); NOT a pointer
         url: []u8,
@@ -52,8 +41,6 @@ pub const NullBackend = struct {
     injected_scripts: std.ArrayList([]const u8) = .empty,
     lifecycle_calls: std.ArrayList(LifecycleEvent) = .empty,
     events: std.ArrayList(Event) = .empty,
-    timers: std.ArrayList(Timer) = .empty, // main-thread show-fallback timers
-    next_timer_token: u64 = 1, // monotonic; 0 is never a valid token
     eval_drops: usize = 0, // count of evalJS payloads dropped on OOM (finding H9)
     post_terminate_drops: usize = 0, // pending entries pumpMain dropped after terminate (H11 accounting)
     terminated: std.atomic.Value(bool) = .init(false),
@@ -98,9 +85,6 @@ pub const NullBackend = struct {
         self.injected_scripts.deinit(self.alloc);
         self.lifecycle_calls.deinit(self.alloc);
         self.events.deinit(self.alloc);
-        // Drop any pending timers without firing. ctx is caller-owned, so we free
-        // nothing here; we only release the list's own backing buffer.
-        self.timers.deinit(self.alloc);
         const a = self.alloc;
         a.destroy(self);
     }
@@ -227,101 +211,27 @@ pub const NullBackend = struct {
         work(ctx);
     }
 
-    /// Schedule `work(ctx)` to fire on the main thread after `delay_ms`. Returns
-    /// a non-zero token. All timer ops here run on the (single) test thread, so
-    /// cancel-vs-fire is serialized — no lock is needed. `ctx` is caller-owned;
-    /// this backend never frees it. On OOM appending the timer, return 0 (no
-    /// valid token); the caller treats a 0 token as "not scheduled" and tears the
-    /// window down via its own errdefer. Mirrors evalJS's drop-don't-trap policy.
-    pub fn dispatchMainAfter(self: *NullBackend, delay_ms: u32, work: *const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) u64 {
-        const now: i128 = std.Io.Clock.now(.awake, self.io).nanoseconds;
-        const deadline = now + @as(i128, delay_ms) * std.time.ns_per_ms;
-        const token = self.next_timer_token;
-        self.timers.append(self.alloc, .{
-            .token = token,
-            .work = work,
-            .ctx = ctx,
-            .deadline_ns = deadline,
-        }) catch {
-            std.log.warn("NullBackend.dispatchMainAfter: dropped timer on OOM", .{});
-            return 0;
-        };
-        self.next_timer_token += 1;
-        return token;
-    }
-
-    /// Mark the matching timer cancelled so pumpMain/fireTimers skip it. After
-    /// this returns, `work` is guaranteed not to run. Idempotent: an unknown or
-    /// already-fired token is a no-op.
-    pub fn cancelMainTimer(self: *NullBackend, token: u64) void {
-        for (self.timers.items) |*t| {
-            if (t.token == token) {
-                t.cancelled = true;
-                return;
-            }
-        }
-    }
-
-    /// TEST HELPER: fire every pending non-cancelled timer immediately (ignoring
-    /// the deadline) and remove all timers, so a test can trigger the fallback
-    /// deterministically with no real sleep. `work` may re-enter the manager
-    /// (transitionReady -> showWindow); it runs OUTSIDE any backend lock.
-    pub fn fireTimers(self: *NullBackend) void {
-        while (self.timers.items.len > 0) {
-            const t = self.timers.orderedRemove(0);
-            if (!t.cancelled) t.work(t.ctx);
-        }
-    }
-
     /// Drain pending into eval_log under the mutex. Reserve eval_log capacity
     /// FIRST so the per-entry move is infallible (finding B1): no mid-loop OOM
     /// partial-drain, no duplicate delivery, no double-free. If the reservation
     /// itself OOMs, leave pending intact and return (entries stay queued). When
     /// terminated, free each pending entry instead of delivering (finding M4).
     pub fn pumpMain(self: *NullBackend) void {
-        // Eval drain runs under the mutex (a worker may enqueue concurrently).
-        // Scope it so the lock is released BEFORE firing timers, whose `work`
-        // re-enters the manager (transitionReady -> showWindow) and must not run
-        // under this backend's mutex.
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            if (self.terminated.load(.acquire)) {
-                for (self.pending.items) |e| self.alloc.free(e.js);
-                self.post_terminate_drops += self.pending.items.len;
-                self.pending.clearRetainingCapacity();
-                // Once terminated, timers are dropped without firing (mirrors
-                // deinit): a late fire could touch a torn-down manager.
-                self.timers.clearRetainingCapacity();
-                return;
-            }
-            // Reserve up front; if this OOMs, pending is untouched.
-            self.eval_log.ensureUnusedCapacity(self.alloc, self.pending.items.len) catch {
-                std.log.warn("NullBackend.pumpMain: eval_log reservation OOM; {d} entries stay queued", .{self.pending.items.len});
-                return;
-            };
-            for (self.pending.items) |e| self.eval_log.appendAssumeCapacity(e);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.terminated.load(.acquire)) {
+            for (self.pending.items) |e| self.alloc.free(e.js);
+            self.post_terminate_drops += self.pending.items.len;
             self.pending.clearRetainingCapacity();
+            return;
         }
-
-        // Fire every non-cancelled timer whose deadline has passed; remove the
-        // ones we visit (fired or cancelled). Timers are main-thread-only state,
-        // so no lock is taken here.
-        const now: i128 = std.Io.Clock.now(.awake, self.io).nanoseconds;
-        var i: usize = 0;
-        while (i < self.timers.items.len) {
-            const t = self.timers.items[i];
-            if (t.cancelled) {
-                _ = self.timers.orderedRemove(i);
-                continue;
-            }
-            if (t.deadline_ns <= now) {
-                _ = self.timers.orderedRemove(i);
-                t.work(t.ctx);
-                continue;
-            }
-            i += 1;
-        }
+        // Reserve up front; if this OOMs, pending is untouched.
+        self.eval_log.ensureUnusedCapacity(self.alloc, self.pending.items.len) catch {
+            std.log.warn("NullBackend.pumpMain: eval_log reservation OOM; {d} entries stay queued", .{self.pending.items.len});
+            return;
+        };
+        for (self.pending.items) |e| self.eval_log.appendAssumeCapacity(e);
+        self.pending.clearRetainingCapacity();
     }
 
     pub fn run(_: *NullBackend) void {} // tests drive via simulate + pumpMain
@@ -329,9 +239,6 @@ pub const NullBackend = struct {
     pub fn terminate(self: *NullBackend) void {
         self.terminated.store(true, .release);
         self.events.append(self.alloc, .terminated) catch {};
-        // Drop pending timers without firing: a fallback show after terminate
-        // would touch a torn-down manager. ctx is caller-owned; free nothing.
-        self.timers.clearRetainingCapacity();
     }
 
     pub fn nativeWindow(_: *NullBackend, _: WindowHandle) ?*anyopaque {

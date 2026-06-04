@@ -1,8 +1,0 @@
-.{
-    .identifier = "main",
-    .windows = .{"main"},
-    .origins = .{
-        .app_scheme,
-        .{ .dev_url = "http://localhost:5173" },
-    },
-}
