@@ -81,7 +81,7 @@ pub const Callbacks = struct {
 
 /// Expected number of required backend methods; named once so the comptime
 /// length assert below carries no bare magic literal.
-const required_method_count = 19;
+const required_method_count = 17;
 
 /// One name per line so the count is auditable and the comptime length assert
 /// below cannot be silently fooled by an alignment trick (finding L12).
@@ -97,8 +97,6 @@ const required_methods = [_][]const u8{
     "injectUserScript",
     "windowId",
     "dispatchMain",
-    "dispatchMainAfter",
-    "cancelMainTimer",
     "pumpMain",
     "run",
     "terminate",
@@ -107,25 +105,6 @@ const required_methods = [_][]const u8{
     "markJoined",
 };
 
-/// MAIN-THREAD TIMER SEAM (show-fallback). The window manager creates each
-/// window hidden and arms a fallback that shows it if the page never signals
-/// ready. That fallback is a MAIN-THREAD TIMER, never an OS thread: only the
-/// main/UI thread touches the backend, so the framework spawns no hidden
-/// threads.
-///
-///   dispatchMainAfter(delay_ms, work, ctx) -> token
-///     Schedule `work(ctx)` to run ON THE MAIN THREAD after `delay_ms`.
-///     Returns a non-zero cancellation token.
-///   cancelMainTimer(token)
-///     After this returns (called on the main thread), `work` is GUARANTEED
-///     not to run. Idempotent: an unknown or already-fired token is a no-op.
-///
-/// CONTRACT: all timer scheduling, cancellation, and firing happen on the main
-/// thread, so cancel-vs-fire is serialized — there is no data race between a
-/// cancel and a fire. The CALLER owns `ctx` and frees it exactly once: on the
-/// cancel path the caller frees it (the timer will not fire); on the fire path
-/// the `work` callback frees it.
-///
 /// Comptime conformance check (finding H4, M11, L12). References every required
 /// associated type and method by name so a missing one is a clear compile error,
 /// not a cryptic instantiation failure deep in generic code. Future OS backends
@@ -179,10 +158,6 @@ test "assertBackend accepts a conformant stub" {
             return 0;
         }
         pub fn dispatchMain(_: *@This(), _: *const fn (?*anyopaque) callconv(.c) void, _: ?*anyopaque) void {}
-        pub fn dispatchMainAfter(_: *@This(), _: u32, _: *const fn (?*anyopaque) callconv(.c) void, _: ?*anyopaque) u64 {
-            return 1;
-        }
-        pub fn cancelMainTimer(_: *@This(), _: u64) void {}
         pub fn pumpMain(_: *@This()) void {}
         pub fn run(_: *@This()) void {}
         pub fn terminate(_: *@This()) void {}

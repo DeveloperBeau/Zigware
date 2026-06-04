@@ -4,29 +4,9 @@ const D = @import("../manifest/types.zig");
 const win = @import("window.zig");
 const protocol = @import("../protocol.zig");
 const NullBackend = @import("../platform/null.zig").NullBackend;
-const fuses = @import("../manifest/fuses.zig");
 
 const zigware_js = @embedFile("frontend/zigware.js");
 const window_js = @embedFile("frontend/window.js");
-
-/// Static, F-chosen source (never user data; stays clear of the G6 output-encoding
-/// boundary). Lives under the single root namespace window.Zigware. Referenced ONLY
-/// under `comptime fuses.allow_eval`, so a default build (allowEval = false) compiles
-/// the string out of the binary entirely.
-const dev_client_src =
-    \\window.Zigware = window.Zigware || {};
-    \\window.Zigware.__dev = {
-    \\  reload() { location.reload(); },
-    \\  rehandshake() { /* reserved: v0.2 process-preserving bridge re-handshake */ },
-    \\};
-;
-
-/// Number of dev-client user_scripts entries the manager injects: 1 when the
-/// allowEval fuse is set at comptime, else 0. The injection itself is gated on the
-/// same comptime condition, so the 4th user_scripts entry is present iff allow_eval.
-pub fn dev_client_count() usize {
-    return if (comptime fuses.allow_eval) 1 else 0;
-}
 
 pub const default_show_fallback_ms: u32 = 5000;
 
@@ -59,18 +39,23 @@ pub fn WindowManager(comptime B: type) type {
         by_label: std.StringHashMapUnmanaged(*Entry) = .empty,
         by_id: std.AutoHashMapUnmanaged(B.WindowId, *Entry) = .empty,
         fallback_ms: u32 = default_show_fallback_ms,
+        /// Set true in closeAll/deinit so any pending watchdog thread that wakes
+        /// during teardown exits without touching freed state.
+        shutting_down: std.atomic.Value(bool) = .{ .raw = false },
+
         pub fn init(gpa: std.mem.Allocator, backend: *B, io: std.Io) Self {
             return .{ .gpa = gpa, .backend = backend, .io = io };
         }
 
-        /// Frees every live entry (cancelling its show-fallback timer first), the
-        /// label copies, and both maps. Production calls closeAll before this;
-        /// deinit must still not leak if a test skips closeAll.
+        /// Frees every live entry (cancelling its watchdog first), the label
+        /// copies, and both maps. Production calls closeAll before this; deinit
+        /// must still not leak if a test skips closeAll.
         pub fn deinit(self: *Self) void {
+            self.shutting_down.store(true, .release);
             var it = self.by_label.valueIterator();
             while (it.next()) |ep| {
                 const e = ep.*;
-                self.cancelWatchdog(e); // cancels the timer, frees its FireCtx
+                self.cancelWatchdog(e); // joins the thread, frees its label copy
                 self.gpa.free(e.label);
                 self.gpa.destroy(e);
             }
@@ -98,16 +83,7 @@ pub fn WindowManager(comptime B: type) type {
             var label_script_aw: std.Io.Writer.Allocating = .init(self.gpa);
             defer label_script_aw.deinit();
             buildLabelScript(&label_script_aw.writer, opts.label) catch return error.OutOfMemory;
-            // The dev-client entry is appended ONLY under the comptime allow_eval
-            // gate; dev_client_src is referenced nowhere else, so a default build
-            // (allowEval = false) compiles the string out entirely. Invariant: the
-            // 4th user_scripts entry is present iff allow_eval. Core IPC evalJS is
-            // untouched — only this injection is gated.
-            const base_scripts = [_][]const u8{ zigware_js, window_js, label_script_aw.writer.buffered() };
-            const user_scripts = if (comptime fuses.allow_eval)
-                base_scripts ++ [_][]const u8{dev_client_src}
-            else
-                base_scripts;
+            const user_scripts = [_][]const u8{ zigware_js, window_js, label_script_aw.writer.buffered() };
 
             const handle = self.backend.createWindow(.{
                 .url = url_z,
@@ -151,24 +127,7 @@ pub fn WindowManager(comptime B: type) type {
                 self.map_mutex.unlock(self.io);
             }
 
-            // Arm the show-fallback as a MAIN-THREAD TIMER (no OS thread). The
-            // FireCtx is heap-allocated and owns its own label copy (distinct from
-            // the entry's map-key label), so freeing it never double-frees the
-            // entry's label. It is freed exactly once: by fireMain on the fire
-            // path, or by cancelWatchdog on the cancel path. A 0 token means the
-            // backend could not schedule the timer (resource exhaustion); surface
-            // it as OutOfMemory so create's errdefers tear the window down.
-            if (self.fallback_ms > 0) {
-                const fc = try self.gpa.create(FireCtx);
-                errdefer self.gpa.destroy(fc);
-                const fc_label = try self.gpa.dupe(u8, entry.label); // DISTINCT copy
-                errdefer self.gpa.free(fc_label);
-                fc.* = .{ .mgr = self, .label = fc_label };
-                const token = self.backend.dispatchMainAfter(self.fallback_ms, fireMain, fc);
-                if (token == 0) return error.OutOfMemory;
-                entry.fallback_timer = token;
-                entry.fallback_ctx = fc;
-            }
+            try self.spawnWatchdog(entry); // Task 5
             return entry;
         }
 
@@ -187,7 +146,7 @@ pub fn WindowManager(comptime B: type) type {
             _ = self.by_id.remove(entry.window_id);
             self.map_mutex.unlock(self.io);
 
-            self.cancelWatchdog(entry); // cancel the timer + free its FireCtx
+            self.cancelWatchdog(entry); // join + free watchdog copy
             self.backend.destroyWindow(entry.handle);
             self.gpa.free(entry.label);
             self.gpa.destroy(entry);
@@ -289,8 +248,8 @@ pub fn WindowManager(comptime B: type) type {
         }
 
         pub fn markReadyAndShow(self: *Self, label: []const u8) Error!void {
-            // Cancel the fallback timer FIRST (on the main thread, so no fire can
-            // race the transition), then flip state.
+            // Cancel the watchdog FIRST (joins the thread, so no concurrent fire
+            // can race the transition), then flip state.
             if (self.by_label.get(label)) |e| {
                 self.cancelWatchdog(e);
             } else {
@@ -299,52 +258,78 @@ pub fn WindowManager(comptime B: type) type {
             if (self.transitionReady(label) == .unknown) return error.UnknownLabel;
         }
 
-        /// The fallback's fire action. Resolves by LABEL so a fire after close is a
-        /// clean no-op. Does NOT cancel the timer (it IS the timer firing); the
-        /// lock in transitionReady makes the by_label read safe.
+        /// The watchdog's fire action (main thread in production via dispatchMain;
+        /// inline on the watchdog thread under NullBackend). Resolves by LABEL so a
+        /// fire after close is a clean no-op. Does NOT cancel the watchdog (it IS
+        /// the watchdog); the lock in transitionReady makes the by_label read safe
+        /// even off the main thread.
         pub fn fireFallback(self: *Self, label: []const u8) void {
             _ = self.transitionReady(label);
         }
 
-        /// The timer's ctx: heap-allocated, owns a DISTINCT label copy (so freeing
-        /// it never double-frees the entry's map-key label). `mgr` is the typed
-        /// manager so the callback can re-enter it.
-        const FireCtx = struct { mgr: *Self, label: []u8 };
+        const WCtx = win.WatchdogCtx;
 
-        /// The main-thread timer callback (runs on the main thread). Resolves the
-        /// entry by label; if present, clears the entry's timer bookkeeping (so a
-        /// later cancelWatchdog is a no-op) BEFORE transitioning, then shows the
-        /// window if still wanted (idempotent via e.shown). Finally frees the
-        /// FireCtx — the single free site on the fire path.
-        fn fireMain(ptr: ?*anyopaque) callconv(.c) void {
-            const fc: *FireCtx = @ptrCast(@alignCast(ptr.?));
-            const self = fc.mgr;
-            if (self.by_label.get(fc.label)) |e| {
-                // Clear first: the timer has fired, so cancelWatchdog must NOT try
-                // to cancel a spent token or re-free this same FireCtx.
-                e.fallback_timer = null;
-                e.fallback_ctx = null;
-            }
-            self.fireFallback(fc.label);
-            self.gpa.free(fc.label);
-            self.gpa.destroy(fc);
+        fn spawnWatchdog(self: *Self, entry: *Entry) Error!void {
+            const wc = try self.gpa.create(WCtx);
+            errdefer self.gpa.destroy(wc);
+            const label_dup = try self.gpa.dupe(u8, entry.label); // DISTINCT copy
+            errdefer self.gpa.free(label_dup);
+            wc.* = .{ .mgr = self, .label = label_dup, .fallback_ms = self.fallback_ms };
+            // std.Thread.spawn's SpawnError is not a subset of Self.Error; fold a
+            // spawn failure into BackendFailure (the errdefers above reclaim wc +
+            // its label copy, and create's own errdefers tear down the window).
+            const t = std.Thread.spawn(.{}, watchdogBody, .{wc}) catch return error.BackendFailure;
+            entry.watchdog = wc;
+            entry.watchdog_thread = t;
         }
 
-        /// Cancel the entry's show-fallback timer and free its FireCtx. Idempotent.
-        /// Safe to call from close/deinit/markReadyAndShow (all main-thread). After
-        /// cancelMainTimer returns, the timer is guaranteed not to fire, so this is
-        /// the sole owner of the FireCtx on the cancel path; the main-thread
-        /// serialization of cancel-vs-fire makes the single-free safe.
-        pub fn cancelWatchdog(self: *Self, entry: *Entry) void {
-            const token = entry.fallback_timer orelse return;
-            self.backend.cancelMainTimer(token);
-            if (entry.fallback_ctx) |ctx| {
-                const fc: *FireCtx = @ptrCast(@alignCast(ctx));
-                self.gpa.free(fc.label);
-                self.gpa.destroy(fc);
+        /// Per-window thread: sleep in slices so cancellation and shutdown are
+        /// observed within one slice; on expiry hop to main via dispatchMain.
+        fn watchdogBody(wc: *WCtx) void {
+            const self: *Self = @ptrCast(@alignCast(wc.mgr));
+            const slice_ms: u32 = 25;
+            var elapsed: u32 = 0;
+            while (elapsed < wc.fallback_ms) {
+                if (wc.cancel.load(.acquire) or self.shutting_down.load(.acquire)) return;
+                const step = @min(slice_ms, wc.fallback_ms - elapsed);
+                // std.Thread.sleep was removed in 0.16; sleep through the Io
+                // vtable. A raw std.Thread has no cancellation token, so the
+                // Cancelable result cannot fire here; real cancellation is the
+                // wc.cancel atomic checked between slices.
+                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(step), .awake) catch {};
+                elapsed += step;
             }
-            entry.fallback_timer = null;
-            entry.fallback_ctx = null;
+            if (wc.cancel.load(.acquire) or self.shutting_down.load(.acquire)) return;
+            // Hop to main with a heap payload independent of wc (cancelWatchdog may
+            // free wc right after we read its label). The main handler frees it.
+            const fc = self.gpa.create(FireCtx) catch return;
+            const lc = self.gpa.dupe(u8, wc.label) catch {
+                self.gpa.destroy(fc);
+                return;
+            };
+            fc.* = .{ .mgr = self, .label = lc };
+            self.backend.dispatchMain(fireMain, fc);
+        }
+
+        const FireCtx = struct { mgr: *Self, label: []u8 };
+        fn fireMain(ptr: ?*anyopaque) callconv(.c) void {
+            const fc: *FireCtx = @ptrCast(@alignCast(ptr.?));
+            fc.mgr.fireFallback(fc.label);
+            fc.mgr.gpa.free(fc.label);
+            fc.mgr.gpa.destroy(fc);
+        }
+
+        /// Cancel + join the entry's watchdog and free its ctx. Idempotent. Single
+        /// free site for the watchdog label copy. Safe to call from close/deinit/
+        /// markReadyAndShow (all main-thread).
+        pub fn cancelWatchdog(self: *Self, entry: *Entry) void {
+            const wc = entry.watchdog orelse return;
+            wc.cancel.store(true, .release);
+            if (entry.watchdog_thread) |t| t.join(); // bounded by one slice (<=25ms)
+            self.gpa.free(wc.label);
+            self.gpa.destroy(wc);
+            entry.watchdog = null;
+            entry.watchdog_thread = null;
         }
 
         pub fn cancelWatchdogByLabel(self: *Self, label: []const u8) void {
@@ -354,8 +339,12 @@ pub fn WindowManager(comptime B: type) type {
 
         /// Close every live window, ordered, idempotent (close guards via
         /// entry.closing). Snapshots labels into owned dupes first so the iterator
-        /// is not invalidated and no freed-key is hashed mid-loop. Each close()
-        /// cancels its own show-fallback timer, so teardown leaves no armed timer.
+        /// is not invalidated and no freed-key is hashed mid-loop. Does NOT set
+        /// `shutting_down`: closeAll runs on the quit path (orderedShutdown) but
+        /// also indirectly on app shutdown; setting the flag here would permanently
+        /// disable the watchdog, so a later `reopen` (keep-running policy) window
+        /// would never fire its fallback. Only `deinit` (truly terminal) sets it.
+        /// Each close() cancels its own watchdog, so teardown still joins cleanly.
         pub fn closeAll(self: *Self) void {
             var labels: std.ArrayList([]u8) = .empty;
             defer {
@@ -508,97 +497,69 @@ test "fireFallback shows a never-readied window and is a no-op on a closed label
     mgr.fireFallback("slow"); // no-op, no trap
 }
 
-test "the show-fallback timer fires on the main thread and shows the window" {
+test "a real short-fallback watchdog fires and shows the window (spawn/sleep/free path)" {
     const be = try NullBackend.init(std.testing.allocator, std.testing.io);
     defer {
         be.markJoined();
         be.deinit();
     }
     var mgr = tm(be);
+    mgr.fallback_ms = 10; // tiny, so the test does not stall
     defer mgr.deinit();
     const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
-    // Created hidden; the fallback is armed as a main-thread timer (no OS thread).
-    try std.testing.expect(!e.shown);
-    try std.testing.expect(e.fallback_timer != null);
-
-    // Fire the timer deterministically (no real sleep). This runs fireMain on the
-    // calling/main thread: it clears the entry's timer bookkeeping, then shows the
-    // window via transitionReady.
-    be.fireTimers();
-    try std.testing.expect(e.shown);
-    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
-    // fireMain cleared the token, so a later cancel is a clean no-op.
-    try std.testing.expect(e.fallback_timer == null);
-    try std.testing.expect(e.fallback_ctx == null);
-    mgr.cancelWatchdog(e); // no-op; no double-free, no second show
-    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+    // Join the watchdog: it sleeps ~10ms, then dispatchMain runs fireFallback
+    // inline on the watchdog thread (NullBackend dispatchMain is inline). After
+    // join, the window is shown. cancelWatchdog joins + frees the ctx.
+    mgr.cancelWatchdog(e); // joins the (possibly already-fired) thread; no leak
+    // The watchdog may or may not have fired before cancel; assert no leak/trap.
+    // Determinism for the SHOW assertion is covered by fireFallback above.
 }
 
-test "pumpMain fires a due show-fallback timer and shows the window" {
+test "the watchdog thread drives the show end-to-end (timer -> dispatchMain -> fireMain -> showWindow)" {
     const be = try NullBackend.init(std.testing.allocator, std.testing.io);
     defer {
         be.markJoined();
         be.deinit();
     }
     var mgr = tm(be);
-    // A large delay arms the timer well into the future, so an immediate pumpMain
-    // cannot see it as due (no flake). We do NOT sleep; we drive the show through
-    // fireTimers (which ignores the deadline) and use pumpMain only to confirm a
-    // not-yet-due timer is left armed.
-    mgr.fallback_ms = 60_000;
+    mgr.fallback_ms = 10; // tiny, so the timer expires quickly
     defer mgr.deinit();
     const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
-    try std.testing.expect(!e.shown);
-    try std.testing.expect(e.fallback_timer != null);
-    // A pump immediately after create runs before the 1ms deadline, so the timer
-    // is NOT yet due and the window stays hidden (proves pumpMain gates on the
-    // deadline, not "fire everything").
-    be.pumpMain();
-    try std.testing.expect(!e.shown);
-    try std.testing.expect(e.fallback_timer != null);
-    // Now fire deterministically (deadline-independent) and confirm the show.
-    be.fireTimers();
-    try std.testing.expect(e.shown);
-    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
-}
 
-test "cancelling the fallback before it fires shows nothing and leaks nothing" {
-    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
-    defer {
-        be.markJoined();
-        be.deinit();
+    // Poll the SYNCHRONIZED signal `e.shown` under map_mutex, the same mutex
+    // transitionReady writes it under, until the timer thread expires and drives
+    // the show (watchdogBody -> dispatchMain -> fireMain -> fireFallback ->
+    // transitionReady -> showWindow; NullBackend dispatchMain runs inline on the
+    // watchdog thread, so the show happens once the thread expires). We do NOT
+    // cancel first and we never call fireFallback directly, so this proves the
+    // THREAD path. The bound is generous (400 x 5ms = ~2s) so a slow CI run cannot
+    // flake; an early break keeps the fast path fast.
+    //
+    // DEVIATION (forced by soundness): we poll `e.shown` under map_mutex rather
+    // than `be.countEvents(.shown)`, because the NullBackend event log is appended
+    // by showWindow WITHOUT a lock. Reading it from this thread while the watchdog
+    // thread appends would be a data race (a torn read, or a realloc-induced UAF
+    // when the append grows the buffer). `e.shown` is written under map_mutex, so
+    // polling it under the same mutex is race-free.
+    var spun: usize = 0;
+    while (spun < 400) : (spun += 1) {
+        mgr.map_mutex.lockUncancelable(mgr.io);
+        const done = e.shown;
+        mgr.map_mutex.unlock(mgr.io);
+        if (done) break;
+        std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(5), .awake) catch {};
     }
-    var mgr = tm(be);
-    defer mgr.deinit();
-    const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
-    try std.testing.expect(e.fallback_timer != null);
 
-    // Cancel on the main thread, then fire any remaining timers: the cancelled
-    // timer must NOT run, so the window stays hidden and the FireCtx is freed
-    // exactly once (cancelWatchdog freed it; the timer never fires).
+    // Join the (already-fired) thread before touching the unlocked event log. The
+    // cancel store is harmless here: we've already observed shown==true, so the
+    // fire happened; join just reaps the thread after its showWindow append
+    // returned, establishing the happens-before that makes the reads below safe.
     mgr.cancelWatchdog(e);
-    try std.testing.expect(e.fallback_timer == null);
-    try std.testing.expect(e.fallback_ctx == null);
-    be.fireTimers();
-    try std.testing.expect(!e.shown);
-    try std.testing.expectEqual(@as(usize, 0), be.countEvents(.shown));
-}
 
-test "markReadyAndShow cancels the fallback so a later fire does not double-show" {
-    const be = try NullBackend.init(std.testing.allocator, std.testing.io);
-    defer {
-        be.markJoined();
-        be.deinit();
-    }
-    var mgr = tm(be);
-    defer mgr.deinit();
-    const e = try mgr.create(.{ .label = "w", .url = "app://localhost/w", .show = true });
-    try mgr.markReadyAndShow("w"); // cancels the timer, then shows
-    try std.testing.expect(e.ready and e.shown);
+    // Single-threaded now: assert the thread reached expiry and drove the show.
+    try std.testing.expect(e.shown);
     try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
-    // The fallback was cancelled, so firing remaining timers shows nothing more.
-    be.fireTimers();
-    try std.testing.expectEqual(@as(usize, 1), be.countEvents(.shown));
+    // mgr.deinit at teardown finds watchdog == null (already reaped) and no-ops.
 }
 
 // Fault-injection sweep over create. The backend AND the manager share the SAME

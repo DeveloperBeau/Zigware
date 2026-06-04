@@ -25,9 +25,9 @@ const types = @import("types.zig");
 const validate = @import("validate.zig");
 const merge = @import("merge.zig");
 
-pub const Manifest = types.Manifest;
+const Manifest = types.Manifest;
 const OverrideManifest = types.OverrideManifest;
-pub const Diagnostics = types.Diagnostics;
+const Diagnostics = types.Diagnostics;
 
 pub const LoadError = error{
     FileNotFound,

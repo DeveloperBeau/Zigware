@@ -33,67 +33,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     exe_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
     const exe = b.addExecutable(.{ .name = "zigware", .root_module = exe_mod });
-    // The CLI exe (added below) keeps the `zigware` name; the app installs under
-    // a distinct sub-path so exactly one artifact lands at zig-out/bin/zigware.
-    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = "zigware-app" }).step);
+    b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     const run_step = b.step("run", "Run zigware");
     run_step.dependOn(&run_cmd.step);
-
-    // --- zigware CLI (no Cocoa/WebKit; shells out to `zig build`) ---
-    // The CLI needs D's *parser* (it reads the END-USER's zigware.zon at runtime),
-    // not just the Manifest type. parse.zig/types.zig/validate.zig/merge.zig
-    // cross-import BY PATH and must all live in ONE compilation, so root a
-    // dedicated module at parse.zig (it transitively pulls in its siblings by
-    // path) and satisfy its `zigware_manifest_zon` anonymous import with the raw
-    // zigware.zon — the CLI never calls embedded(), so the placeholder suffices.
-    const manifest_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest/parse.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    manifest_mod.addAnonymousImport("zigware_manifest_zon", .{
-        .root_source_file = b.path("zigware.zon"),
-    });
-    const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    // Expose D's parser+type to the CLI leaves under the name `zigware_manifest`.
-    cli_mod.addImport("zigware_manifest", manifest_mod);
-
-    // ─── Scaffold template embeds ────────────────────────────────────────────
-    //
-    // `init.zig` writes a scaffold from bytes baked into the CLI exe. The bytes
-    // come from @embedFile("template/<rel>") names that must be registered as
-    // anonymous imports. Walk src/cli/template/ recursively at configure time and
-    // register every file under its repo-relative name, so adding a new template
-    // subtree (Wave B) needs NO edit here. The same walk emits a generated
-    // template_index.zig listing each template's files grouped by first path
-    // segment, which init.zig switches on (since @embedFile names must be comptime
-    // literals, init picks among comptime-known blobs rather than enumerating at
-    // runtime). wireTemplateEmbeds applies the same registration to any module
-    // that resolves those embeds: cli_mod, the generated index module (its own
-    // @embedFile literals resolve against its OWN import table), and the
-    // init.zig test module.
-    const template_files = walkTemplateTree(b);
-    const template_index = emitTemplateIndex(b, template_files);
-    const template_index_mod = b.createModule(.{
-        .root_source_file = template_index,
-        .target = target,
-        .optimize = optimize,
-    });
-    registerTemplateEmbeds(b, template_index_mod, template_files);
-    wireTemplateEmbeds(b, cli_mod, template_files, template_index_mod);
-
-    const cli_exe = b.addExecutable(.{ .name = "zigware", .root_module = cli_mod });
-    b.installArtifact(cli_exe);
-    const cli_run = b.addRunArtifact(cli_exe);
-    if (b.args) |args| cli_run.addArgs(args);
-    const cli_step = b.step("cli", "Run the zigware CLI");
-    cli_step.dependOn(&cli_run.step);
 
     const test_step = b.step("test", "Run tests");
 
@@ -109,44 +53,6 @@ pub fn build(b: *std.Build) void {
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
     }.add;
-
-    // Manifest-aware logic-test registrar: mirrors addLogicTest plus the one addImport
-    // that resolves @import("zigware_manifest").Manifest in the test module. Used by the
-    // CLI leaves that consume D's parsed manifest type (csp.zig now; dev/build in A3).
-    const addLogicTestWithManifest = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, src: []const u8) void {
-            const m = bb.createModule(.{
-                .root_source_file = bb.path(src),
-                .target = t,
-                .optimize = o,
-            });
-            m.addImport("zigware_manifest", mm);
-            const tt = bb.addTest(.{ .root_module = m });
-            ts.dependOn(&bb.addRunArtifact(tt).step);
-        }
-    }.add;
-
-    // Template-aware logic-test registrar: mirrors addLogicTest plus the template/**
-    // anonymous imports the CLI module receives AND the generated template_index
-    // module, so init.zig's per-leaf TEST root can resolve the @embedFile("template/...")
-    // literals and @import("template_index") that C4's init.run tests exercise. The
-    // plain addLogicTest builds a zero-import module that cannot resolve those.
-    const addLogicTestWithTemplates = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
-            const m = bb.createModule(.{
-                .root_source_file = bb.path(src),
-                .target = t,
-                .optimize = o,
-            });
-            wireTemplateEmbeds(bb, m, files, idx);
-            m.addImport("zigware_manifest", mm); // init.zig's tests parse the scaffolded zigware.zon via D's reader
-            const tt = bb.addTest(.{ .root_module = m });
-            const run = bb.addRunArtifact(tt);
-            ts.dependOn(&run.step);
-            return run;
-        }
-    }.add;
-
     addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
     addLogicTest(b, test_step, target, optimize, "src/command_ctx.zig");
@@ -159,31 +65,6 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
     addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
     addLogicTest(b, test_step, target, optimize, "src/security_tests.zig");
-
-    // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
-    addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
-    addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");
-    addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
-    addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/dev.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/build.zig");
-    // init.zig reads the template embeds + the generated template_index module; the
-    // template-aware registrar wires both onto its test root so C4's init.run tests
-    // can resolve the anonymous template imports.
-    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/init.zig");
-    // Isolated step so init.zig's fake-driven scaffolding tests can run without the
-    // App-based suites that hang on some hosts.
-    const test_init_step = b.step("test-init", "Run only the CLI init scaffolding tests");
-    test_init_step.dependOn(&init_test_run.step);
-
-    // main.zig wires the verbs together: it imports init.zig (template embeds +
-    // template_index) and the manifest module, so its test root needs the same
-    // template-aware wiring as init. Its fake-free tests (exitCodeFor / SIGINT) run
-    // without any App-based suite, so they get an isolated step too.
-    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/main.zig");
-    const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
-    test_main_step.dependOn(&main_test_run.step);
 
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
@@ -214,11 +95,10 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
-    // src/bridge.zig and src/window_tests.zig build a WindowManager (E), and
-    // manager.zig now imports manifest/fuses.zig (the allow_eval gate), which
-    // resolves @import("zigware_manifest_zon"). They therefore need wireManifest
-    // in addition to the frontend embeds, so they are registered via
-    // addEmbedManifestTest after effective_zon is defined (see below).
+    // bridge.zig's TestBridge harness builds a WindowManager (E), which
+    // @embedFiles the frontend JS; the test compilation needs those embeds.
+    addEmbedTest(b, test_step, target, optimize, "src/bridge.zig");
+    addEmbedTest(b, test_step, target, optimize, "src/window_tests.zig");
     // src/app.zig and src/sec_regression.zig both transitively compile
     // manifest/parse.zig (app.zig now calls parse.embedded()), so they need
     // wireManifest in addition to the frontend embeds; addEmbedTest exposes no
@@ -360,10 +240,6 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
-    // bridge.zig and window_tests.zig compile manager.zig, which imports
-    // manifest/fuses.zig and so needs the effective manifest wired too.
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/window_tests.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts
@@ -457,109 +333,4 @@ pub fn build(b: *std.Build) void {
 /// exe itself) MUST have this called on it.
 fn wireManifest(mod: *std.Build.Module, zon: std.Build.LazyPath) void {
     mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = zon });
-}
-
-const template_root = "src/cli/template";
-
-/// Recursively walk src/cli/template/ at configure time and return every file's
-/// path relative to that root (forward-slash separated, sorted for determinism).
-/// Uses Dir.walk (recursive) — NOT a one-level iterate — so nested template
-/// subtrees (frontend/, src/commands/, _shared/) are all registered without a
-/// per-template build.zig edit. Returns an empty slice if the dir is absent.
-fn walkTemplateTree(b: *std.Build) []const []const u8 {
-    const io = b.graph.io;
-    var dir = b.build_root.handle.openDir(io, template_root, .{ .iterate = true }) catch return &.{};
-    defer dir.close(io);
-
-    var list: std.ArrayList([]const u8) = .empty;
-    var walker = dir.walk(b.allocator) catch @panic("OOM walking template tree");
-    defer walker.deinit();
-    while (walker.next(io) catch @panic("error walking template tree")) |entry| {
-        if (entry.kind != .file) continue;
-        // entry.path aliases the walker's name_buffer (invalidated on next()), so
-        // dupe immediately. Normalise to forward slashes for the embed name.
-        const rel = b.dupe(entry.path);
-        std.mem.replaceScalar(u8, rel, std.fs.path.sep, '/');
-        list.append(b.allocator, rel) catch @panic("OOM");
-    }
-    const files = list.toOwnedSlice(b.allocator) catch @panic("OOM");
-    std.mem.sort([]const u8, files, {}, struct {
-        fn lt(_: void, a: []const u8, c: []const u8) bool {
-            return std.mem.lessThan(u8, a, c);
-        }
-    }.lt);
-    return files;
-}
-
-/// addAnonymousImport each template file under its repo-relative "template/<rel>"
-/// name, so @embedFile("template/<rel>") resolves against this module.
-fn registerTemplateEmbeds(b: *std.Build, mod: *std.Build.Module, files: []const []const u8) void {
-    for (files) |rel| {
-        const name = b.fmt("template/{s}", .{rel});
-        const src = b.fmt("{s}/{s}", .{ template_root, rel });
-        mod.addAnonymousImport(name, .{ .root_source_file = b.path(src) });
-    }
-}
-
-/// Wire BOTH the template embeds and the generated template_index module onto a
-/// module. Shared by cli_mod and the init.zig test root so the wiring stays
-/// single-sourced.
-fn wireTemplateEmbeds(b: *std.Build, mod: *std.Build.Module, files: []const []const u8, index_mod: *std.Build.Module) void {
-    registerTemplateEmbeds(b, mod, files);
-    mod.addImport("template_index", index_mod);
-}
-
-/// Emit a generated template_index.zig: each template's files grouped by first
-/// path segment, listed as @embedFile("template/<rel>") literals (names must be
-/// comptime, so init picks among comptime-known blobs). `shared` holds the
-/// _shared/* payload init writes for every template; `filesFor` returns the
-/// framework-specific files for a template name.
-fn emitTemplateIndex(b: *std.Build, files: []const []const u8) std.Build.LazyPath {
-    var src: std.ArrayList(u8) = .empty;
-    const gpa = b.allocator;
-
-    src.appendSlice(gpa,
-        \\// Generated by build.zig. Do not edit by hand.
-        \\pub const File = struct { rel: []const u8, bytes: []const u8 };
-        \\
-        \\
-    ) catch @panic("OOM");
-
-    // Collect the distinct first path segments (sorted, deterministic).
-    var segments: std.ArrayList([]const u8) = .empty;
-    for (files) |rel| {
-        const seg = rel[0 .. std.mem.indexOfScalar(u8, rel, '/') orelse rel.len];
-        var seen = false;
-        for (segments.items) |s| {
-            if (std.mem.eql(u8, s, seg)) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) segments.append(gpa, seg) catch @panic("OOM");
-    }
-
-    // One `pub const <seg> = [_]File{...}` array per segment.
-    for (segments.items) |seg| {
-        const decl = if (std.mem.eql(u8, seg, "_shared")) "shared" else seg;
-        src.print(gpa, "pub const {s} = [_]File{{\n", .{decl}) catch @panic("OOM");
-        for (files) |rel| {
-            const fseg = rel[0 .. std.mem.indexOfScalar(u8, rel, '/') orelse rel.len];
-            if (!std.mem.eql(u8, fseg, seg)) continue;
-            src.print(gpa, "    .{{ .rel = \"{s}\", .bytes = @embedFile(\"template/{s}\") }},\n", .{ rel, rel }) catch @panic("OOM");
-        }
-        src.appendSlice(gpa, "};\n\n") catch @panic("OOM");
-    }
-
-    // filesFor: framework-specific files for a template name (empty until the
-    // per-template subtrees land in Wave B).
-    src.appendSlice(gpa, "pub fn filesFor(name: []const u8) []const File {\n") catch @panic("OOM");
-    for (segments.items) |seg| {
-        if (std.mem.eql(u8, seg, "_shared")) continue;
-        src.print(gpa, "    if (std.mem.eql(u8, name, \"{s}\")) return &{s};\n", .{ seg, seg }) catch @panic("OOM");
-    }
-    src.appendSlice(gpa, "    return &.{};\n}\n\nconst std = @import(\"std\");\n") catch @panic("OOM");
-
-    const bytes = src.toOwnedSlice(gpa) catch @panic("OOM");
-    return b.addWriteFiles().add("template_index.zig", bytes);
 }
