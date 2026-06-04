@@ -50,6 +50,44 @@ fn printVersion() CliError!void {
     std.debug.print("zigware 0.1.0\n", .{});
 }
 
+// ─────────────────────────── cooperative SIGINT shutdown ───────────────────────────
+//
+// The SIGINT handler runs with no userdata and a fixed C signature, so the shutdown
+// flag it must flip is reached through a file-scope pointer the install routine stores.
+// The dev dispatch (wired later) constructs the flag on its stack, installs the handler
+// pointed at it, and `defer`s uninstall so the handler is disarmed and `g_shutdown`
+// nulled before the flag leaves scope — a late SIGINT after the dev frame unwinds then
+// finds a null pointer instead of storing through freed stack.
+
+var g_shutdown: ?*std.atomic.Value(bool) = null;
+
+fn onSigint(_: std.posix.SIG) callconv(.c) void {
+    if (g_shutdown) |s| s.store(true, .seq_cst);
+}
+
+fn installSigint(flag: *std.atomic.Value(bool)) void {
+    g_shutdown = flag;
+    var act: std.posix.Sigaction = .{
+        .handler = .{ .handler = onSigint },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &act, null);
+}
+
+/// Disarm the handler before the pointed-at `shutdown` flag leaves scope. The `dev`
+/// dispatch MUST call this (via `defer`) so a SIGINT delivered after the dev frame
+/// unwinds does not store through a dangling stack pointer (use-after-free).
+fn uninstallSigint() void {
+    g_shutdown = null;
+    var act: std.posix.Sigaction = .{
+        .handler = .{ .handler = std.posix.SIG.DFL },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &act, null);
+}
+
 /// 0.16 has NO global argv accessor (`std.process.argsAlloc`/`argsFree` and a global
 /// `std.process.args` do NOT exist). Argv is reachable ONLY from the `std.process.Init`
 /// parameter to main (start.zig callMain dispatches on `std.process.Init.Minimal`); a
@@ -76,4 +114,25 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("zigware: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
+}
+
+// ─────────────────────────── tests ───────────────────────────
+
+const testing = std.testing;
+
+test "installSigint stores into the flag and uninstall nulls the pointer" {
+    // No real signal is delivered: drive the handler logic directly by simulating the
+    // store the handler would perform, then assert uninstall disarms it so a late store
+    // cannot dangle.
+    var flag = std.atomic.Value(bool).init(false);
+
+    installSigint(&flag);
+    try testing.expect(g_shutdown != null);
+
+    // Stand in for the kernel-delivered SIGINT: the handler's only effect is this store.
+    g_shutdown.?.store(true, .seq_cst);
+    try testing.expect(flag.load(.seq_cst));
+
+    uninstallSigint();
+    try testing.expect(g_shutdown == null);
 }
