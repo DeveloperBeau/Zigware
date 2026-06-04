@@ -7,6 +7,7 @@ const devserver = @import("devserver.zig");
 const dev = @import("dev.zig");
 const build_verb = @import("build.zig");
 const init_verb = @import("init.zig");
+const package = @import("package");
 
 // `zigware_manifest` is rooted at src/manifest/parse.zig, so the parser surface
 // (parseAtBuild, freeManifest, Diagnostics, LoadError) and the Manifest type all
@@ -25,6 +26,7 @@ pub const CliError = error{
     csp_conflict,
     init_dir_not_empty,
     bad_usage,
+    package_failed,
     OutOfMemory,
 };
 
@@ -162,17 +164,81 @@ fn runBuild(io: std.Io, gpa: std.mem.Allocator) CliError!void {
     var m = manifest;
     defer parse.freeManifest(gpa, m);
 
-    var runner = SystemBuildRunner{};
-    const arts = build_verb.run(io, gpa, .{
-        .manifest = &m,
+    // The thin wrapper constructs the REAL seams (the compile runner over `zig build` +
+    // the system spawner for the before-command, and the system child-process Runner the
+    // packaging step shells `codesign`/`notarytool`/`hdiutil`/`stapler` through), then
+    // delegates to the headless-testable core. The integration tests inject fakes at the
+    // same three seams. Production packages a real release: signing + notarization on, so
+    // the skip flags are false.
+    var build_runner = SystemBuildRunner{};
+    var pkg_runner = package.SystemRunner{};
+    var runner = pkg_runner.runner();
+    return runBuildInner(io, gpa, &m, build_runner.make(), proc.system(), &runner, "zig-out", false, false);
+}
+
+/// The headless-testable build core: compile the release binary, then hand it to the
+/// packaging pipeline. The compile seams (`builder`/`proc`) and the packaging child-process
+/// `runner` are all injected by pointer/value so the integration tests drive the whole verb
+/// over fakes (mirroring how `build_verb.run` takes `builder`/`proc`). On a packaging
+/// failure the populated `*Diagnostic` is rendered through `printPackageDiagnostic` and the
+/// error collapses to `package_failed` — NOT routed through `mapVerbError` (whose `else`
+/// arm would mislabel the named G errors as `internal error`/`bad_usage` and double-print).
+fn runBuildInner(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    manifest: *const parse.Manifest,
+    builder: dev.BuildRunner,
+    proc_spawner: proc.Spawner,
+    runner: *package.Runner,
+    out_dir: []const u8,
+    skip_sign: bool,
+    skip_notarize: bool,
+) CliError!void {
+    const binary_path = build_verb.run(io, gpa, .{
+        .manifest = manifest,
         .optimize = .ReleaseSafe,
-        .out_dir = "zig-out",
-        .builder = runner.make(),
-        .proc = proc.system(),
+        .out_dir = out_dir,
+        .builder = builder,
+        .proc = proc_spawner,
     }) catch |err| return mapVerbError(err);
-    defer gpa.free(arts.binary_path);
+    defer gpa.free(binary_path);
+
+    var diag: ?package.Diagnostic = null;
+    const arts = package.package(io, .{
+        .gpa = gpa,
+        .binaries = &.{binary_path},
+        .config = package.configFromManifest(manifest),
+        .out_dir = out_dir,
+        .runner = runner,
+        .skip_sign = skip_sign,
+        .skip_notarize = skip_notarize,
+        .diag = &diag,
+    }) catch {
+        // A typed PackageError. Most stages populate `*diag` before returning, but a few
+        // runtime/OOM paths (a runner spawn failure inside assessStapled, an env-read or
+        // mid-fill OOM) return without writing one, so render defensively: the diagnostic
+        // when present (freeing its gpa-owned `detail`), else a generic line.
+        if (diag) |d| {
+            printPackageDiagnostic(&d);
+            gpa.free(d.detail);
+        } else {
+            std.debug.print("zigware: packaging failed\n", .{});
+        }
+        return CliError.package_failed;
+    };
+    defer arts.deinit(gpa);
 
     std.debug.print("built {s} ({s}) -> {s}\n", .{ arts.app_name, arts.version, arts.binary_path });
+}
+
+/// Render G's structured packaging `Diagnostic` to stderr. This is a SEPARATE path from
+/// `printDiagnostics` (which takes `*const parse.Diagnostics`, the structurally different
+/// manifest-parse type and cannot render this one). `detail` is the captured tool output
+/// or formatted notary-log issue list; it is printed verbatim and freed by the caller.
+fn printPackageDiagnostic(d: *const package.Diagnostic) void {
+    std.debug.print("zigware: packaging error: {s}\n", .{d.title});
+    if (d.detail.len > 0) std.debug.print("  {s}\n", .{d.detail});
+    std.debug.print("  {s}\n", .{d.remediation});
 }
 
 // ─────────────────────────── manifest read ───────────────────────────
@@ -288,6 +354,7 @@ fn exitCodeFor(err: CliError) u8 {
         CliError.init_dir_not_empty => 10,
         CliError.bad_usage => 11,
         CliError.OutOfMemory => 12,
+        CliError.package_failed => 13,
     };
 }
 
@@ -307,6 +374,7 @@ fn messageFor(err: CliError) []const u8 {
         CliError.init_dir_not_empty => "the target directory is not empty (use --force to overwrite)",
         CliError.bad_usage => "bad usage (run `zigware help`)",
         CliError.OutOfMemory => "out of memory",
+        CliError.package_failed => "packaging failed (see the diagnostic above)",
     };
 }
 
@@ -426,4 +494,154 @@ test "exitCodeFor gives every CliError a distinct, nonzero code and a non-empty 
     try testing.expectEqual(@as(u8, 10), exitCodeFor(CliError.init_dir_not_empty));
     try testing.expectEqual(@as(u8, 11), exitCodeFor(CliError.bad_usage));
     try testing.expectEqual(@as(u8, 12), exitCodeFor(CliError.OutOfMemory));
+    try testing.expectEqual(@as(u8, 13), exitCodeFor(CliError.package_failed));
+}
+
+// ─────────────────────────── build verb + package() integration ───────────────────────────
+
+/// Minimal BuildRunner fake for the build-verb integration tests: returns a canned ok
+/// result with an owned (empty) stderr so build.run's `defer gpa.free(result.stderr)`
+/// exercises real allocator bookkeeping without driving a real `zig build`.
+const StubBuilder = struct {
+    fn make(self: *StubBuilder) dev.BuildRunner {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+    const vtable: dev.BuildRunner.VTable = .{ .build = build };
+    fn build(_: *anyopaque, _: std.Io, gpa: std.mem.Allocator, _: dev.BuildSpec) anyerror!dev.BuildResult {
+        return .{ .ok = true, .stderr = try gpa.alloc(u8, 0) };
+    }
+};
+
+/// Minimal Spawner fake — the integration manifests declare no beforeBuildCommand, so it
+/// is never spawned; it exists only to satisfy build.run's `proc` seam.
+const StubSpawner = struct {
+    fn make(self: *StubSpawner) proc.Spawner {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+    const vtable: proc.Spawner.VTable = .{ .spawn = spawn, .wait = wait, .kill = kill };
+    fn spawn(_: *anyopaque, _: std.Io, _: std.mem.Allocator, _: proc.ChildSpec) anyerror!proc.Child {
+        var inner: std.process.Child = undefined;
+        inner.id = 1;
+        return .{ .inner = inner };
+    }
+    fn wait(_: *anyopaque, _: std.Io, _: *proc.Child) anyerror!proc.Term {
+        return .{ .exited = 0 };
+    }
+    fn kill(_: *anyopaque, _: std.Io, _: *proc.Child) anyerror!void {}
+};
+
+fn buildTestManifest() parse.Manifest {
+    return .{ .identifier = "com.example.app", .productName = "Example", .version = "0.1.0" };
+}
+
+/// Write a `dist/index.html` fixture under `dir` for the build-verb compile stage.
+fn writeDistFixture(io: std.Io, dir: std.Io.Dir) !void {
+    try dir.createDirPath(io, "dist");
+    try dir.writeFile(io, .{ .sub_path = "dist/index.html", .data = "<html><head></head><body></body></html>" });
+}
+
+fn absUnder(io: std.Io, dir: std.Io.Dir, buf: []u8, sub: []const u8) ![]const u8 {
+    var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base = base_buf[0..try dir.realPath(io, &base_buf)];
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ base, sub });
+}
+
+/// build.run returns the cwd-relative release path `zig-out/bin/<productName>`; the real
+/// `zig build` emits there, decoupled from the CSP out_dir. The StubBuilder fakes the
+/// compile without producing that file, so the packaging stage's binary copy would fail.
+/// Stage a dummy executable at the exact returned path (mirrors the package-pipeline
+/// fixture) so assembleBundle has a real source to copy. Tests run sequentially, so the
+/// shared "Example" name is safe with the defer-cleanup the caller installs; it does not
+/// collide with the real `zig-out/bin/zigware`.
+const staged_binary_rel = "zig-out/bin/Example";
+fn stageDummyBinary(io: std.Io) !void {
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, "zig-out/bin");
+    try cwd.writeFile(io, .{ .sub_path = staged_binary_rel, .data = "#!/bin/sh\necho hi\n" });
+}
+
+fn unstageDummyBinary(io: std.Io) void {
+    std.Io.Dir.cwd().deleteFile(io, staged_binary_rel) catch {};
+}
+
+test "runBuildInner surfaces a packaging failure through printPackageDiagnostic and returns package_failed" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeDistFixture(io, tmp.dir);
+    try tmp.dir.createDirPath(io, "out");
+    // build.run returns zig-out/bin/Example; stage a real source so the sign stage is
+    // reached (an absent binary would fail the bundle copy before codesign ever runs).
+    try stageDummyBinary(io);
+    defer unstageDummyBinary(io);
+
+    var dist_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var out_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dist = try absUnder(io, tmp.dir, &dist_buf, "dist");
+    const out = try absUnder(io, tmp.dir, &out_buf, "out");
+
+    var builder = StubBuilder{};
+    var spawner = StubSpawner{};
+    var manifest = buildTestManifest();
+    manifest.build.frontendDist = dist;
+    // A signing identity is configured so the sign stage runs and the scripted codesign
+    // failure (below) classifies a real packaging Diagnostic.
+    manifest.bundle.macos.signingIdentity = "Developer ID Application: Acme (TEAMID)";
+
+    // FakeRunner scripts a first-call codesign failure: the package pipeline aborts at
+    // sign() with IdentityNotFound, which runBuildInner collapses to package_failed.
+    var fr = package.FakeRunnerForTest.init(gpa);
+    defer fr.deinit();
+    try fr.push(.{ .term = .{ .exited = 1 }, .stdout = "", .stderr = "no identity found" });
+    var runner = fr.runner();
+
+    // skip_notarize so the notary-credential preflight (env-only, empty in the test
+    // environment) does not abort before sign(); signing still runs because skip_sign is
+    // false and an identity is configured. Without this the test would short-circuit at
+    // the notary preflight and the scripted codesign result would never be consumed.
+    try testing.expectError(CliError.package_failed, runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, false, true));
+
+    // Prove the failure came from the SCRIPTED codesign call, not an earlier preflight:
+    // the runner recorded exactly the one codesign invocation before sign() aborted.
+    try testing.expectEqual(@as(usize, 1), fr.argv_log.items.len);
+    try testing.expectEqualStrings("codesign", fr.argv_log.items[0][0]);
+}
+
+test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only)" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeDistFixture(io, tmp.dir);
+    try tmp.dir.createDirPath(io, "out");
+    // build.run returns zig-out/bin/Example; stage a real source so assembleBundle can
+    // copy it into Contents/MacOS before the dmg is built.
+    try stageDummyBinary(io);
+    defer unstageDummyBinary(io);
+
+    var dist_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var out_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dist = try absUnder(io, tmp.dir, &dist_buf, "dist");
+    const out = try absUnder(io, tmp.dir, &out_buf, "out");
+
+    var builder = StubBuilder{};
+    var spawner = StubSpawner{};
+    var manifest = buildTestManifest();
+    manifest.build.frontendDist = dist;
+
+    // skip_sign + skip_notarize: the package pipeline assembles the .app and builds an
+    // unsigned dmg, so only the single hdiutil call reaches the runner.
+    var fr = package.FakeRunnerForTest.init(gpa);
+    defer fr.deinit();
+    try fr.push(.{ .term = .{ .exited = 0 }, .stdout = "", .stderr = "" }); // hdiutil
+    var runner = fr.runner();
+
+    try runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, true, true);
+
+    const log = fr.argv_log.items;
+    try testing.expectEqual(@as(usize, 1), log.len);
+    try testing.expectEqualStrings("hdiutil", log[0][0]);
 }

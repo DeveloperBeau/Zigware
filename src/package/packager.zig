@@ -11,10 +11,21 @@ const dmg_mod = @import("dmg.zig");
 const PackageConfig = config.PackageConfig;
 const Credentials = config.Credentials;
 const ResolvedCredentials = config.ResolvedCredentials;
-const Runner = runner_mod.Runner;
-const Diagnostic = diagnostics.Diagnostic;
-const PackageError = diagnostics.PackageError;
 const Environ = std.process.Environ;
+
+// Public re-exports so the CLI (which reaches the packaging module only through
+// `@import("package")` = this file) can name the runner, the structured diagnostic,
+// and the manifest adapter without path-importing the sibling files.
+pub const Runner = runner_mod.Runner;
+pub const SystemRunner = runner_mod.SystemRunner;
+pub const Diagnostic = diagnostics.Diagnostic;
+pub const Code = diagnostics.Code;
+pub const PackageError = diagnostics.PackageError;
+pub const configFromManifest = config.configFromManifest;
+
+/// Record-and-drive fake runner, re-exported so the CLI's build-verb integration tests
+/// can script the packaging child-process sequence without a real toolchain.
+pub const FakeRunnerForTest = runner_mod.FakeRunner;
 
 pub const Arch = enum { host }; // universal (lipo arm64 + x86_64) reserved for v0.2
 

@@ -139,13 +139,32 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
 
+    // Manifest+package-aware registrar: cli/build.zig re-exports package.Artifacts and
+    // cli/main.zig invokes package() through the build verb, so their TEST roots resolve
+    // @import("package") in addition to @import("zigware_manifest"). The product cli_mod
+    // gets package via addImport at line 78; these standalone test modules need it wired
+    // here too or the test binary fails to compile.
+    const addLogicTestWithManifestAndPackage = struct {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, src: []const u8) void {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path(src),
+                .target = t,
+                .optimize = o,
+            });
+            m.addImport("zigware_manifest", mm);
+            m.addImport("package", pm);
+            const tt = bb.addTest(.{ .root_module = m });
+            ts.dependOn(&bb.addRunArtifact(tt).step);
+        }
+    }.add;
+
     // Template-aware logic-test registrar: mirrors addLogicTest plus the template/**
     // anonymous imports the CLI module receives AND the generated template_index
     // module, so init.zig's per-leaf TEST root can resolve the @embedFile("template/...")
     // literals and @import("template_index") that C4's init.run tests exercise. The
     // plain addLogicTest builds a zero-import module that cannot resolve those.
     const addLogicTestWithTemplates = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, pm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -153,6 +172,7 @@ pub fn build(b: *std.Build) void {
             });
             wireTemplateEmbeds(bb, m, files, idx);
             m.addImport("zigware_manifest", mm); // init.zig's tests parse the scaffolded zigware.zon via D's reader
+            m.addImport("package", pm); // main.zig's build verb invokes package(); init ignores the unused import
             const tt = bb.addTest(.{ .root_module = m });
             const run = bb.addRunArtifact(tt);
             ts.dependOn(&run.step);
@@ -180,12 +200,12 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/dev.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/build.zig");
+    addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, "src/cli/build.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/package_tests.zig");
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
     // can resolve the anonymous template imports.
-    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/init.zig");
+    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, "src/cli/init.zig");
     // Isolated step so init.zig's fake-driven scaffolding tests can run without the
     // App-based suites that hang on some hosts.
     const test_init_step = b.step("test-init", "Run only the CLI init scaffolding tests");
@@ -195,7 +215,7 @@ pub fn build(b: *std.Build) void {
     // template_index) and the manifest module, so its test root needs the same
     // template-aware wiring as init. Its fake-free tests (exitCodeFor / SIGINT) run
     // without any App-based suite, so they get an isolated step too.
-    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, "src/cli/main.zig");
+    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, "src/cli/main.zig");
     const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
     test_main_step.dependOn(&main_test_run.step);
 

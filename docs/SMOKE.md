@@ -45,6 +45,19 @@ The inspector is now gated on the `debugInspector` fuse at compile time, not the
 18. Set `debugInspector: true` and build a Debug binary (`zig build install`). Launch it and open Develop > Web Inspector against the window. The inspector must attach.
 19. Set `debugInspector: false` and build a Debug binary (`zig build install`). Launch it. Develop > Web Inspector must not attach to the window. This proves a Debug build no longer exposes the inspector when the fuse is off, so the gate follows the fuse and not `builtin.mode`.
 
+## Packaging, signing, notarization (Developer-ID, GUI/cert only)
+
+The packaging pipeline (`package()`: bundle assembly, codesign, notarytool, stapler, hdiutil) runs end-to-end headless over the record-and-drive fake runner, but the one path no fake can cover is a real Developer-ID round trip against Apple's signing and notary services. Run this once on a Mac that has a `Developer ID Application` certificate in the login keychain and a notary profile (App-Store-Connect key or an app-specific password) in the environment.
+
+20. From a scaffolded project root, set the notary credentials in the environment (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, or the API-key trio) and the signing identity (`APPLE_SIGNING_IDENTITY`, or `bundle.macos.signingIdentity` in `zigware.zon`), then run `zigware build`. The build compiles the release binary, assembles the `.app`, signs it inside-out, submits it to the notary service with `--wait`, staples the ticket, builds the `.dmg`, and signs plus notarizes the dmg. Expect a clean exit and a final line reporting the `.app` and `.dmg` paths.
+21. Assert Gatekeeper acceptance on the stapled disk image: `spctl --assess --type execute --verbose <out>/<App>.dmg`. The output must read `accepted` with `source=Notarized Developer ID`. A `rejected` result means the staple or notarization did not take; re-check the notary log the pipeline fetched on rejection.
+22. Confirm no secret leaks to stdout/stderr: run step 20 again with stderr captured and `grep -i` the output for the app-specific password and any API-key contents. There must be zero matches. The pipeline duplicates credentials into a temp keychain and tears it down on both the success and failure paths; confirm `security list-keychains` no longer lists the temp keychain after the run.
+
+Failure triage:
+- `errSecInternalComponent` or an identity-not-found codesign error at step 20: the `Developer ID Application` cert is not in a keychain the signing session can reach, or `signingIdentity` does not match the certificate common name.
+- Notary rejection at step 20: read the issue list the pipeline prints (fetched via `notarytool log`); the usual causes are a missing hardened-runtime flag or an unsigned nested binary.
+- `rejected` at step 21 despite a successful step 20: the staple did not attach; re-run `xcrun stapler staple` by hand on the dmg and check for a network failure during stapling.
+
 ## Automated coverage
 - `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.
 - `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.
