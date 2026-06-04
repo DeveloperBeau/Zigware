@@ -7,5 +7,5 @@ comptime {
     _ = @import("package/bundle.zig");
     _ = @import("package/sign.zig");
     _ = @import("package/notarize.zig");
-    // dmg.zig added as its task lands.
+    _ = @import("package/dmg.zig");
 }
