@@ -3,7 +3,7 @@
 The macOS objc/WKWebView glue needs a live AppKit GUI session and has no unit tests. The files in scope are `src/objc.zig` and the six objc files under `src/platform/macos/` (everything except `origin.zig` and `scheme_logic.zig`, which are pure and tested headless). The bridge, app orchestration, asset serving, lifecycle shutdown ordering, shutdown idempotency, post-terminate message drops, window identity, navigation policy, the origin formatter, and the scheme path extractor are all covered headless through `App(NullBackend)`, `platform/macos/origin.zig`, and `platform/macos/scheme_logic.zig` under `zig build test`. Run the steps below by hand on a Mac at a desktop session.
 
 1. `zig build run`: a window opens showing the Zigware UI, served from `app://localhost/index.html`.
-2. Open Web Inspector (Develop > Web Inspector; debug builds set `inspectable`). The Console shows no Content-Security-Policy violations.
+2. Open Web Inspector (Develop > Web Inspector; the `debugInspector` fuse sets `inspectable`). The Console shows no Content-Security-Policy violations.
 3. Click "Hash 300 MB in Zig". The demo calls `window.Zigware.invoke("sha256", { megabytes: 300 }, { onStream })`. The progress bar advances 0 to 100% as each `onStream` frame arrives (the bar reads `frame.pct`). Progress now flows through the invoke's `onStream` callback, not the retired `zig:progress` CustomEvent, so a stalled bar means the stream channel, not the old event, is broken. The promise resolves with the result object and the page reads `r.hash` from it.
 4. While the bar advances, drag the window around. It keeps responding, which proves the hash runs off the main thread.
 5. On completion the page shows `SHA-256: <64 hex chars>`, matching the value the unit tests assert for the chunked path.
@@ -36,6 +36,14 @@ These cover the window-lifecycle paths that need a live AppKit session: ready-to
 15. With the default quit policy (`keep_running_on_last_close`), close every window. The process must keep running and stay in the Dock. There must be no exit and no crash report in Console.app.
 16. With the app still running and no windows open, click the Dock icon. This delivers `reopen`, which must recreate the default window. The new window appears ready-to-show, same as a fresh launch.
 17. Rebuild with `quitOnLastWindowClosed: .quit_on_last_close` in the manifest. Open one window, then close it. Closing the last window must now quit the process cleanly: a clean exit, no crash report, and no allocator-leak warnings on stderr.
+17a. Load a page that never signals ready (e.g. open the Console and run `Zigware.Window.create({ label: "slow", url: "app://localhost/index.html" })` against a build whose page omits the ready signal). The window must still appear on its own after the show-fallback delay, driven by the main-thread timer rather than a per-window thread. It must show exactly once, with no white flash and no second show.
+
+## Web Inspector fuse (GUI only)
+
+The inspector is now gated on the `debugInspector` fuse at compile time, not the build mode, so it has no headless coverage. Toggle the fuse in the manifest and confirm both directions in a Debug build on a Mac. (The manifest validator rejects `debugInspector: true` in any release mode, so the fuse-on case is exercised in Debug.)
+
+18. Set `debugInspector: true` and build a Debug binary (`zig build install`). Launch it and open Develop > Web Inspector against the window. The inspector must attach.
+19. Set `debugInspector: false` and build a Debug binary (`zig build install`). Launch it. Develop > Web Inspector must not attach to the window. This proves a Debug build no longer exposes the inspector when the fuse is off, so the gate follows the fuse and not `builtin.mode`.
 
 ## Automated coverage
 - `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.

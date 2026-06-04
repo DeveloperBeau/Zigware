@@ -13,3 +13,14 @@ comptime {
     _ = @import("window/lifecycle.zig");
     _ = @import("window/commands.zig");
 }
+
+test "dev client is present in user_scripts only when allow_eval is set" {
+    const fuses = @import("manifest/fuses.zig");
+    const mgr = @import("window/manager.zig");
+    // mgr.dev_client_count() returns 1 when comptime allow_eval, else 0.
+    if (comptime fuses.allow_eval) {
+        try std.testing.expectEqual(@as(usize, 1), mgr.dev_client_count());
+    } else {
+        try std.testing.expectEqual(@as(usize, 0), mgr.dev_client_count());
+    }
+}
