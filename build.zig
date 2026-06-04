@@ -168,6 +168,7 @@ pub fn build(b: *std.Build) void {
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/dev.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/build.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/package_tests.zig");
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
     // can resolve the anonymous template imports.
