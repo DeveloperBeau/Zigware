@@ -140,7 +140,7 @@ pub fn resolveCredentials(
     cfg: PackageConfig,
     skip_sign: bool,
     skip_notarize: bool,
-) (CredError || std.mem.Allocator.Error)!ResolvedCredentials {
+) (CredError || ConfigError || std.mem.Allocator.Error)!ResolvedCredentials {
     _ = io;
 
     // Signing identity: $APPLE_SIGNING_IDENTITY, else manifest, else null (skip_sign only).
@@ -153,6 +153,12 @@ pub fn resolveCredentials(
     };
     errdefer if (signing_identity) |s| gpa.free(s);
     if (signing_identity == null and !skip_sign) return error.MissingSigningIdentity;
+    // Option-injection on an env-sourced identity (`$APPLE_SIGNING_IDENTITY`): codesign
+    // would read a leading-`-` value as a flag. The exact ad-hoc identity "-" is the one
+    // intended single dash and is allowed; anything else starting with `-` is rejected.
+    if (signing_identity) |s| {
+        if (!std.mem.eql(u8, s, "-")) try rejectLeadingDash(s);
+    }
 
     // Notary: completeness-gated, API-key preferred over Apple-ID.
     const api_key = env.get("APPLE_API_KEY");
@@ -169,6 +175,11 @@ pub fn resolveCredentials(
     errdefer freeNotary(gpa, notary);
 
     if (api_complete) {
+        // Option-injection: notarytool reads a leading-`-` value after --key-id/--issuer/--key
+        // as a flag. Check the env values BEFORE duping so a reject allocates nothing.
+        try rejectLeadingDash(api_key.?);
+        try rejectLeadingDash(api_issuer.?);
+        try rejectLeadingDash(api_path.?);
         // Dupe into locals with per-local errdefer so a mid-set OOM never leaves an
         // `undefined` slice for the function-level errdefer to free-of-garbage. The
         // union is assigned only once all three dupes succeed.
@@ -179,6 +190,9 @@ pub fn resolveCredentials(
         const key_path = gpa.dupe(u8, api_path.?) catch return error.OutOfMemory;
         notary = .{ .api_key = .{ .key_id = key_id, .issuer = issuer, .key_path = key_path } };
     } else if (aid_complete) {
+        try rejectLeadingDash(aid.?);
+        try rejectLeadingDash(aid_pw.?);
+        try rejectLeadingDash(aid_team.?);
         const apple_id = gpa.dupe(u8, aid.?) catch return error.OutOfMemory;
         errdefer gpa.free(apple_id);
         const password = gpa.dupe(u8, aid_pw.?) catch return error.OutOfMemory;
@@ -231,6 +245,14 @@ fn rejectLeadingDashOpt(s: ?[]const u8) ConfigError!void {
     if (s) |v| try rejectLeadingDash(v);
 }
 
+/// Reject a value that becomes a filesystem name (the `.app` directory from
+/// `displayName`, the `.dmg` from `volname`): a `/` or `..` would escape the intended
+/// directory. Reuses `OptionInjection` as the "unsafe in its slot" reject.
+fn rejectPathSep(s: []const u8) ConfigError!void {
+    if (std.mem.indexOfScalar(u8, s, '/') != null) return error.OptionInjection;
+    if (std.mem.indexOf(u8, s, "..") != null) return error.OptionInjection;
+}
+
 /// Preflight the config before any filesystem/child-process work: strict reverse-DNS
 /// identifier, semver version, and a leading-`-` sweep over EVERY value that reaches
 /// an argv slot (Locked decision #7).
@@ -246,6 +268,11 @@ pub fn validateConfig(cfg: PackageConfig) ConfigError!void {
     try rejectLeadingDashOpt(cfg.macos.teamId);
     try rejectLeadingDashOpt(cfg.macos.entitlements);
     try rejectLeadingDash(cfg.dmg.volname);
+
+    // The .app directory name (displayName) and the .dmg name (volname) must not carry
+    // path separators that would place the artifact outside its intended directory.
+    try rejectPathSep(cfg.displayName);
+    try rejectPathSep(cfg.dmg.volname);
 }
 
 test "configFromManifest maps fields with bundle-override precedence" {
@@ -494,4 +521,53 @@ test "validateConfig rejects leading-dash argv values" {
         cfg.macos.teamId = "-TEAM";
         try std.testing.expectError(error.OptionInjection, validateConfig(cfg));
     }
+}
+
+test "validateConfig rejects path separators in the names that become files" {
+    {
+        var cfg = testCfg();
+        cfg.displayName = "Evil/App";
+        try std.testing.expectError(error.OptionInjection, validateConfig(cfg));
+    }
+    {
+        var cfg = testCfg();
+        cfg.displayName = "..";
+        try std.testing.expectError(error.OptionInjection, validateConfig(cfg));
+    }
+    {
+        var cfg = testCfg();
+        cfg.dmg.volname = "../escape";
+        try std.testing.expectError(error.OptionInjection, validateConfig(cfg));
+    }
+}
+
+test "resolveCredentials rejects a leading-dash env identity but allows ad-hoc dash" {
+    const gpa = std.testing.allocator;
+    const cfg = testCfg();
+    {
+        var env = try mapWith(gpa, &.{.{ "APPLE_SIGNING_IDENTITY", "-x" }});
+        defer env.deinit();
+        try std.testing.expectError(error.OptionInjection, resolveCredentials(std.testing.io, gpa, &env, cfg, false, true));
+    }
+    {
+        // The exact ad-hoc identity "-" is the one allowed single dash.
+        var env = try mapWith(gpa, &.{.{ "APPLE_SIGNING_IDENTITY", "-" }});
+        defer env.deinit();
+        const creds = try resolveCredentials(std.testing.io, gpa, &env, cfg, false, true);
+        defer freeCredentials(gpa, creds);
+        try std.testing.expectEqualStrings("-", creds.signing_identity.?);
+    }
+}
+
+test "resolveCredentials rejects a leading-dash env notary value" {
+    const gpa = std.testing.allocator;
+    var cfg = testCfg();
+    cfg.macos.signingIdentity = "ManifestIdentity";
+    var env = try mapWith(gpa, &.{
+        .{ "APPLE_API_KEY", "-badkeyid" },
+        .{ "APPLE_API_ISSUER", "issuer-uuid" },
+        .{ "APPLE_API_KEY_PATH", "/keys/AuthKey.p8" },
+    });
+    defer env.deinit();
+    try std.testing.expectError(error.OptionInjection, resolveCredentials(std.testing.io, gpa, &env, cfg, false, false));
 }

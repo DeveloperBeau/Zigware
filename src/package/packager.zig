@@ -161,8 +161,8 @@ fn writeCredDiagnostic(gpa: std.mem.Allocator, diag: *?Diagnostic, e: config.Cre
 /// The hard post-staple Gatekeeper gate `package()` owns (the staple ticket exists
 /// only here, after a stage's stapler ran). Runs `spctl --assess` on the stapled
 /// path; a non-zero exit is `error.SpctlRejected` with the captured stderr as detail.
-fn assessStapled(io: std.Io, opts: PackageOptions, stapled_path: []const u8) PackageError!void {
-    const argv = [_][]const u8{ "spctl", "--assess", "--type", "execute", "--verbose", stapled_path };
+fn assessStapled(io: std.Io, opts: PackageOptions, assess_type: []const u8, stapled_path: []const u8) PackageError!void {
+    const argv = [_][]const u8{ "spctl", "--assess", "--type", assess_type, "--verbose", stapled_path };
     const result = opts.runner.run(io, opts.gpa, &argv) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.RunFailed,
@@ -244,6 +244,9 @@ pub fn packageInner(
     const creds = config.resolveCredentials(io, gpa, env, opts.config, opts.skip_sign, opts.skip_notarize) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.MissingNotaryCredentials, error.MissingSigningIdentity => |ce| return writeCredDiagnostic(gpa, opts.diag, ce),
+        // An env-sourced credential that fails the leading-`-` option-injection gate
+        // surfaces the same config diagnostic as the manifest-value validation above.
+        else => |ce| return writeConfigDiagnostic(gpa, opts.diag, ce),
     };
     // Free BOTH the notary arm AND the signing-identity slot on every exit path,
     // including the preflight/skip/early-failure lanes where no `Artifacts` is built.
@@ -273,7 +276,9 @@ pub fn packageInner(
     // Gatekeeper gate. Skipped entirely on the offline lane.
     if (do_notarize) {
         try P.notarize(io, opts, app_path, effective_notary);
-        try assessStapled(io, opts, app_path);
+        // `.app` is assessed as an executable; the `.dmg` below is assessed with
+        // `--type open`, the conventional Gatekeeper class for a disk image.
+        try assessStapled(io, opts, "execute", app_path);
     }
 
     // Stage 4: build the `.dmg` (always, per Locked decision #4). `makeDmg` re-signs
@@ -284,7 +289,7 @@ pub fn packageInner(
     // The package()-owned hard post-staple gate for the dmg (its stapler ran inside
     // makeDmg). Same notarize gating: an un-notarized dmg has no staple to assess.
     if (do_notarize) {
-        try assessStapled(io, opts, dmg_path);
+        try assessStapled(io, opts, "open", dmg_path);
     }
 
     // Success: build the fully-owned Artifacts. EVERY string is a fresh gpa dupe so
@@ -480,9 +485,12 @@ test "package full pipeline drives the exact ordered argv sequence and returns a
     try testing.expectEqualStrings("stapler", log[11][1]);
     try testing.expectEqualStrings("spctl", log[12][0]); // post-staple dmg (package-owned)
 
-    // The post-staple spctl assesses the stapled paths (.app then .dmg).
+    // The post-staple spctl assesses the stapled paths (.app then .dmg), and uses the
+    // per-artifact assessment class: `execute` for the app, `open` for the disk image.
     try testing.expect(std.mem.endsWith(u8, log[5][log[5].len - 1], ".app"));
     try testing.expect(std.mem.endsWith(u8, log[12][log[12].len - 1], ".dmg"));
+    try testing.expectEqualStrings("execute", log[5][3]);
+    try testing.expectEqualStrings("open", log[12][3]);
 
     // Fully-populated Artifacts (all 9 fields).
     try testing.expectEqualStrings(fx.bin_path, arts.binary_path);
