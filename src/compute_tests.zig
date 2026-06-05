@@ -355,3 +355,136 @@ test "compute.cancel on an unknown id is an idempotent no-op success" {
     try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(3));
     try std.testing.expectEqual(@as(usize, 0), h.backend.countRejectExactly(3));
 }
+
+// ─── Task 3: the Sink(P) sugar projects off Ctx and drives the same surface ──────
+//
+// A worker written against Sink(P) drives the SAME channel/binary/cancel
+// behavior as the raw Ctx surface, and Sink(P).from(ctx) projects the
+// State-independent fields off the handler's *Ctx. The aliasing assertion
+// (ctx.bin_seq advances after sink.progressBytes) proves `from` copied the
+// bin_seq POINTER, not its value.
+
+/// A minimal EmitSink whose evalJS/parkBinary append into one growable log, so
+/// the test can inspect the exact frames Sink emits. Mirrors command_ctx.zig's
+/// in-file Holder.
+const SinkHolder = struct {
+    sink: ctxmod.EmitSink,
+    log: std.ArrayList(u8) = .empty,
+    alloc: std.mem.Allocator,
+
+    fn make(alloc: std.mem.Allocator) *SinkHolder {
+        const h = alloc.create(SinkHolder) catch unreachable;
+        h.* = .{ .alloc = alloc, .sink = .{ .label = "main", .evalJS = evalJS, .parkBinary = parkBinary } };
+        return h;
+    }
+    fn evalJS(sink: *ctxmod.EmitSink, js: []const u8) void {
+        const h: *SinkHolder = @fieldParentPtr("sink", sink);
+        h.log.appendSlice(h.alloc, js) catch {};
+        h.log.append(h.alloc, '\n') catch {};
+    }
+    fn parkBinary(sink: *ctxmod.EmitSink, _: u64, _: u32, bytes: []const u8) bool {
+        const h: *SinkHolder = @fieldParentPtr("sink", sink);
+        h.log.appendSlice(h.alloc, bytes) catch {};
+        return true;
+    }
+    fn deinit(h: *SinkHolder) void {
+        h.log.deinit(h.alloc);
+        const a = h.alloc;
+        a.destroy(h);
+    }
+};
+
+const Pct = struct { pct: u8 };
+
+test "Sink(P).from projects the Ctx fields and drives the same channel/binary/cancel surface" {
+    const h = SinkHolder.make(std.testing.allocator);
+    defer h.deinit();
+    var cancel = std.atomic.Value(bool){ .raw = false };
+    const St = struct {};
+    var st = St{};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = ctxmod.Ctx(St){
+        .arena = arena.allocator(),
+        .state = &st,
+        .id = 7,
+        .cancel = .{ .own = &cancel, .shutdown = &cancel },
+        .emit = &h.sink,
+    };
+
+    const sink = compute.Sink(Pct).from(&ctx);
+
+    // progress sends a P value over the bound id's _stream channel.
+    sink.progress(.{ .pct = 33 });
+    try std.testing.expect(std.mem.indexOf(u8, h.log.items, "window.Zigware._stream(7, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h.log.items, "\"pct\":33") != null);
+
+    // progressBytes parks the chunk, emits a _bin frame, and returns the budget bool.
+    const ok = sink.progressBytes(&[_]u8{ 9, 8, 7 }, "application/octet-stream");
+    try std.testing.expect(ok);
+    try std.testing.expect(std.mem.indexOf(u8, h.log.items, &[_]u8{ 9, 8, 7 }) != null);
+    try std.testing.expect(std.mem.indexOf(u8, h.log.items, "window.Zigware._bin(7, 0, 3, ") != null);
+
+    // The aliasing witness: progressBytes bumped the Ctx's OWN bin_seq through the
+    // shared pointer, so a subsequent Ctx.binaryChunk gets seq 1 (no collision).
+    try std.testing.expectEqual(@as(u32, 1), ctx.bin_seq);
+    _ = ctx.binaryChunk(&[_]u8{1}, "application/octet-stream");
+    try std.testing.expect(std.mem.indexOf(u8, h.log.items, "window.Zigware._bin(7, 1, ") != null);
+
+    // isCancelled reflects the token both flags share here.
+    try std.testing.expect(!sink.isCancelled());
+    cancel.store(true, .release);
+    try std.testing.expect(sink.isCancelled());
+}
+
+/// An EmitSink whose parkBinary always REJECTS, so progressBytes hits the
+/// budget-overflow branch. Used to prove the bool return is propagated, not
+/// swallowed (a dropped chunk must surface to the caller).
+const FullSinkHolder = struct {
+    sink: ctxmod.EmitSink,
+    alloc: std.mem.Allocator,
+
+    fn make(alloc: std.mem.Allocator) *FullSinkHolder {
+        const h = alloc.create(FullSinkHolder) catch unreachable;
+        h.* = .{ .alloc = alloc, .sink = .{ .label = "main", .evalJS = evalJS, .parkBinary = parkBinary } };
+        return h;
+    }
+    fn evalJS(_: *ctxmod.EmitSink, _: []const u8) void {}
+    fn parkBinary(_: *ctxmod.EmitSink, _: u64, _: u32, _: []const u8) bool {
+        return false; // budget exhausted: nothing parked, no frame
+    }
+    fn deinit(h: *FullSinkHolder) void {
+        h.alloc.destroy(h);
+    }
+};
+
+test "Sink.progressBytes propagates the budget-overflow false and leaves bin_seq unbumped" {
+    const h = FullSinkHolder.make(std.testing.allocator);
+    defer h.deinit();
+    var cancel = std.atomic.Value(bool){ .raw = false };
+    const St = struct {};
+    var st = St{};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = ctxmod.Ctx(St){
+        .arena = arena.allocator(),
+        .state = &st,
+        .id = 4,
+        .cancel = .{ .own = &cancel, .shutdown = &cancel },
+        .emit = &h.sink,
+    };
+    const sink = compute.Sink(Pct).from(&ctx);
+
+    // Budget overflow: the dropped chunk surfaces as false and no seq is consumed.
+    try std.testing.expect(!sink.progressBytes(&[_]u8{ 1, 2 }, "application/octet-stream"));
+    try std.testing.expectEqual(@as(u32, 0), ctx.bin_seq);
+}
+
+test "Worker names the documented offload shape" {
+    // DOCUMENTATION-ONLY type: nothing in the framework instantiates it, so this
+    // reference forces semantic analysis of the Sink(P) + ComputeError!P
+    // composition (Zig only analyzes referenced decls).
+    const Args = struct { path: []const u8 };
+    const W = compute.Worker(Args, Pct);
+    try std.testing.expectEqual(*const fn (Args, compute.Sink(Pct), compute.CancelToken) compute.ComputeError!Pct, W);
+}
