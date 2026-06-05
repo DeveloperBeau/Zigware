@@ -1,0 +1,11 @@
+.{
+    .identifier = "main",
+    .windows = .{"main"},
+    .origins = .{
+        .app_scheme,
+    },
+    .permissions = .{
+        "app:hashFile",
+        "core:compute:cancel",
+    },
+}
