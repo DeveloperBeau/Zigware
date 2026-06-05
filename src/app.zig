@@ -13,6 +13,7 @@ const parse = @import("manifest/parse.zig");
 const window_manager = @import("window/manager.zig");
 const window_lifecycle = @import("window/lifecycle.zig");
 const window_commands = @import("window/commands.zig");
+const compute_commands = @import("commands/compute.zig");
 const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
 const Lifecycle = window_lifecycle.Lifecycle;
@@ -61,10 +62,12 @@ fn resolveWindowUrl(prod_url: []const u8, dev_override: ?[]const u8) []const u8 
 /// builtin.Commands decl (sha256, echoBytes, echo) is re-exported explicitly.
 fn AppCommands(comptime B: type) type {
     const W = window_commands.WindowCommands(B);
+    const C = compute_commands.ComputeCommands(B);
     return struct {
         pub const sha256 = builtin.Commands.sha256;
         pub const echoBytes = builtin.Commands.echoBytes;
         pub const echo = builtin.Commands.echo;
+        pub const @"compute.cancel" = C.@"compute.cancel";
         pub const @"window.create" = W.@"window.create";
         pub const @"window.close" = W.@"window.close";
         pub const @"window.focus" = W.@"window.focus";
@@ -545,6 +548,21 @@ test "end to end: simulated invoke resolves through the real pool into eval_log"
     var buf: [64]u8 = undefined;
     const needle = try std.fmt.bufPrint(&buf, "window.Zigware._resolve(1, ", .{});
     try std.testing.expectEqual(@as(usize, 1), h.backend.countContaining(needle));
+}
+
+test "compute.cancel is registered and granted: cancelling an unknown id resolves" {
+    // Proves the real AppCommands wiring + the core:default grant (core:compute:cancel)
+    // + the auto-derived allowlist: compute.cancel reaches its handler through G1/G2,
+    // and cancelling an id that was never offloaded is an idempotent no-op success
+    // (bridge.cancelId short-circuits the missing entry).
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = mainId(h.app);
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":5,\"cmd\":\"compute.cancel\",\"args\":{\"id\":999}}");
+    h.app.bridge.drainForTest();
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(5));
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countRejectExactly(5));
 }
 
 test "scheme request routes through serveAsset" {

@@ -7,6 +7,7 @@ const std = @import("std");
 const ctxmod = @import("command_ctx.zig");
 const compute = @import("compute.zig");
 const Bridge = @import("bridge.zig").Bridge;
+const compute_commands = @import("commands/compute.zig");
 const NullBackend = @import("platform/null.zig").NullBackend;
 const security = struct {
     const gates = @import("security/gates.zig");
@@ -232,4 +233,125 @@ test "armCancel OOM before submit releases the reservation with no leak or doubl
     h.backend.pumpMain();
     try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(7));
     try std.testing.expectEqual(@as(usize, 0), h.bridge.inflightCount());
+}
+
+// ─── Task 2: the compute.cancel command drives bridge.cancelId through the gate ──
+//
+// These tests register the REAL compute.cancel handler and drive it through
+// `bridge.handleMessage` (exactly what simulateMessage calls), so G1/G2 run and
+// the `core:compute:cancel` grant (in core:default, via test:default) is exercised.
+// The worker is registered under the SAME builtin.State so both commands share one
+// Ctx type; the worker coordinates via these file-scope atomics rather than
+// ctx.state (builtin.State is empty).
+const builtinState = @import("commands/builtin.zig").State;
+
+const cmd_latch = struct {
+    var release: std.atomic.Value(bool) = .{ .raw = false };
+    var observed_cancel: std.atomic.Value(bool) = .{ .raw = false };
+    var finished: std.atomic.Value(bool) = .{ .raw = false };
+};
+
+const Empty2 = struct {};
+
+const CmdCommands = struct {
+    /// Blocks on the file-scope latch, then records whether it was cancelled and
+    /// resolves. The test releases the latch only AFTER compute.cancel has run, so
+    /// the worker's acquire-load observes the cancel store sequenced before it.
+    pub fn cmdLatched(ctx: *ctxmod.Ctx(builtinState)) ctxmod.Async(ctxmod.Result(Empty2)) {
+        while (!cmd_latch.release.load(.acquire)) std.atomic.spinLoopHint();
+        if (ctx.cancelled()) cmd_latch.observed_cancel.store(true, .release);
+        cmd_latch.finished.store(true, .release);
+        return ctxmod.done(ctxmod.Result(Empty2){ .ok = .{} });
+    }
+    pub const @"compute.cancel" = compute_commands.ComputeCommands(NullBackend).@"compute.cancel";
+};
+
+const CmdHarness = struct {
+    backend: *NullBackend,
+    bridge: *Bridge(NullBackend),
+    state: *builtinState,
+    grants: *fixtures.GrantTable,
+    window_id: u64,
+
+    fn init(alloc: std.mem.Allocator) !CmdHarness {
+        const backend = try NullBackend.init(alloc, std.testing.io);
+        const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
+        const state = try alloc.create(builtinState);
+        state.* = .{};
+        const grants = try fixtures.buildTestGrants(alloc);
+        const bridge = try Bridge(NullBackend).init(
+            alloc,
+            std.testing.io,
+            backend,
+            win,
+            builtinState,
+            CmdCommands,
+            state,
+            .{ .worker_count = 4 },
+            grants,
+            dummy_bases,
+            std.Io.Dir.cwd(),
+            false,
+        );
+        return .{ .backend = backend, .bridge = bridge, .state = state, .grants = grants, .window_id = backend.windowId(win) };
+    }
+
+    fn deinit(self: *CmdHarness) void {
+        self.bridge.deinit();
+        self.grants.deinit();
+        std.testing.allocator.destroy(self.grants);
+        std.testing.allocator.destroy(self.state);
+        self.backend.markJoined();
+        self.backend.deinit();
+    }
+};
+
+test "compute.cancel flips a live id's flag through the gated message path" {
+    cmd_latch.release.store(false, .release);
+    cmd_latch.observed_cancel.store(false, .release);
+    cmd_latch.finished.store(false, .release);
+
+    var h = try CmdHarness.init(std.testing.allocator);
+    defer h.deinit();
+
+    // Offload the latched worker (id 1) directly: cmdLatched is not in the grant's
+    // commands_allow, so it cannot route through handleMessage, but compute.cancel
+    // can (and does below). The flag for id 1 is armed pre-submit on this thread.
+    std.debug.assert(h.bridge.reserveCall("main", 1));
+    h.bridge.dispatchFn(h.bridge, "main", "cmdLatched", 1, "{}");
+
+    // Drive compute.cancel through the REAL gated path (G1/G2 + core:default grant).
+    // The handler is SYNC, so cancelId(1) runs inline inside handleMessage on the
+    // message thread, sequenced-before the latch release below. Do NOT drainForTest
+    // here: id 1 is still latched, and drainForTest waits on the pool idle, which
+    // would block on the not-yet-released worker.
+    h.bridge.handleMessage(h.window_id, "app://localhost", "{\"id\":2,\"cmd\":\"compute.cancel\",\"args\":{\"id\":1}}");
+    h.backend.pumpMain();
+
+    // compute.cancel itself resolved.
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(2));
+
+    // Only now release the latched worker: its acquire-load of its own flag sees the
+    // store from cancelId, so it observes cancellation.
+    cmd_latch.release.store(true, .release);
+    h.bridge.drainForTest();
+    h.backend.pumpMain();
+
+    while (!cmd_latch.finished.load(.acquire)) std.atomic.spinLoopHint();
+    try std.testing.expect(cmd_latch.observed_cancel.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(1));
+    try std.testing.expectEqual(@as(usize, 0), h.bridge.inflightCount());
+}
+
+test "compute.cancel on an unknown id is an idempotent no-op success" {
+    var h = try CmdHarness.init(std.testing.allocator);
+    defer h.deinit();
+
+    // No job in flight for id 4242: cancelId short-circuits the missing entry, so
+    // the command resolves rather than rejecting.
+    h.bridge.handleMessage(h.window_id, "app://localhost", "{\"id\":3,\"cmd\":\"compute.cancel\",\"args\":{\"id\":4242}}");
+    h.bridge.drainForTest();
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(3));
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countRejectExactly(3));
 }
