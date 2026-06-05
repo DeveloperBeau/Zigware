@@ -222,13 +222,23 @@ pub fn Bridge(comptime B: type) type {
                 return;
             }
 
+            // Derive the G4 scope input from the command's compiled scope. For a
+            // path-scoped command, extract the candidate `path` from the SAME
+            // args_json the registry decodes (verbatim parse options, no
+            // differential); every unscoped command stays `.none` (allow). A
+            // missing/ill-typed path on a path-scoped command fails CLOSED.
+            const scope_input = self.deriveScopeInput(a, label, msg.cmd, msg.args_json) catch {
+                self.emitErrorReject(label, msg.id, "scope.path.no_match", "path out of scope", null);
+                return; // no reservation taken
+            };
+
             // G1/G2/G4 (C). Runs after the allowlist (G3) and BEFORE the G5
             // reservation, so a denied request never reserves a budget slot.
             const decision = security.gates.evaluate(self.grants, .{
                 .window_label = label,
                 .origin = origin,
                 .command = msg.cmd,
-                .scope_input = .none, // v0.1.0 commands carry no scoped arg
+                .scope_input = scope_input,
                 .is_debug = self.is_debug,
             }, self.bases, self.io, self.base_dir);
             switch (decision) {
@@ -285,6 +295,45 @@ pub fn Bridge(comptime B: type) type {
             const parsed = std.fmt.parseInt(i64, text[num_start..i], 10) catch return null;
             if (parsed < 0) return null;
             return @intCast(parsed);
+        }
+
+        /// Derive the G4 scope input for (label, command) from the command's
+        /// COMPILED scope set, discriminating on `.path` PRESENCE (never on
+        /// emptiness). If neither the allow nor the deny set carries a `.path`
+        /// scope, the command is unscoped and gets `.none` (G4 no-op allow) —
+        /// this covers every existing command (sha256/echoBytes/window.* carry no
+        /// path scope), so they stay allowed exactly as before. If a `.path` scope
+        /// is present, extract the candidate `path` from `args_json` and feed
+        /// `.path`. The extract is provably non-divergent from the registry's typed
+        /// decode of the SAME bytes: it parses ONE field with
+        /// `protocol.JSON_PARSE_OPTIONS` VERBATIM (so `.use_first` matches the
+        /// registry on duplicate keys). `ignore_unknown_fields = true` is the one
+        /// permitted divergence and is fail-closed (the registry's full-ArgsT decode
+        /// uses `ignore_unknown_fields = false` and rejects extra-field requests
+        /// before the handler opens anything). A missing/ill-typed `path` returns
+        /// `error.BadScope`, which the caller maps to a fail-closed deny. `a` is the
+        /// per-message arena; the extracted string only feeds the gate.
+        fn deriveScopeInput(self: *Self, a: std.mem.Allocator, label: []const u8, command: []const u8, args_json: []const u8) error{BadScope}!security.gates.ScopeInput {
+            const set = self.grants.scopeFor(label, command);
+            const has_path = scopeSetHasPath(set);
+            if (!has_path) return .none;
+            // Pass protocol.JSON_PARSE_OPTIONS VERBATIM (spread + the one permitted
+            // override) so this parse can never silently diverge from the registry's
+            // typed decode if protocol adds another non-default option later. The only
+            // deliberate divergence is `ignore_unknown_fields = true`, which is
+            // fail-closed: the registry's full-ArgsT decode keeps it false and rejects
+            // extra-field requests before the handler opens anything.
+            var opts = protocol.JSON_PARSE_OPTIONS;
+            opts.ignore_unknown_fields = true;
+            const parsed = std.json.parseFromSliceLeaky(struct { path: []const u8 }, a, args_json, opts) catch return error.BadScope;
+            return .{ .path = parsed.path };
+        }
+
+        /// True when either the allow or deny scope set contains any `.path` Scope.
+        fn scopeSetHasPath(set: security.grant.ScopeSet) bool {
+            for (set.allow) |s| if (s == .path) return true;
+            for (set.deny) |s| if (s == .path) return true;
+            return false;
         }
 
         // ── Registry-facing surface (duck-typed by registry.dispatch) ──────────
@@ -1155,4 +1204,169 @@ test "fuzz: handleMessage tolerates arbitrary window_id and origin (manual drive
         t.bridge.handleMessage(rand.int(u64), ob[0..on], tb[0..tn]);
     }
     t.settle();
+}
+
+// ─── Live scope (Task 5): the bridge derives ScopeInput.path before G4 ─────────
+
+const ctxlive = @import("command_ctx.zig");
+const cap_live = @import("security/capability.zig");
+const defaults_live = @import("security/defaults.zig");
+
+// A sync command granted a path scope. Its body is trivial (the test exercises
+// the G4 extraction, not the work): a denied request never reaches it, an allowed
+// one resolves immediately. Its args carry the single `path` field the bridge's
+// pre-evaluate extractor decodes from args_json.
+const ScopedCommands = struct {
+    pub fn hashFile(ctx: *ctxlive.Ctx(builtin.State), args: struct { path: []const u8 }) ctxlive.Result(struct {}) {
+        _ = ctx;
+        _ = args;
+        return .{ .ok = .{} };
+    }
+};
+
+// Catalog granting `hashFile` a `$APPDATA/notes/**` path scope under one app
+// permission, plus core:default so the cancel command stays resolvable.
+const scoped_catalog = cap_live.Catalog{
+    .permissions = &(defaults_live.builtin_permissions ++ [_]cap_live.Permission{
+        .{ .identifier = "app:hashFile", .commands_allow = &.{"hashFile"}, .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} },
+    }),
+    .sets = &defaults_live.builtin_sets,
+};
+
+// A bridge wired with the scoped command, a tmp app-data dir as base_dir, and
+// $APPDATA anchored at that dir so realPathFile resolves the in-scope candidate.
+const ScopedBridge = struct {
+    backend: *NullBackend,
+    bridge: *Bridge(NullBackend),
+    window_id: u64,
+    state: *builtin.State,
+    grants: *fixtures.GrantTable,
+    tmp: std.testing.TmpDir,
+    // The realpath of the tmp app-data dir, HEAP-owned (testing allocator) so the
+    // bridge's bases.appdata stays valid after init returns and messages can carry
+    // an ABSOLUTE candidate path (the frontend would send the resolved path).
+    base_path: []const u8,
+
+    fn base(self: *const ScopedBridge) []const u8 {
+        return self.base_path;
+    }
+
+    fn init() !ScopedBridge {
+        const a = std.testing.allocator;
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+
+        // Anchor $APPDATA at the tmp dir and create the in-scope file on disk so
+        // the allow half is a real allow (realPathFile resolves it), not a
+        // fail-closed accident.
+        var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const base_len = try tmp.dir.realPath(io, &base_buf);
+        const base_path = try a.dupe(u8, base_buf[0..base_len]);
+        errdefer a.free(base_path);
+        try tmp.dir.createDirPath(io, "notes");
+        var f = try tmp.dir.createFile(io, "notes/secret.txt", .{});
+        f.close(io);
+
+        const backend = try NullBackend.init(a, io);
+        errdefer backend.deinit();
+        const win = try backend.createWindow(.{ .url = "app://localhost/index.html" });
+        const state = try a.create(builtin.State);
+        errdefer a.destroy(state);
+        state.* = .{};
+
+        const grants = try a.create(fixtures.GrantTable);
+        errdefer a.destroy(grants);
+        var diags: @import("manifest/types.zig").Diagnostics = .{};
+        defer diags.deinit(a);
+        const caps = [_]cap_live.Capability{.{
+            .identifier = "notes",
+            .windows = &.{"main"},
+            .origins = &.{.app_scheme},
+            .permissions = &.{ "core:default", "app:hashFile" },
+        }};
+        grants.* = try fixtures.GrantTable.compile(a, &caps, &scoped_catalog, .{}, &.{"main"}, &diags);
+        errdefer grants.deinit();
+
+        // $APPDATA points at the tmp base; base_dir is that same dir so
+        // realPathFile resolves the candidate against the on-disk file.
+        const bases = security.gates.Bases{ .appdata = base_path, .home = base_path, .appconfig = base_path };
+        const bridge = try Bridge(NullBackend).init(
+            a,
+            io,
+            backend,
+            win,
+            builtin.State,
+            ScopedCommands,
+            state,
+            .{ .worker_count = 4 },
+            grants,
+            bases,
+            tmp.dir,
+            false,
+        );
+        return .{
+            .backend = backend,
+            .bridge = bridge,
+            .window_id = backend.windowId(win),
+            .state = state,
+            .grants = grants,
+            .tmp = tmp,
+            .base_path = base_path,
+        };
+    }
+
+    fn send(self: *ScopedBridge, text: []const u8) void {
+        self.bridge.handleMessage(self.window_id, "app://localhost", text);
+    }
+
+    fn settle(self: *ScopedBridge) void {
+        self.bridge.drainForTest();
+        self.backend.pumpMain();
+    }
+
+    fn deinit(self: *ScopedBridge) void {
+        self.bridge.deinit();
+        self.grants.deinit();
+        std.testing.allocator.destroy(self.grants);
+        std.testing.allocator.destroy(self.state);
+        std.testing.allocator.free(self.base_path);
+        self.backend.markJoined();
+        self.backend.deinit();
+        self.tmp.cleanup();
+    }
+};
+
+test "live scope: the bridge extracts path before G4 and denies an out-of-scope arg" {
+    var t = try ScopedBridge.init();
+    defer t.deinit();
+    var buf: [std.Io.Dir.max_path_bytes + 64]u8 = undefined;
+
+    // In-scope: the bridge decodes args_json's `path`, scopeFor reports a `.path`
+    // scope, and G4 allows because the file resolves under $APPDATA/notes/**.
+    const in_msg = try std.fmt.bufPrint(&buf, "{{\"id\":1,\"cmd\":\"hashFile\",\"args\":{{\"path\":\"{s}/notes/secret.txt\"}}}}", .{t.base()});
+    t.send(in_msg);
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countResolveExactly(1));
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countRejectExactly(1));
+
+    // Out-of-scope traversal: G4 denies BEFORE any reservation/dispatch with the
+    // real path-miss code (NOT the non-existent "out_of_scope").
+    const out_msg = try std.fmt.bufPrint(&buf, "{{\"id\":2,\"cmd\":\"hashFile\",\"args\":{{\"path\":\"{s}/notes/../../etc/passwd\"}}}}", .{t.base()});
+    t.send(out_msg);
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countResolveExactly(2));
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(2));
+    try std.testing.expect(t.backend.countContaining("scope.path.no_match") == 1);
+}
+
+test "live scope: a path-scoped command with a missing path arg fails closed" {
+    var t = try ScopedBridge.init();
+    defer t.deinit();
+    // No `path` field: the extractor's decode fails, and a path-scoped command
+    // must DENY (fail closed), never fall through to .none/allow.
+    t.send("{\"id\":3,\"cmd\":\"hashFile\",\"args\":{}}");
+    t.settle();
+    try std.testing.expectEqual(@as(usize, 0), t.backend.countResolveExactly(3));
+    try std.testing.expectEqual(@as(usize, 1), t.backend.countRejectExactly(3));
 }
