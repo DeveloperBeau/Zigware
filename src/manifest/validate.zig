@@ -59,6 +59,49 @@ pub fn validate(
         ok = false;
     };
 
+    // Bundle/macOS signing fields. These feed the packaging argv and the
+    // Info.plist, so each is shape-checked here (defense in depth) and every
+    // free-text value is rejected when it would land in a tool argv slot
+    // leading with '-' (option injection).
+    if (m.bundle.macos.teamId) |team| {
+        if (!isValidTeamId(team)) {
+            try emit(gpa, diag, .{
+                .code = .invalid_team_id,
+                .message = "teamId must be non-empty alphanumerics (no leading hyphen)",
+            }, "bundle.macos.teamId");
+            ok = false;
+        }
+    }
+    if (m.bundle.bundleVersion) |bv| {
+        if (bv.len == 0 or bv[0] == '-') {
+            try emit(gpa, diag, .{
+                .code = .invalid_bundle_version,
+                .message = "bundleVersion must be non-empty and not start with a hyphen",
+            }, "bundle.bundleVersion");
+            ok = false;
+        }
+    }
+    if (m.bundle.displayName) |dn| {
+        if (dn.len == 0 or dn[0] == '-') {
+            try emit(gpa, diag, .{
+                .code = .invalid_display_name,
+                .message = "displayName must be non-empty and not start with a hyphen",
+            }, "bundle.displayName");
+            ok = false;
+        }
+    }
+    // minimumSystemVersion: lenient digits-and-dots, <=3 numeric components.
+    // macOS deployment targets are routinely two-component ("11.0", "12"),
+    // and the field DEFAULTS to "11.0", which SemVer.parse would reject; do
+    // NOT use std.SemanticVersion.parse here.
+    if (!isValidDeploymentVersion(m.bundle.macos.minimumSystemVersion)) {
+        try emit(gpa, diag, .{
+            .code = .invalid_minimum_system_version,
+            .message = "minimumSystemVersion must be digits and dots with at most three components",
+        }, "bundle.macos.minimumSystemVersion");
+        ok = false;
+    }
+
     // Windows: main presence, empty label, duplicate label.
     var has_main = false;
     for (m.app.windows) |w| {
@@ -187,7 +230,7 @@ fn isReleaseMode(o: std.builtin.OptimizeMode) bool {
 ///   - no leading digit on any label,
 ///   - no leading or trailing hyphen on any label.
 /// Underscores are rejected. ASCII-only.
-fn isValidReverseDns(s: []const u8) bool {
+pub fn isValidReverseDns(s: []const u8) bool {
     if (s.len == 0 or s.len > 255) return false;
 
     var labels: usize = 0;
@@ -206,6 +249,39 @@ fn isValidReverseDns(s: []const u8) bool {
     }
 
     return labels >= 2;
+}
+
+/// Apple Team IDs are short ASCII-alphanumeric strings (e.g. "ABCDE12345").
+/// Non-empty, alphanumeric only, which also forbids a leading hyphen (so the
+/// value can never be read as a flag by notarytool/codesign).
+fn isValidTeamId(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| {
+        if (!std.ascii.isAlphanumeric(c)) return false;
+    }
+    return true;
+}
+
+/// macOS deployment-target shape: one to three numeric components separated by
+/// dots, digits only (e.g. "11", "11.0", "12.3.1"). Deliberately lenient and
+/// NOT SemVer (the default "11.0" is two-component). Rejects a leading hyphen
+/// implicitly (only digits and dots are allowed).
+fn isValidDeploymentVersion(s: []const u8) bool {
+    if (s.len == 0) return false;
+    var components: usize = 1;
+    var digits_in_component: usize = 0;
+    for (s) |c| {
+        if (c == '.') {
+            if (digits_in_component == 0) return false; // empty component
+            components += 1;
+            digits_in_component = 0;
+            if (components > 3) return false;
+            continue;
+        }
+        if (!std.ascii.isDigit(c)) return false;
+        digits_in_component += 1;
+    }
+    return digits_in_component > 0; // no trailing dot
 }
 
 fn isValidLabel(label: []const u8) bool {
@@ -455,6 +531,78 @@ test "validate does not emit dev_url_without_command when both fields are set" {
     m.build = .{ .devUrl = "http://localhost:5173", .beforeDevCommand = "bun run dev" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .dev_url_without_command));
+}
+
+test "validate flags an invalid team id and accepts a valid one" {
+    const gpa = std.testing.allocator;
+    const bad = [_][]const u8{ "", "-ABCDE", "ABC DE", "ABC.DE" };
+    for (bad) |t| {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.bundle = .{ .macos = .{ .teamId = t } };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_team_id));
+        const d = findOne(diag, .invalid_team_id).?;
+        try std.testing.expectEqualStrings("bundle.macos.teamId", d.path.?);
+    }
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+    var m = baseValid();
+    m.bundle = .{ .macos = .{ .teamId = "ABCDE12345" } };
+    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_team_id));
+}
+
+test "validate flags empty or leading-hyphen bundleVersion and displayName" {
+    const gpa = std.testing.allocator;
+    {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.bundle = .{ .bundleVersion = "-1" };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_bundle_version));
+        try std.testing.expectEqualStrings("bundle.bundleVersion", findOne(diag, .invalid_bundle_version).?.path.?);
+    }
+    {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.bundle = .{ .displayName = "-bad" };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_display_name));
+        try std.testing.expectEqualStrings("bundle.displayName", findOne(diag, .invalid_display_name).?.path.?);
+    }
+    // Valid values pass.
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+    var m = baseValid();
+    m.bundle = .{ .bundleVersion = "42", .displayName = "My App" };
+    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+}
+
+test "validate accepts lenient minimumSystemVersion and rejects malformed ones" {
+    const gpa = std.testing.allocator;
+    const good = [_][]const u8{ "11.0", "12", "10.15.7", "11" };
+    for (good) |v| {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.bundle = .{ .macos = .{ .minimumSystemVersion = v } };
+        try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_minimum_system_version));
+    }
+    const bad = [_][]const u8{ "11.0.0.1", "11.", ".11", "11-beta", "11..0", "-11", "" };
+    for (bad) |v| {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.bundle = .{ .macos = .{ .minimumSystemVersion = v } };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_minimum_system_version));
+        try std.testing.expectEqualStrings("bundle.macos.minimumSystemVersion", findOne(diag, .invalid_minimum_system_version).?.path.?);
+    }
 }
 
 // Build a manifest that fires several path-allocating diagnostics so the OOM

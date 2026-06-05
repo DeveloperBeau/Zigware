@@ -4,20 +4,12 @@ const dev = @import("dev.zig");
 const csp = @import("csp.zig");
 const assets_embed = @import("assets_embed.zig");
 const Manifest = @import("zigware_manifest").Manifest;
+const package = @import("package");
 
-pub const Arch = enum { host }; // universal (lipo arm64 + x86_64) reserved for v0.2
-
-pub const Artifacts = struct {
-    binary_path: []const u8,
-    app_name: []const u8,
-    bundle_id: []const u8,
-    version: []const u8,
-    icon_path: ?[]const u8,
-    entitlements_path: ?[]const u8,
-    signing_identity: ?[]const u8,
-    frontend_embedded: bool,
-    arch: Arch,
-};
+// Canonical handoff types live in the package module; re-export so existing
+// build.Artifacts / build.Arch references keep resolving to the one true type.
+pub const Artifacts = package.Artifacts;
+pub const Arch = package.Arch;
 
 pub const BuildOptions = struct {
     manifest: *const Manifest,
@@ -34,14 +26,19 @@ const staged_dir = "staged";
 const asset_table_name = "asset_table.zig";
 const build_fragment_name = "assets.build.zig";
 
-/// build orchestrator: beforeBuildCommand -> asset embed -> CSP inject -> release compile -> Artifacts.
+/// build orchestrator: beforeBuildCommand -> asset embed -> CSP inject -> release compile.
 ///
 /// Operates relative to the process cwd (the scaffolded project root). It reads the
 /// frontend dist named by the manifest, computes the strict CSP with this build's own
 /// script hashes, injects it into index.html, and stages the TRANSFORMED index.html so
 /// the generated asset_table.zig embeds the injected bytes rather than the raw file. The
 /// release compile then runs through the injected BuildRunner at `.ReleaseSafe`.
-pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror!Artifacts {
+///
+/// Returns the gpa-owned path to the compiled release binary (the conventional install
+/// location). The Manifest->Artifacts mapping moved to the packaging module: `main`
+/// hands this path to `package()`, which adapts the manifest and fills the canonical
+/// `Artifacts`. The caller frees the returned slice.
+pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]const u8 {
     const manifest = opts.manifest;
 
     // (1) beforeBuildCommand, if declared: spawn + wait. Never killed (not a dev child);
@@ -145,21 +142,10 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror!Arti
         return error.zig_build_failed;
     }
 
-    // (6) Map Manifest -> Artifacts. binary_path is the conventional install location for
-    // the scaffold's release exe (zig-out/bin/<productName>); G consumes it later.
-    const binary_path = try std.fmt.allocPrint(gpa, "zig-out/bin/{s}", .{manifest.productName});
-    return .{
-        .binary_path = binary_path,
-        .app_name = manifest.productName,
-        .bundle_id = manifest.identifier,
-        .version = manifest.version,
-        // bundle.icon is a slice of paths; Artifacts.icon_path is a single optional path.
-        .icon_path = if (manifest.bundle.icon.len > 0) manifest.bundle.icon[0] else null,
-        .entitlements_path = manifest.bundle.macos.entitlements,
-        .signing_identity = manifest.bundle.macos.signingIdentity,
-        .frontend_embedded = true,
-        .arch = .host,
-    };
+    // (6) Return the release binary path: the conventional install location for the
+    // scaffold's release exe (zig-out/bin/<productName>). The packaging step consumes it
+    // and fills the canonical Artifacts from the manifest.
+    return std.fmt.allocPrint(gpa, "zig-out/bin/{s}", .{manifest.productName});
 }
 
 /// Find the index.html entry (serve_path "/index.html") in the walk result.
@@ -338,13 +324,13 @@ test "build: asset_table embeds the CSP-injected index.html, hashes present, no 
     var manifest = testManifest();
     manifest.build.frontendDist = dist;
 
-    const arts = try run(io, testing.allocator, .{
+    const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
         .out_dir = out,
         .builder = builder.make(),
         .proc = spawner.make(),
     });
-    defer testing.allocator.free(arts.binary_path);
+    defer testing.allocator.free(binary_path);
 
     // The generated asset_table.zig points index.html at the staged copy.
     const table = try tmp.dir.readFileAlloc(io, "out/asset_table.zig", testing.allocator, .limited(1 << 20));
@@ -369,15 +355,9 @@ test "build: asset_table embeds the CSP-injected index.html, hashes present, no 
     try testing.expectEqual(std.builtin.OptimizeMode.ReleaseSafe, builder.last_optimize.?);
     try testing.expectEqual(false, builder.last_dev.?);
 
-    // Artifacts fully populated from the manifest.
-    try testing.expectEqualStrings("Example", arts.app_name);
-    try testing.expectEqualStrings("com.example.app", arts.bundle_id);
-    try testing.expectEqualStrings("0.1.0", arts.version);
-    try testing.expect(arts.frontend_embedded);
-    try testing.expectEqual(Arch.host, arts.arch);
-    try testing.expectEqual(@as(?[]const u8, null), arts.icon_path);
-    try testing.expectEqual(@as(?[]const u8, null), arts.entitlements_path);
-    try testing.expectEqual(@as(?[]const u8, null), arts.signing_identity);
+    // run now returns the release binary path; Artifacts population (app name, bundle id,
+    // icon/signing fields) is covered by the package() pipeline + configFromManifest tests.
+    try testing.expect(std.mem.endsWith(u8, binary_path, "/Example"));
 }
 
 test "build: hash count matches inline + external scripts (two hashes)" {
@@ -402,13 +382,13 @@ test "build: hash count matches inline + external scripts (two hashes)" {
     var manifest = testManifest();
     manifest.build.frontendDist = dist;
 
-    const arts = try run(io, testing.allocator, .{
+    const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
         .out_dir = out,
         .builder = builder.make(),
         .proc = spawner.make(),
     });
-    defer testing.allocator.free(arts.binary_path);
+    defer testing.allocator.free(binary_path);
 
     const staged = try tmp.dir.readFileAlloc(io, "out/staged/index.html", testing.allocator, .limited(1 << 20));
     defer testing.allocator.free(staged);
@@ -519,13 +499,13 @@ test "build: beforeBuildCommand success then build proceeds" {
     manifest.build.frontendDist = dist;
     manifest.build.beforeBuildCommand = "true";
 
-    const arts = try run(io, testing.allocator, .{
+    const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
         .out_dir = out,
         .builder = builder.make(),
         .proc = spawner.make(),
     });
-    defer testing.allocator.free(arts.binary_path);
+    defer testing.allocator.free(binary_path);
 
     try testing.expectEqual(@as(usize, 1), spawner.spawns);
     try testing.expectEqual(@as(usize, 1), builder.builds);
@@ -557,38 +537,6 @@ test "build: failed release compile errors zig_build_failed" {
     }));
 }
 
-test "build: icon and macos signing/entitlements map into Artifacts" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try fixtureWithIndex(io, tmp.dir, "<html><head></head><body></body></html>");
-    try tmp.dir.createDirPath(io, "out");
-
-    var dist_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    var out_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dist = try absUnder(io, tmp.dir, &dist_buf, "dist");
-    const out = try absUnder(io, tmp.dir, &out_buf, "out");
-
-    var builder = FakeBuilder{ .gpa = testing.allocator };
-    var spawner = FakeSpawner{};
-    var manifest = testManifest();
-    manifest.build.frontendDist = dist;
-    const icons = [_][]const u8{ "assets/icon.icns", "assets/icon-2.icns" };
-    manifest.bundle.icon = &icons;
-    manifest.bundle.macos.signingIdentity = "Developer ID Application: X (TEAM)";
-    manifest.bundle.macos.entitlements = "entitlements.plist";
-
-    const arts = try run(io, testing.allocator, .{
-        .manifest = &manifest,
-        .out_dir = out,
-        .builder = builder.make(),
-        .proc = spawner.make(),
-    });
-    defer testing.allocator.free(arts.binary_path);
-
-    // First/primary icon only.
-    try testing.expectEqualStrings("assets/icon.icns", arts.icon_path.?);
-    try testing.expectEqualStrings("Developer ID Application: X (TEAM)", arts.signing_identity.?);
-    try testing.expectEqualStrings("entitlements.plist", arts.entitlements_path.?);
-}
+// The former "icon and macos signing/entitlements map into Artifacts" test was removed:
+// build.run no longer produces an Artifacts, so that mapping now lives in (and is tested
+// by) the packaging module's configFromManifest adapter.
