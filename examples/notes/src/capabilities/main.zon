@@ -1,0 +1,15 @@
+.{
+    .identifier = "main",
+    .windows = .{"main"},
+    // Production origin only: no dev server, so the main window trusts app://.
+    .origins = .{
+        .app_scheme,
+    },
+    // core:default carries compute.cancel; app:hashFile grants the hashFile
+    // command scoped to $APPDATA/notes/** (the app-declared permission in the
+    // runtime catalog). One capability per window keeps scopeFor at n<=1.
+    .permissions = .{
+        "core:default",
+        "app:hashFile",
+    },
+}

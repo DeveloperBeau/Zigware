@@ -1,0 +1,5 @@
+.{
+    .identifier = "broken",
+    .windows = .{"main"},
+    .permissions = .{ 42, 7 },
+}

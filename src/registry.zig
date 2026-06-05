@@ -1,8 +1,11 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const ctxmod = @import("command_ctx.zig");
+const compute = @import("compute.zig");
 const jobs = @import("jobs.zig");
 const Allowlist = @import("allowlist.zig").Allowlist;
+
+const CancelToken = compute.CancelToken;
 
 const Ctx = ctxmod.Ctx;
 const Async = ctxmod.Async;
@@ -175,23 +178,37 @@ fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, label
             id: u64,
             args_json: []u8, // arena-free copy owned by this ctx
             label: []u8, // owned copy of the attested routing label
+            flag: *std.atomic.Value(bool), // this invocation's armed cancel flag
 
             fn run(opaque_ctx: *anyopaque, cancel: *std.atomic.Value(bool)) void {
                 const jc: *@This() = @ptrCast(@alignCast(opaque_ctx));
-                // Cache bridge+id BEFORE freeing jc: releaseCall must run after
+                // Cache bridge+id+flag BEFORE freeing jc: releaseCall must run after
                 // destroy(jc), and reading jc.bridge/jc.id post-destroy is a UAF
                 // (Round-2 BLOCKER 1) that leaks the reservation in ReleaseSafe.
                 // jc.label follows the SAME window as args_json: read only before
                 // destroy(jc); runHandler arena-dupes it, so the routing copy it
-                // uses outlives the terminal emit.
+                // uses outlives the terminal emit. The per-id flag is OWNED by the
+                // bridge inflight map (freed by releaseCall), not by jc: cache the
+                // ptr for the token, never free it here.
                 const br = jc.bridge;
                 const cid = jc.id;
-                runHandler(handler, Inner, br, jc.state, jc.label, cid, jc.args_json, cancel);
+                const flag = jc.flag;
+                runHandler(handler, Inner, br, jc.state, jc.label, cid, jc.args_json, .{ .own = flag, .shutdown = cancel });
                 br.alloc.free(jc.args_json);
                 br.alloc.free(jc.label);
                 br.alloc.destroy(jc);
                 br.releaseCall(cid);
             }
+        };
+        // Arm the per-invocation cancel flag FIRST (message thread, pre-submit), so
+        // a compute.cancel arriving the instant after submit still finds the flag.
+        // Hoisted ahead of create/dupe so by the time those can fail the flag is
+        // already armed and every rollback path's releaseCall frees it exactly once
+        // (fetchRemove-based, double-free safe against worker completion).
+        const flag = bridge.armCancel(id) catch {
+            bridge.emitErrorReject(label, id, "internal", "out of memory", null);
+            bridge.releaseCall(id);
+            return;
         };
         const jc = bridge.alloc.create(JobCtx) catch {
             bridge.emitErrorReject(label, id, "internal", "out of memory", null);
@@ -211,7 +228,7 @@ fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, label
             bridge.releaseCall(id);
             return;
         };
-        jc.* = .{ .bridge = bridge, .state = state, .id = id, .args_json = args_copy, .label = label_copy };
+        jc.* = .{ .bridge = bridge, .state = state, .id = id, .args_json = args_copy, .label = label_copy, .flag = flag };
         bridge.pool.submit(.{ .id = id, .ctx = jc, .run = JobCtx.run }) catch {
             bridge.alloc.free(args_copy);
             bridge.alloc.free(label_copy);
@@ -222,16 +239,18 @@ fn dispatchOne(comptime handler: anytype, bridge: anytype, state: anytype, label
         return;
     }
 
-    // Sync: run inline on the message thread, then release the reservation.
+    // Sync: run inline on the message thread, then release the reservation. Sync
+    // calls have no own-flag; a never-cancel token observes only shutdown via the
+    // dummy, matching the prior single-flag behavior.
     var dummy_cancel = std.atomic.Value(bool){ .raw = false };
-    runHandler(handler, Inner, bridge, state, label, id, args_json, &dummy_cancel);
+    runHandler(handler, Inner, bridge, state, label, id, args_json, .{ .own = &dummy_cancel, .shutdown = &dummy_cancel });
     bridge.releaseCall(id);
 }
 
 /// Decode args, build the Ctx, call the handler, encode the terminal result.
 /// `Inner` is the handler return type after unwrapping Async. Shared by the
 /// sync inline path and the async worker path.
-fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, state: anytype, label: []const u8, id: u64, args_json: []const u8, cancel: *std.atomic.Value(bool)) void {
+fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, state: anytype, label: []const u8, id: u64, args_json: []const u8, cancel: CancelToken) void {
     const StateT = @typeInfo(@TypeOf(state)).pointer.child;
     var arena = std.heap.ArenaAllocator.init(bridge.alloc);
     defer arena.deinit();
@@ -374,6 +393,7 @@ const StubBridge = struct {
     pool: *jobs.Pool,
     last: std.ArrayList(u8) = .empty,
     backend_label: []const u8 = "main",
+    stub_flag: std.atomic.Value(bool) = .{ .raw = false },
 
     fn emitResolve(self: *StubBridge, _: []const u8, id: u64, json: []const u8) void {
         var aw: std.Io.Writer.Allocating = .init(self.alloc);
@@ -390,6 +410,15 @@ const StubBridge = struct {
         self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
     }
     fn releaseCall(_: *StubBridge, _: u64) void {}
+    /// Stub arm: return a ptr to a stub-owned flag so the async branch compiles
+    /// and threads a valid (never-cancelled) flag into the worker. No real
+    /// per-id registry here; the registry tests do not drive cancellation.
+    fn armCancel(self: *StubBridge, _: u64) !*std.atomic.Value(bool) {
+        return &self.stub_flag;
+    }
+    fn cancelId(self: *StubBridge, _: u64) void {
+        self.stub_flag.store(true, .release);
+    }
     /// Stub SinkCtx, mirroring the real bridge's BY-VALUE SinkCtx shape (B1):
     /// `sink` is the first field so runHandler can take `&sink_ctx.sink`.
     const StubSinkCtx = struct { sink: ctxmod.EmitSink };

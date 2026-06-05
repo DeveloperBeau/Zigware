@@ -2,6 +2,9 @@ const std = @import("std");
 const proc = @import("proc.zig");
 const watch = @import("watch.zig");
 const Manifest = @import("zigware_manifest").Manifest;
+const diag = @import("diag");
+
+const log = diag.scoped("dev");
 
 pub const BuildSpec = struct { optimize: std.builtin.OptimizeMode, dev: bool };
 pub const BuildResult = struct { ok: bool, stderr: []u8 }; // stderr owned by caller (gpa)
@@ -96,7 +99,7 @@ pub fn rebuildAndReload(ctx: *DevContext, changed: []const watch.ChangedPath) an
     const result = try ctx.builder.build(ctx.io, ctx.gpa, .{ .optimize = .Debug, .dev = true });
     if (!result.ok) {
         // Leave the running app untouched; surface the compiler error and free the buffer.
-        if (result.stderr.len > 0) std.debug.print("{s}\n", .{result.stderr});
+        if (result.stderr.len > 0) log.err("build failed", &.{diag.str("stderr", result.stderr)});
         ctx.gpa.free(result.stderr);
         return .build_failed;
     }
@@ -154,7 +157,7 @@ pub fn run(ctx: *DevContext) anyerror!void {
         const result = try ctx.builder.build(io, gpa, .{ .optimize = .Debug, .dev = true });
         defer ctx.gpa.free(result.stderr);
         if (!result.ok) {
-            if (result.stderr.len > 0) std.debug.print("{s}\n", .{result.stderr});
+            if (result.stderr.len > 0) log.err("build failed", &.{diag.str("stderr", result.stderr)});
             return;
         }
     }

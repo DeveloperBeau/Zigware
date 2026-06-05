@@ -58,6 +58,22 @@ Failure triage:
 - Notary rejection at step 20: read the issue list the pipeline prints (fetched via `notarytool log`); the usual causes are a missing hardened-runtime flag or an unsigned nested binary.
 - `rejected` at step 21 despite a successful step 20: the staple did not attach; re-run `xcrun stapler staple` by hand on the dmg and check for a network failure during stapling.
 
+## Notes example: scoped hash with progress and cancel (GUI only)
+
+These cover the `examples/notes/` app end to end on a Mac: streamed progress, cooperative cancel, the secure-default denial, and a signed `.app`. The headless integration test already proves the in-scope hash resolves and an out-of-scope path denies with `scope.path.no_match`; these steps confirm the live GUI and the packaged artifact.
+
+23. Build and launch the example: `zig build install` puts the binary at `zig-out/bin/notes-example`; run it. A window opens showing the "Hash a file" UI served from `app://localhost/index.html`, with no Content-Security-Policy violations in the Web Inspector console.
+24. Place a file under the app's `$APPDATA/notes/` directory. Enter its path and click "Hash". The progress bar advances 0 to 100% as `onStream` frames arrive (the bar reads `frame.pct`), and on completion the page shows `SHA-256: <64 hex chars>`. The progress must be monotonic, never jumping backward.
+25. While a large file hashes, drag the window around. It keeps responding, proving the hash runs off the main thread.
+26. Start hashing a large file, then click "Cancel" mid-run. The original invoke promise must settle with a `cancelled` rejection (the page shows "cancelled"), the progress bar stops advancing, and the worker stops promptly (within roughly one 64 KiB chunk). The UI returns to the ready state. There must be no crash and no leak warning on stderr.
+27. Enter a path outside `$APPDATA/notes/**` (for example `../etc/passwd` or an absolute path elsewhere) and click "Hash". The invoke must reject with code `scope.path.no_match`, and the page shows "denied: that path is outside $APPDATA/notes/**". The file must never be opened (the denial happens at G4 before any file access).
+28. Package the example into a signed `.app` and confirm Gatekeeper acceptance as in steps 20 to 21, against the example's bundle id (`com.zigware.notes`).
+
+Failure triage:
+- Stalled bar at step 24: the stream channel is broken; the progress now flows through `onStream`, not a DOM event.
+- Cancel ignored at step 26: the captured id did not match the in-flight call, or the worker is not polling `sink.isCancelled()` between chunks.
+- An in-scope path denied at step 24, or an out-of-scope path allowed at step 27: a G4 scope-matching regression; check that `$APPDATA` expansion resolves the fixture `notes/` dir and that the bridge extracts `path` from the same `args_json` the handler decodes.
+
 ## Automated coverage
 - `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.
 - `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.

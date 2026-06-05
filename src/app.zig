@@ -5,7 +5,6 @@ const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
 const security_cap = @import("security/capability.zig");
 const security_grant = @import("security/grant_table.zig");
-const security_defaults = @import("security/defaults.zig");
 const security_gates = @import("security/gates.zig");
 const security_navigation = @import("security/navigation.zig");
 const manifest_types = @import("manifest/types.zig");
@@ -13,6 +12,8 @@ const parse = @import("manifest/parse.zig");
 const window_manager = @import("window/manager.zig");
 const window_lifecycle = @import("window/lifecycle.zig");
 const window_commands = @import("window/commands.zig");
+const compute_commands = @import("commands/compute.zig");
+const app_catalog = @import("app_catalog.zig");
 const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
 const Lifecycle = window_lifecycle.Lifecycle;
@@ -61,10 +62,12 @@ fn resolveWindowUrl(prod_url: []const u8, dev_override: ?[]const u8) []const u8 
 /// builtin.Commands decl (sha256, echoBytes, echo) is re-exported explicitly.
 fn AppCommands(comptime B: type) type {
     const W = window_commands.WindowCommands(B);
+    const C = compute_commands.ComputeCommands(B);
     return struct {
         pub const sha256 = builtin.Commands.sha256;
         pub const echoBytes = builtin.Commands.echoBytes;
         pub const echo = builtin.Commands.echo;
+        pub const @"compute.cancel" = C.@"compute.cancel";
         pub const @"window.create" = W.@"window.create";
         pub const @"window.close" = W.@"window.close";
         pub const @"window.focus" = W.@"window.focus";
@@ -151,7 +154,14 @@ pub fn App(comptime B: type) type {
             defer diags.deinit(alloc);
             const grants = try alloc.create(security_grant.GrantTable);
             errdefer alloc.destroy(grants);
-            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &security_defaults.builtin_catalog, .{}, labels, &diags);
+            // Compile against the runtime catalog (built-in permissions + the
+            // app-declared permission). Additive and behavior-neutral: the
+            // app-declared permission is resolved ONLY when a capability
+            // references its identifier, and the synthesized `core:default` cap
+            // does not, so this compiles the same table the builtin catalog did.
+            // It admits the app permission into the catalog so a capability that
+            // grants the scoped `hashFile` command resolves (Task 7's example).
+            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &app_catalog.runtime_catalog, .{}, labels, &diags);
             errdefer grants.deinit();
             const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
             return initWithConfig(
@@ -545,6 +555,21 @@ test "end to end: simulated invoke resolves through the real pool into eval_log"
     var buf: [64]u8 = undefined;
     const needle = try std.fmt.bufPrint(&buf, "window.Zigware._resolve(1, ", .{});
     try std.testing.expectEqual(@as(usize, 1), h.backend.countContaining(needle));
+}
+
+test "compute.cancel is registered and granted: cancelling an unknown id resolves" {
+    // Proves the real AppCommands wiring + the core:default grant (core:compute:cancel)
+    // + the auto-derived allowlist: compute.cancel reaches its handler through G1/G2,
+    // and cancelling an id that was never offloaded is an idempotent no-op success
+    // (bridge.cancelId short-circuits the missing entry).
+    const h = try makeApp();
+    defer teardown(h.backend, h.app);
+    const main_id = mainId(h.app);
+    h.backend.simulateMessage(main_id, "app://localhost", "{\"id\":5,\"cmd\":\"compute.cancel\",\"args\":{\"id\":999}}");
+    h.app.bridge.drainForTest();
+    h.backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), h.backend.countResolveExactly(5));
+    try std.testing.expectEqual(@as(usize, 0), h.backend.countRejectExactly(5));
 }
 
 test "scheme request routes through serveAsset" {

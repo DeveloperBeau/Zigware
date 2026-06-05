@@ -1,0 +1,34 @@
+.{
+    .identifier = "com.zigware.notes",
+    .productName = "Notes",
+    .version = "0.1.0",
+    .app = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .url = "app://localhost/index.html",
+                .title = "Notes",
+                .show = true,
+            },
+        },
+    },
+    .security = .{
+        .capabilities = .{"main"},
+        // Strict baseline: own scripts only, no inline JS, no remote anything.
+        .csp = .{
+            .defaultSrc = .{"'self'"},
+            .scriptSrc = .{"'self'"},
+        },
+        // Every fuse stays off (deny-by-default). Spelled out so an auditor reads
+        // the whole native attack surface here rather than inferring the defaults.
+        .fuses = .{
+            .allowRemoteContent = false,
+            .allowEval = false,
+            .allowShell = false,
+            .debugInspector = false,
+        },
+    },
+    .build = .{
+        .frontendDist = "frontend",
+    },
+}

@@ -7,6 +7,9 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const types = @import("types.zig");
+const diag = @import("diag");
+
+const log = diag.scoped("manifest");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -23,8 +26,8 @@ pub fn main(init: std.process.Init) !void {
     for (args[3..], 0..) |a, i| override_paths_buf[i] = a;
     const override_paths: []const []const u8 = override_paths_buf;
 
-    var diag: types.Diagnostics = .{};
-    defer diag.deinit(gpa);
+    var diagnostics: types.Diagnostics = .{};
+    defer diagnostics.deinit(gpa);
     // NOTE: target_os here is the codegen exe's compile target, which build.zig
     // sets equal to the build's user-selected target via standardTargetOptions.
     // Cross-compiling the codegen for a non-host target would also require an
@@ -37,12 +40,14 @@ pub fn main(init: std.process.Init) !void {
     // via addFileArg (for cache invalidation), but does not yet thread the
     // basenames through argv. Resolve before sub-project E ships capabilities.
     const empty_caps: []const []const u8 = &.{};
-    const m = parse.parseAtBuildFromPaths(gpa, io, base_path, override_paths, empty_caps, tag, .Debug, &diag) catch |e| {
-        for (diag.items.items) |d| std.debug.print("manifest: {s}{s}{s}\n", .{
-            d.message,
-            if (d.path != null) " at " else "",
-            if (d.path) |p| p else "",
-        });
+    const m = parse.parseAtBuildFromPaths(gpa, io, base_path, override_paths, empty_caps, tag, .Debug, &diagnostics) catch |e| {
+        for (diagnostics.items.items) |d| {
+            if (d.path) |p| {
+                log.err(d.message, &.{diag.str("path", p)});
+            } else {
+                log.err(d.message, &.{});
+            }
+        }
         return e;
     };
     defer parse.freeManifest(gpa, m);
