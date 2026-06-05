@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self';">
+<title>Notes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Hash a file</h1>
+  <p class="hint">Paths are gated to <code>$APPDATA/notes/**</code>. Anything outside is denied before the file is touched.</p>
+  <label for="path">File path</label>
+  <input id="path" type="text" autocomplete="off" spellcheck="false" placeholder="…/notes/example.txt">
+  <p>
+    <button id="go">Hash</button>
+    <button id="cancel" disabled>Cancel</button>
+  </p>
+  <p><progress id="bar" max="100" value="0"></progress> <span id="pct">0%</span></p>
+  <div id="out"></div>
+  <script src="zigware.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

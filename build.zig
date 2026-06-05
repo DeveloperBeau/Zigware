@@ -417,6 +417,80 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
+
+    // ─── In-repo example: examples/notes/ ────────────────────────────────────
+    //
+    // The example links the REAL framework through the src/zigware.zig barrel
+    // (exposed as the named module `zigware`). The barrel is rooted in src/ so
+    // every framework file resolves its src/-relative imports; the example's own
+    // sources sit in examples/notes/src/ and reach the framework only by that
+    // name. The framework barrel module pulls in app.zig (-> manager -> fuses ->
+    // manifest) and assets.zig, so it needs the production frontend embeds + the
+    // effective manifest wired exactly as the app test root does. MacOSBackend
+    // pulls in objc + Cocoa/WebKit.
+    //
+    // makeZigwareModule builds one fresh barrel instance per consumer (a Build
+    // Module cannot be shared across two root modules with different link
+    // settings), wiring the objc import, frameworks, frontend embeds, and
+    // manifest each time.
+    const makeZigwareModule = struct {
+        fn make(bb: *std.Build, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, om: *std.Build.Module, zon: std.Build.LazyPath) *std.Build.Module {
+            const m = bb.createModule(.{
+                .root_source_file = bb.path("src/zigware.zig"),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+            });
+            m.addImport("objc", om);
+            m.linkFramework("Cocoa", .{});
+            m.linkFramework("WebKit", .{});
+            m.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path("frontend/index.html") });
+            m.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path("frontend/app.js") });
+            m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
+            m.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
+            wireManifest(m, zon);
+            return m;
+        }
+    }.make;
+
+    // The example executable. Rooted at examples/notes/src/main.zig, it builds an
+    // App(MacOSBackend) from the manifest and runs the platform loop. The notes
+    // frontend is embedded as anonymous imports (served from the regenerated asset
+    // table on the packaged path; the in-repo exe links the framework's default
+    // asset table, Locked decision 5).
+    const notes_mod = b.createModule(.{
+        .root_source_file = b.path("examples/notes/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    notes_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    notes_mod.linkFramework("Cocoa", .{});
+    notes_mod.linkFramework("WebKit", .{});
+    notes_mod.addAnonymousImport("examples/notes/frontend/index.html", .{ .root_source_file = b.path("examples/notes/frontend/index.html") });
+    notes_mod.addAnonymousImport("examples/notes/frontend/app.js", .{ .root_source_file = b.path("examples/notes/frontend/app.js") });
+    notes_mod.addAnonymousImport("examples/notes/frontend/style.css", .{ .root_source_file = b.path("examples/notes/frontend/style.css") });
+    const notes_exe = b.addExecutable(.{ .name = "notes", .root_module = notes_mod });
+    b.getInstallStep().dependOn(&b.addInstallArtifact(notes_exe, .{ .dest_sub_path = "notes-example" }).step);
+
+    // The example's headless integration test: drives the real hashFile handler
+    // over a Bridge(NullBackend) through the secure-default scope path. It imports
+    // the framework barrel by name and the example handler by relative path (both
+    // inside examples/notes/src/). It needs the example manifest on disk (read at
+    // test time by D's loader), not embedded, so no per-example effective manifest.
+    const notes_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/notes/src/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    notes_test_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    notes_test_mod.linkFramework("Cocoa", .{});
+    notes_test_mod.linkFramework("WebKit", .{});
+    const notes_tests = b.addTest(.{ .root_module = notes_test_mod });
+    test_step.dependOn(&b.addRunArtifact(notes_tests).step);
+    const test_notes_step = b.step("test-notes", "Run only the notes example integration tests");
+    test_notes_step.dependOn(&b.addRunArtifact(notes_tests).step);
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
