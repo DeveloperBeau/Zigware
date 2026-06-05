@@ -17,6 +17,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // The structured diagnostics logger exposed as a named module so files
+    // rooted in other module roots (cli/*, manifest/*) can import it without a
+    // relative path that would escape their own root.
+    const diag_mod = b.createModule(.{
+        .root_source_file = b.path("src/diag.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -63,6 +72,8 @@ pub fn build(b: *std.Build) void {
     });
     // Expose D's parser+type to the CLI leaves under the name `zigware_manifest`.
     cli_mod.addImport("zigware_manifest", manifest_mod);
+    // dev.zig/build.zig route their compiler-error stderr passthroughs through diag.
+    cli_mod.addImport("diag", diag_mod);
 
     // The packaging module owns the canonical Artifacts/Arch handoff types and the
     // package() pipeline the build verb hands off to. It is its own module so the
@@ -127,13 +138,15 @@ pub fn build(b: *std.Build) void {
     // that resolves @import("zigware_manifest").Manifest in the test module. Used by the
     // CLI leaves that consume D's parsed manifest type (csp.zig now; dev/build in A3).
     const addLogicTestWithManifest = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) void {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
                 .optimize = o,
             });
             m.addImport("zigware_manifest", mm);
+            // dev.zig routes compiler-error stderr through diag; csp.zig leaves it unused (harmless).
+            m.addImport("diag", dm);
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
@@ -145,7 +158,7 @@ pub fn build(b: *std.Build) void {
     // gets package via addImport at line 78; these standalone test modules need it wired
     // here too or the test binary fails to compile.
     const addLogicTestWithManifestAndPackage = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) void {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -153,6 +166,8 @@ pub fn build(b: *std.Build) void {
             });
             m.addImport("zigware_manifest", mm);
             m.addImport("package", pm);
+            // build.zig routes compiler-error stderr through diag.
+            m.addImport("diag", dm);
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
@@ -164,7 +179,7 @@ pub fn build(b: *std.Build) void {
     // literals and @import("template_index") that C4's init.run tests exercise. The
     // plain addLogicTest builds a zero-import module that cannot resolve those.
     const addLogicTestWithTemplates = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, pm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, files: []const []const u8, idx: *std.Build.Module, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -173,6 +188,7 @@ pub fn build(b: *std.Build) void {
             wireTemplateEmbeds(bb, m, files, idx);
             m.addImport("zigware_manifest", mm); // init.zig's tests parse the scaffolded zigware.zon via D's reader
             m.addImport("package", pm); // main.zig's build verb invokes package(); init ignores the unused import
+            m.addImport("diag", dm); // main.zig pulls in dev/build, which route stderr through diag
             const tt = bb.addTest(.{ .root_module = m });
             const run = bb.addRunArtifact(tt);
             ts.dependOn(&run.step);
@@ -194,20 +210,23 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
     addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
     addLogicTest(b, test_step, target, optimize, "src/security_tests.zig");
+    // diag.zig is std-only; its tests run in BOTH modes (the build-gating path
+    // diverges only under -Drelease=true).
+    addLogicTest(b, test_step, target, optimize, "src/diag_tests.zig");
 
     // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
     addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/csp.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/cli/dev.zig");
-    addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, "src/cli/build.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, "src/package_tests.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
+    addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
+    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
     // can resolve the anonymous template imports.
-    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, "src/cli/init.zig");
+    const init_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, diag_mod, "src/cli/init.zig");
     // Isolated step so init.zig's fake-driven scaffolding tests can run without the
     // App-based suites that hang on some hosts.
     const test_init_step = b.step("test-init", "Run only the CLI init scaffolding tests");
@@ -217,7 +236,7 @@ pub fn build(b: *std.Build) void {
     // template_index) and the manifest module, so its test root needs the same
     // template-aware wiring as init. Its fake-free tests (exitCodeFor / SIGINT) run
     // without any App-based suite, so they get an isolated step too.
-    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, "src/cli/main.zig");
+    const main_test_run = addLogicTestWithTemplates(b, test_step, target, optimize, template_files, template_index_mod, manifest_mod, package_mod, diag_mod, "src/cli/main.zig");
     const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
     test_main_step.dependOn(&main_test_run.step);
 
@@ -328,6 +347,8 @@ pub fn build(b: *std.Build) void {
     // anonymous import must be wired here. The codegen never CALLS embedded();
     // the wire only satisfies the compile-time @import resolution.
     emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
+    // emit_effective.zig routes its manifest-diagnostic prints through diag.
+    emit_eff_mod.addImport("diag", diag_mod);
 
     const emit_eff_exe = b.addExecutable(.{ .name = "emit_effective_manifest", .root_module = emit_eff_mod });
     const emit_eff_run = b.addRunArtifact(emit_eff_exe);

@@ -5,6 +5,9 @@ const csp = @import("csp.zig");
 const assets_embed = @import("assets_embed.zig");
 const Manifest = @import("zigware_manifest").Manifest;
 const package = @import("package");
+const diag = @import("diag");
+
+const log = diag.scoped("build");
 
 // Canonical handoff types live in the package module; re-export so existing
 // build.Artifacts / build.Arch references keep resolving to the one true type.
@@ -138,7 +141,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]co
     const result = try opts.builder.build(io, gpa, .{ .optimize = opts.optimize, .dev = false });
     defer gpa.free(result.stderr);
     if (!result.ok) {
-        if (result.stderr.len > 0) std.debug.print("{s}\n", .{result.stderr});
+        if (result.stderr.len > 0) log.err("release build failed", &.{diag.str("stderr", result.stderr)});
         return error.zig_build_failed;
     }
 
