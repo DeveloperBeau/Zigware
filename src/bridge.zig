@@ -57,10 +57,13 @@ pub fn Bridge(comptime B: type) type {
         pool: *jobs.Pool,
 
         // G5: in-flight call ids (also duplicate-id detection), capped at
-        // MAX_CONCURRENT. The map value is void; this is an id set, not a byte
-        // budget (deviation 6).
+        // MAX_CONCURRENT. The value is the per-invocation cancel flag (null for
+        // every reservation with no own-flag: all sync calls, and any arm-failed
+        // async entry). One map, one lock; bounded by the same MAX_CONCURRENT the
+        // id-set already enforces. The own-flag's whole register/arm/cancel/clear/
+        // free lifecycle runs under inflight_mutex so store-vs-free is serialized.
         inflight_mutex: std.Io.Mutex = .init,
-        inflight: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        inflight: std.AutoHashMapUnmanaged(u64, ?*std.atomic.Value(bool)) = .empty,
 
         // Window label map (deviation 3): single "main" entry pre-E. C's G2
         // resolves a label through this; E generalizes it to multi-window.
@@ -304,7 +307,47 @@ pub fn Bridge(comptime B: type) type {
                 self.emitErrorReject(label, id, "internal", "duplicate id", null);
                 return false;
             }
+            // Insert with no own-flag. The async branch upgrades this to a real
+            // flag via armCancel before submit; sync calls stay flag-free.
+            gop.value_ptr.* = null;
             return true;
+        }
+
+        /// Allocate and arm this invocation's cancel flag, publishing it into the
+        /// inflight entry under inflight_mutex. Called by the ASYNC branch of
+        /// dispatchOne on the message thread, BEFORE pool.submit, so a
+        /// compute.cancel arriving the instant after enqueue still finds the flag
+        /// (early-cancel safe). The flag is ZERO-INITIALIZED because create()
+        /// returns UNDEFINED memory (0xAA in Debug/ReleaseSafe); without the
+        /// explicit init the worker's first own.load(.acquire) reads true and the
+        /// job spuriously self-cancels. The reservation already exists (reserveCall
+        /// inserted the id with value null), so this only flips the value.
+        pub fn armCancel(self: *Self, id: u64) !*std.atomic.Value(bool) {
+            const flag = try self.alloc.create(std.atomic.Value(bool));
+            flag.* = .{ .raw = false };
+            self.inflight_mutex.lockUncancelable(self.io);
+            defer self.inflight_mutex.unlock(self.io);
+            if (self.inflight.getPtr(id)) |slot| {
+                slot.* = flag;
+            } else {
+                // No reservation (should not happen on the live path): drop the
+                // flag rather than leak or publish an orphan.
+                self.alloc.destroy(flag);
+                return error.NoReservation;
+            }
+            return flag;
+        }
+
+        /// Flip the per-invocation cancel flag for `id` to true (.release, pairing
+        /// with the worker's .acquire load). No-op on a cleared/finished id (the
+        /// entry is gone) or a sync/unarmed id (null flag): the deref is guarded so
+        /// there is no use-after-free against releaseCall.
+        pub fn cancelId(self: *Self, id: u64) void {
+            self.inflight_mutex.lockUncancelable(self.io);
+            defer self.inflight_mutex.unlock(self.io);
+            if (self.inflight.get(id)) |maybe_flag| {
+                if (maybe_flag) |flag| flag.store(true, .release);
+            }
         }
 
         /// Release the reservation recorded for `id`. Idempotent: an id not
@@ -312,7 +355,13 @@ pub fn Bridge(comptime B: type) type {
         /// on worker threads via the registry's async thunk, hence the mutex.
         pub fn releaseCall(self: *Self, id: u64) void {
             self.inflight_mutex.lockUncancelable(self.io);
-            _ = self.inflight.remove(id);
+            // fetchRemove so the own-flag (if any) is freed under the same lock
+            // that guards arm/cancel; the worker held CancelToken.own for its whole
+            // run, so this runs only AFTER runHandler returns (cache-before-free).
+            // The value is nullable: a null flag (sync / arm-failed) frees nothing.
+            if (self.inflight.fetchRemove(id)) |kv| {
+                if (kv.value) |flag| self.alloc.destroy(flag);
+            }
             self.inflight_mutex.unlock(self.io);
             // Do NOT free parked binary here (deviation 9): the webview pulls
             // bytes AFTER the call settles, so freeing on settle would 404 every

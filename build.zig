@@ -183,8 +183,10 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
     addLogicTest(b, test_step, target, optimize, "src/command_ctx.zig");
-    addLogicTest(b, test_step, target, optimize, "src/commands/sha256.zig");
-    addLogicTest(b, test_step, target, optimize, "src/commands/demo.zig");
+    // sha256.zig/demo.zig import ../compute.zig; rooting their tests at the
+    // src/-level aggregator keeps that import inside the module root (a standalone
+    // src/commands/*.zig root dir would make ../compute.zig escape).
+    addLogicTest(b, test_step, target, optimize, "src/sha256_tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/registry.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
@@ -398,6 +400,9 @@ pub fn build(b: *std.Build) void {
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/window_tests.zig");
+    // compute_tests.zig drives the real Bridge async offload path, so it pulls in
+    // manager.zig (manifest fuses) and the frontend embeds like bridge.zig does.
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/compute_tests.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts

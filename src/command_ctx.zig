@@ -1,5 +1,8 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const compute = @import("compute.zig");
+
+pub const CancelToken = compute.CancelToken;
 
 /// Stable machine-readable error crossing the bridge as a structured rejection.
 /// `code` and `message` are escaped through `jsString` on the wire (G6 safe for
@@ -97,7 +100,10 @@ pub fn Ctx(comptime State: type) type {
         arena: std.mem.Allocator,
         state: *State,
         id: u64,
-        cancel: *std.atomic.Value(bool),
+        /// Per-invocation cancel observer: the worker cancels when EITHER this
+        /// call's own flag OR the pool's shutdown flag is set. Built by the
+        /// registry's single Ctx-construction site from the armed per-id flag.
+        cancel: CancelToken,
         emit: *EmitSink,
         /// The attested label of the window that made this call. Set by the
         /// bridge per call (defaults to "main" for the pre-E single-window path
@@ -110,7 +116,7 @@ pub fn Ctx(comptime State: type) type {
         bin_seq: u32 = 0,
 
         pub fn cancelled(self: *Self) bool {
-            return self.cancel.load(.acquire);
+            return self.cancel.isCancelled();
         }
         pub fn channel(self: *Self, comptime T: type) Channel(T) {
             return .{ .emit = self.emit, .id = self.id, .arena = self.arena };
@@ -173,7 +179,7 @@ test "Channel.send emits a _stream frame for the bound id" {
     var st = State{};
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = &cancel, .emit = &h.sink };
+    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = .{ .own = &cancel, .shutdown = &cancel }, .emit = &h.sink };
     const ch = ctx.channel(struct { pct: u8 });
     ch.send(.{ .pct = 42 });
     try std.testing.expect(std.mem.indexOf(u8, h.log.items, "window.Zigware._stream(9, ") != null);
@@ -188,7 +194,7 @@ test "Channel.close emits _streamEnd" {
     var st = State{};
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = &cancel, .emit = &h.sink };
+    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = .{ .own = &cancel, .shutdown = &cancel }, .emit = &h.sink };
     ctx.channel(struct {}).close();
     try std.testing.expect(std.mem.indexOf(u8, h.log.items, "window.Zigware._streamEnd(9);") != null);
 }
@@ -201,7 +207,7 @@ test "cancelled reads the cancel token" {
     var st = State{};
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 1, .cancel = &cancel, .emit = &h.sink };
+    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 1, .cancel = .{ .own = &cancel, .shutdown = &cancel }, .emit = &h.sink };
     try std.testing.expect(!ctx.cancelled());
     cancel.store(true, .release);
     try std.testing.expect(ctx.cancelled());
@@ -220,7 +226,7 @@ test "binaryChunk parks bytes and emits a _bin control frame" {
     var st = State{};
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = &cancel, .emit = &h.sink };
+    var ctx = Ctx(State){ .arena = arena.allocator(), .state = &st, .id = 9, .cancel = .{ .own = &cancel, .shutdown = &cancel }, .emit = &h.sink };
 
     // First chunk: seq 0.
     const result = ctx.binaryChunk(&[_]u8{ 1, 2, 3, 4 }, "image/png");
