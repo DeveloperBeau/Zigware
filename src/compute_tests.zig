@@ -6,6 +6,7 @@
 const std = @import("std");
 const ctxmod = @import("command_ctx.zig");
 const compute = @import("compute.zig");
+const protocol = @import("protocol.zig");
 const Bridge = @import("bridge.zig").Bridge;
 const compute_commands = @import("commands/compute.zig");
 const NullBackend = @import("platform/null.zig").NullBackend;
@@ -487,4 +488,192 @@ test "Worker names the documented offload shape" {
     const Args = struct { path: []const u8 };
     const W = compute.Worker(Args, Pct);
     try std.testing.expectEqual(*const fn (Args, compute.Sink(Pct), compute.CancelToken) compute.ComputeError!Pct, W);
+}
+
+// ─── Task 8: binary progress-channel fuzz (the G6 invariant on the binary path) ──
+//
+// progressBytes/binaryChunk park the raw chunk into the per-id ring (served
+// out-of-band over the stream scheme) and emit ONLY a `_bin` CONTROL frame
+// (id/seq/len/mime) on the eval channel. The hostile corpus drives adversarial
+// raw chunk bytes AND a hostile mime string AND adversarial id/seq/len, then
+// asserts (a) the raw chunk bytes NEVER appear on the eval channel and (b) every
+// emitted eval frame is a known control frame whose mime literal is G6-encoded
+// via jsString (so it round-trips through assertSafeJsLiteral with no breakout).
+// Mirrors the H14 manual >= 10000-iteration discipline (protocol.zig fuzz +
+// assets.zig:108), NOT std.testing.fuzz/Smith (which runs ~once under plain
+// `zig test` and would be green-but-vacuous).
+
+/// A recording sink that keeps the two channels SEPARATE: `evalJS` output lands
+/// in `eval` (the channel the G6 invariant guards), parked chunk bytes land in
+/// `parked` and NEVER touch `eval`. (The shared-buffer SinkHolder above would put
+/// the bytes on the same log it records eval into, defeating the "bytes never on
+/// the eval channel" assertion.) `park_ok` toggles the budget-overflow branch so
+/// the fuzzer also exercises progressBytes returning false.
+const FuzzSink = struct {
+    sink: ctxmod.EmitSink,
+    eval: std.ArrayList(u8) = .empty, // every evalJS call, '\n'-separated
+    parked: std.ArrayList(u8) = .empty, // every parked chunk, off the eval channel
+    alloc: std.mem.Allocator,
+    park_ok: bool = true,
+
+    fn make(alloc: std.mem.Allocator) *FuzzSink {
+        const h = alloc.create(FuzzSink) catch unreachable;
+        h.* = .{ .alloc = alloc, .sink = .{ .label = "main", .evalJS = evalJS, .parkBinary = parkBinary } };
+        return h;
+    }
+    fn evalJS(sink: *ctxmod.EmitSink, js: []const u8) void {
+        const h: *FuzzSink = @fieldParentPtr("sink", sink);
+        h.eval.appendSlice(h.alloc, js) catch {};
+        h.eval.append(h.alloc, '\n') catch {};
+    }
+    fn parkBinary(sink: *ctxmod.EmitSink, _: u64, _: u32, bytes: []const u8) bool {
+        const h: *FuzzSink = @fieldParentPtr("sink", sink);
+        if (!h.park_ok) return false; // budget overflow: nothing parked, no frame
+        h.parked.appendSlice(h.alloc, bytes) catch {};
+        return true;
+    }
+    fn deinit(h: *FuzzSink) void {
+        h.eval.deinit(h.alloc);
+        h.parked.deinit(h.alloc);
+        const a = h.alloc;
+        a.destroy(h);
+    }
+};
+
+/// Structural G6 oracle for one eval-channel frame: it MUST begin with a known
+/// control-frame prefix, and a `_bin` frame's mime argument (the only string
+/// position) MUST be a jsString-safe JS literal (no breakout). A purely random
+/// chunk byte can collide with the digits inside `_bin(id, seq, len, ...)`, so a
+/// naive "exact bytes never a substring" check has false positives; the real G6
+/// guarantee is structural — the only attacker-influenced string on the channel
+/// is the escaped mime, and assertSafeJsLiteral proves it cannot break out.
+fn assertControlFrame(frame: []const u8) !void {
+    if (frame.len == 0) return; // trailing split fragment after the last '\n'
+    const is_bin = std.mem.indexOf(u8, frame, "window.Zigware._bin(") != null;
+    try std.testing.expect(is_bin or
+        std.mem.indexOf(u8, frame, "window.Zigware._stream(") != null or
+        std.mem.indexOf(u8, frame, "window.Zigware._streamEnd(") != null or
+        std.mem.indexOf(u8, frame, "window.Zigware._resolve(") != null or
+        std.mem.indexOf(u8, frame, "window.Zigware._reject(") != null);
+    if (is_bin) {
+        // _bin(id, seq, len, "<mime>"); — the mime literal is the only string
+        // position. Slice it from the first '"' to the last '"' and assert it is
+        // a safe JS literal (the G6 boundary jsString enforces).
+        const open = std.mem.indexOfScalar(u8, frame, '"') orelse return error.MissingMimeLiteral;
+        const close = std.mem.lastIndexOfScalar(u8, frame, '"') orelse return error.MissingMimeLiteral;
+        try std.testing.expect(close > open);
+        try protocol.assertSafeJsLiteral(frame[open .. close + 1]);
+    }
+}
+
+const FuzzPct = struct { pct: u8 };
+
+test "fuzz: progressBytes/binaryChunk keep raw bytes off the eval channel (manual >= 10000 iterations)" {
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x5bd1e995);
+    const rand = prng.random();
+
+    var it: usize = 0;
+    while (it < 10_000) : (it += 1) {
+        const h = FuzzSink.make(std.testing.allocator);
+        defer h.deinit();
+        h.park_ok = rand.boolean(); // exercise the budget-overflow branch too
+
+        var cancel = std.atomic.Value(bool){ .raw = false };
+        const St = struct {};
+        var st = St{};
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+
+        // Adversarial id and an adversarial starting seq (binaryChunk bumps it).
+        var ctx = ctxmod.Ctx(St){
+            .arena = arena.allocator(),
+            .state = &st,
+            .id = rand.int(u64),
+            .cancel = .{ .own = &cancel, .shutdown = &cancel },
+            .emit = &h.sink,
+        };
+        ctx.bin_seq = rand.int(u32);
+
+        // Hostile raw chunk bytes.
+        var chunk_buf: [512]u8 = undefined;
+        const cn = rand.intRangeAtMost(usize, 0, chunk_buf.len);
+        rand.bytes(chunk_buf[0..cn]);
+        const chunk = chunk_buf[0..cn];
+
+        // Hostile mime: breakout vectors, control bytes, LS/PS, and raw noise.
+        var mime_buf: [128]u8 = undefined;
+        const mime = pickHostileMime(rand, &mime_buf);
+
+        // Drive both surfaces: the Sink sugar and the raw Ctx method must agree.
+        if (rand.boolean()) {
+            const sink = compute.Sink(FuzzPct).from(&ctx);
+            _ = sink.progressBytes(chunk, mime);
+        } else {
+            _ = ctx.binaryChunk(chunk, mime);
+        }
+
+        // (a) The raw chunk bytes NEVER appear on the eval channel. (When parked
+        // the bytes live only in h.parked; when the budget overflowed nothing was
+        // parked and no frame emitted.) A non-empty chunk that happens to be a
+        // coincidental substring of frame digits is excluded by the structural
+        // check below, but the parked/eval split makes the direct check sound for
+        // any chunk long enough not to be a digit run; keep it for chunks > 8.
+        if (cn > 8) {
+            try std.testing.expect(std.mem.indexOf(u8, h.eval.items, chunk) == null);
+        }
+
+        // (b) Every emitted eval frame is a known control frame with a G6-safe
+        // mime literal. No raw bytes, no breakout, regardless of the hostile mime.
+        var lines = std.mem.splitScalar(u8, h.eval.items, '\n');
+        while (lines.next()) |line| try assertControlFrame(line);
+    }
+}
+
+/// Builds a hostile mime string in `buf`: half the time a known breakout vector,
+/// otherwise uniformly random bytes (including control bytes and the LS/PS lead
+/// byte 0xE2). The encoder must neutralise all of them.
+fn pickHostileMime(rand: std.Random, buf: []u8) []const u8 {
+    const vectors = [_][]const u8{
+        "application/octet-stream",
+        "\"</script><script>alert(1)</script>",
+        "image/png\\\";evil()//",
+        "a\u{2028}b\u{2029}c",
+        "\x00\x01\x02\x1f",
+        "</script>",
+        "\\",
+        "\"",
+        "",
+    };
+    if (rand.boolean()) return vectors[rand.uintLessThan(usize, vectors.len)];
+    const n = rand.uintLessThan(usize, buf.len);
+    rand.bytes(buf[0..n]);
+    return buf[0..n];
+}
+
+test "fuzz: encodeBinReady mime literal is always a safe JS literal (manual >= 10000 iterations)" {
+    // Independent coverage of adversarial id/seq/len at the encoder itself: the
+    // _bin frame's only string position is the mime, and it must survive any
+    // hostile byte sequence as a jsString-safe literal. Numeric fields cannot
+    // breakout (printed as decimals), so the encoder output is fully bounded.
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x27d4eb2f);
+    const rand = prng.random();
+
+    var it: usize = 0;
+    while (it < 10_000) : (it += 1) {
+        var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+
+        var mime_buf: [256]u8 = undefined;
+        const mime = pickHostileMime(rand, &mime_buf);
+
+        try protocol.encodeBinReady(
+            &aw.writer,
+            rand.int(u64),
+            rand.int(u32),
+            rand.int(usize),
+            mime,
+        );
+        const out = aw.writer.buffered();
+        try assertControlFrame(out);
+    }
 }
