@@ -491,6 +491,31 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(notes_tests).step);
     const test_notes_step = b.step("test-notes", "Run only the notes example integration tests");
     test_notes_step.dependOn(&b.addRunArtifact(notes_tests).step);
+
+    // ─── In-repo example: examples/crypto-*/ ─────────────────────────────────
+    //
+    // The crypto round-trip demo ships as four scaffolds (vanilla/react/vue/
+    // svelte) that share ONE command: src/commands/crypto.zig derives a key as
+    // SHA-256(password) and runs a ChaCha20-Poly1305 encrypt/decrypt over the
+    // per-call arena. The command is a pure function, so its proof is a headless
+    // unit test rooted at the command file — no window or backend needed. The
+    // four variants carry byte-identical command files (only their frontends
+    // differ), so testing the vanilla copy covers all four. Rooted against the
+    // real framework barrel (same `zigware` module the shipping app links) so the
+    // test exercises the production Ctx/Result types, not the vendored stubs.
+    const crypto_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/commands/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_test_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    crypto_test_mod.linkFramework("Cocoa", .{});
+    crypto_test_mod.linkFramework("WebKit", .{});
+    const crypto_tests = b.addTest(.{ .root_module = crypto_test_mod });
+    test_step.dependOn(&b.addRunArtifact(crypto_tests).step);
+    const test_crypto_step = b.step("test-crypto", "Run only the crypto example round-trip tests");
+    test_crypto_step.dependOn(&b.addRunArtifact(crypto_tests).step);
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");

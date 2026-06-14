@@ -1,0 +1,36 @@
+.{
+    .identifier = "com.zigware.crypto-vanilla",
+    .productName = "Crypto Demo (Vanilla)",
+    .version = "0.1.0",
+    .app = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .url = "app://localhost/index.html",
+                .title = "Crypto Demo (Vanilla)",
+                .show = true,
+            },
+        },
+    },
+    .security = .{
+        .capabilities = .{"main"},
+        // Own scripts only, no inline JS, no remote anything: a password never
+        // leaves the process, so the window trusts nothing off-origin.
+        .csp = .{
+            .defaultSrc = .{"'self'"},
+            .scriptSrc = .{"'self'"},
+        },
+        .fuses = .{
+            .allowRemoteContent = false,
+            .allowEval = false,
+            .allowShell = false,
+            .debugInspector = false,
+        },
+    },
+    .build = .{
+        // Vanilla ships no dev server; the frontend is served as static files.
+        .beforeDevCommand = null,
+        .devUrl = null,
+        .frontendDist = "frontend",
+    },
+}

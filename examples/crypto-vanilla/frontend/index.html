@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crypto Demo (Vanilla)</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>Crypto round-trip</h1>
+      <p class="hint">
+        Zig hashes the password with SHA-256, then encrypts the message with
+        ChaCha20-Poly1305 and decrypts it back to prove the round-trip.
+      </p>
+      <form id="form" class="form">
+        <label class="label" for="password">Password</label>
+        <input
+          id="password"
+          class="field"
+          type="password"
+          value="correct horse battery staple"
+          autocomplete="off"
+          aria-label="password"
+        />
+        <label class="label" for="message">Message to encrypt</label>
+        <input
+          id="message"
+          class="field"
+          type="text"
+          value="attack at dawn"
+          aria-label="message"
+        />
+        <button id="go" class="btn" type="submit">Hash &amp; encrypt</button>
+      </form>
+      <pre id="out" class="out"></pre>
+      <p id="err" class="err"></p>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
