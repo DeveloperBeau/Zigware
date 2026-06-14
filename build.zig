@@ -561,7 +561,12 @@ pub fn build(b: *std.Build) void {
     crypto_zig_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("examples/crypto-vanilla/frontend/app.js") });
     crypto_zig_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
     crypto_zig_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
-    wireManifest(crypto_zig_mod, effective_zon);
+    // The exe embeds the example's own manifest (title + show=true) rather than
+    // the framework default, so the window appears at launch with the right title.
+    const crypto_eff_run = b.addRunArtifact(emit_eff_exe);
+    const crypto_effective_zon: std.Build.LazyPath = crypto_eff_run.addOutputFileArg("crypto.effective.zon");
+    crypto_eff_run.addFileArg(b.path("examples/crypto-vanilla/zigware.embed.zon"));
+    wireManifest(crypto_zig_mod, crypto_effective_zon);
 
     const crypto_app_mod = b.createModule(.{
         .root_source_file = b.path("examples/crypto-vanilla/src/main.zig"),
