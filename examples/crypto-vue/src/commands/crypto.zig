@@ -23,12 +23,11 @@ const z = @import("zigware");
 /// ChaCha20-Poly1305 AEAD. key_length = 32, nonce_length = 12, tag_length = 16.
 const ChaCha = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 
-/// Per-app State injected into every handler. cryptoDemo is stateless, so this
-/// is empty — but it must be a NOMINAL type (not an inline `struct {}`) so the
-/// command surface and the bridge agree on one `*Ctx(State)` first-param type.
-/// Two separate inline `struct {}` literals are distinct types in Zig, which
-/// would not bind to a `Bridge(B)` constructed over a State type.
-pub const State = struct {};
+/// The shared command State the framework injects into every handler. cryptoDemo
+/// is stateless, so it ignores `ctx.state`; using `z.State` (rather than a local
+/// `struct {}`) makes this command compose with the framework builtins over the
+/// one State the App's bridge registers.
+pub const State = z.State;
 
 /// The handler's success payload. A nominal struct so the `Result(Out)` return
 /// coerces. Every field is hex except `decrypted` (the recovered plaintext) and

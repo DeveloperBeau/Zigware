@@ -2,6 +2,10 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
+/// The shared command State. Mirrors the framework `z.State`; stateless apps
+/// ignore `ctx.state`. The real type is unified in the framework build.
+pub const State = struct {};
+
 /// Stable machine-readable error crossing the bridge as a structured rejection.
 /// `code` and `message` are escaped through `jsString` on the wire (G6 safe for
 /// arbitrary bytes). `payload_json` is the ONE field that bypasses `jsString`:

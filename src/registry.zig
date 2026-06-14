@@ -37,7 +37,7 @@ fn asyncInner(comptime T: type) ?type {
 /// the signature for spec parity and so emit_dts can instantiate
 /// Commands(NullBackend, State). The user struct is read from a third param so
 /// the call site reads `Commands(B, State, app.Commands)`.
-pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: type) type {
+pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: anytype) type {
     _ = B;
     comptime validate(State, UserCommands);
     return struct {
@@ -75,7 +75,7 @@ pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: t
         ) void {
             inline for (comptime declFns(UserCommands)) |d| {
                 if (std.mem.eql(u8, d.name, name)) {
-                    dispatchOne(@field(UserCommands, d.name), bridge, state, label, id, args_json);
+                    dispatchOne(@field(d.ns, d.name), bridge, state, label, id, args_json);
                     return;
                 }
             }
@@ -87,22 +87,46 @@ pub fn Commands(comptime B: type, comptime State: type, comptime UserCommands: t
     };
 }
 
-/// A declaration that is a pub fn (skips nested consts/types).
-const FnDecl = struct { name: []const u8 };
+/// A pub-fn command declaration, tagged with the namespace it lives in so the
+/// dispatcher can fetch the exact handler with `@field(d.ns, d.name)`.
+const FnDecl = struct { ns: type, name: []const u8 };
 
-fn declFns(comptime UserCommands: type) []const FnDecl {
+/// Normalize the `UserCommands` parameter into a flat list of namespace types.
+/// Accepts either a single command struct (`Fixture`) or a comptime tuple of
+/// command structs (`.{ AppCommands(B), Root.Commands }`), so the App can compose
+/// the framework builtins with the app's own commands over one State.
+fn nsTypes(comptime UserCommands: anytype) []const type {
+    comptime {
+        if (@TypeOf(UserCommands) == type) return &[_]type{UserCommands};
+        var list: []const type = &.{};
+        for (UserCommands) |Ns| list = list ++ &[_]type{Ns};
+        return list;
+    }
+}
+
+fn declFns(comptime UserCommands: anytype) []const FnDecl {
     comptime {
         var list: []const FnDecl = &.{};
-        for (@typeInfo(UserCommands).@"struct".decls) |d| {
-            const f = @field(UserCommands, d.name);
-            if (@typeInfo(@TypeOf(f)) != .@"fn") continue;
-            list = list ++ &[_]FnDecl{.{ .name = d.name }};
+        for (nsTypes(UserCommands)) |Ns| {
+            for (@typeInfo(Ns).@"struct".decls) |d| {
+                const f = @field(Ns, d.name);
+                if (@typeInfo(@TypeOf(f)) != .@"fn") continue;
+                // A command name shared by two namespaces would let the dispatcher
+                // silently bind one handler while the gate allowlist carries an
+                // ambiguous entry. Reject the collision at comptime rather than
+                // shadow — the registry never resolves a command name by luck.
+                for (list) |existing| {
+                    if (std.mem.eql(u8, existing.name, d.name))
+                        @compileError("duplicate command '" ++ d.name ++ "' across command namespaces");
+                }
+                list = list ++ &[_]FnDecl{.{ .ns = Ns, .name = d.name }};
+            }
         }
         return list;
     }
 }
 
-fn buildNames(comptime UserCommands: type) []const []const u8 {
+fn buildNames(comptime UserCommands: anytype) []const []const u8 {
     comptime {
         var names: []const []const u8 = &.{};
         for (declFns(UserCommands)) |d| names = names ++ &[_][]const u8{d.name};
@@ -110,11 +134,11 @@ fn buildNames(comptime UserCommands: type) []const []const u8 {
     }
 }
 
-fn metas(comptime UserCommands: type) []const Meta {
+fn metas(comptime UserCommands: anytype) []const Meta {
     comptime {
         var list: []const Meta = &.{};
         for (declFns(UserCommands)) |d| {
-            const FT = @TypeOf(@field(UserCommands, d.name));
+            const FT = @TypeOf(@field(d.ns, d.name));
             const ret = @typeInfo(FT).@"fn".return_type.?;
             list = list ++ &[_]Meta{.{ .name = d.name, .is_async = asyncInner(ret) != null }};
         }
@@ -126,10 +150,10 @@ fn metas(comptime UserCommands: type) []const Meta {
 /// optionally followed by exactly one args struct; the return type must be one
 /// of T, Result(T), Bytes, Result(Bytes), or any of those wrapped in Async(...).
 /// A bad signature is a @compileError naming the offending function.
-fn validate(comptime State: type, comptime UserCommands: type) void {
+fn validate(comptime State: type, comptime UserCommands: anytype) void {
     comptime {
         for (declFns(UserCommands)) |d| {
-            const FT = @TypeOf(@field(UserCommands, d.name));
+            const FT = @TypeOf(@field(d.ns, d.name));
             const fn_info = @typeInfo(FT).@"fn";
             if (fn_info.params.len < 1 or fn_info.params.len > 2)
                 @compileError("command '" ++ d.name ++ "' must take *Ctx(State) and at most one args struct");
@@ -438,6 +462,41 @@ fn stubBridge(alloc: std.mem.Allocator, pool: *jobs.Pool) StubBridge {
 
 const Reg = Commands(@import("platform/null.zig").NullBackend, TestState, Fixture);
 
+/// A second command namespace over the SAME State, used to prove the registry
+/// can compose more than one namespace (builtins + the app's own commands).
+const Fixture2 = struct {
+    pub fn mul(_: *Ctx(TestState), args: struct { a: i64, b: i64 }) i64 {
+        return args.a * args.b;
+    }
+};
+
+/// The registry over a TUPLE of namespaces. Every command from each namespace is
+/// registered under its decl name, sharing the one State.
+const RegMulti = Commands(@import("platform/null.zig").NullBackend, TestState, .{ Fixture, Fixture2 });
+
+test "command surface spans multiple namespaces" {
+    // 4 from Fixture (add, addState, readNote, slowAdd) + 1 from Fixture2 (mul).
+    try std.testing.expectEqual(@as(usize, 5), RegMulti.command_names.len);
+    var a = RegMulti.allowlist();
+    try std.testing.expect(a.contains("add")); // first namespace
+    try std.testing.expect(a.contains("mul")); // second namespace
+    try std.testing.expect(!a.contains("rm-rf"));
+}
+
+test "dispatch routes to a command in a second namespace" {
+    const alloc = std.testing.allocator;
+    var pool = try jobs.Pool.init(alloc, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var bridge = stubBridge(alloc, pool);
+    defer bridge.last.deinit(alloc);
+    var state = TestState{};
+
+    RegMulti.dispatch(&bridge, &state, "main", "mul", 7,
+        \\{"a":6,"b":7}
+    );
+    try std.testing.expect(std.mem.indexOf(u8, bridge.last.items, "42") != null);
+}
+
 test "command_names lists every pub fn" {
     try std.testing.expectEqual(@as(usize, 4), Reg.command_names.len);
     var seen_add = false;
@@ -534,5 +593,8 @@ test "bad command signatures are rejected at comptime (verified out-of-band)" {
     //       pub fn x(_: *Ctx(TestState), _: i64) i64 { return 0; }  // args not a struct
     //   };
     //   _ = Commands(@import("platform/null.zig").NullBackend, TestState, NonStructArgs);
+    //
+    //   // Duplicate command name across two namespaces -> "duplicate command 'add'":
+    //   _ = Commands(@import("platform/null.zig").NullBackend, TestState, .{ Fixture, Fixture });
     try std.testing.expect(true);
 }

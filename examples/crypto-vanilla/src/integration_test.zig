@@ -141,6 +141,30 @@ test "crypto example: cryptoDemo resolves through the real bridge with the diges
     try std.testing.expect(h.backend.countContaining("\"roundTrip\":true") >= 1);
 }
 
+test "crypto example: cryptoDemo resolves through a real App via initWithCommands" {
+    // The production wiring: App.initWithCommands registers cryptoDemo AND
+    // synthesizes the grant that authorizes it for the "main" window. This is the
+    // exact path the shipping exe (src/main.zig) takes — no hand-built grants.
+    const backend = try z.NullBackend.init(std.testing.allocator, std.testing.io);
+    const app = try z.App(z.NullBackend).initWithCommands(crypto.Commands, std.testing.allocator, std.testing.io, backend);
+    defer {
+        app.deinit();
+        backend.markJoined();
+        backend.deinit();
+    }
+    const main_id = app.manager.lookup("main").?.window_id;
+    backend.simulateMessage(main_id, "app://localhost",
+        \\{"id":1,"cmd":"cryptoDemo","args":{"password":"abc","message":"hi"}}
+    );
+    app.bridge.drainForTest();
+    backend.pumpMain();
+
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("window.Zigware._resolve(1, "));
+    try std.testing.expect(backend.countContaining(sha256_abc) >= 1);
+    try std.testing.expect(backend.countContaining("\"decrypted\":\"hi\"") >= 1);
+    try std.testing.expect(backend.countContaining("\"roundTrip\":true") >= 1);
+}
+
 test "crypto example: an ungranted command is denied at the gate" {
     var h = try Harness.init();
     defer h.deinit();

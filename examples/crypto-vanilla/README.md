@@ -25,15 +25,17 @@ round-trip flag — all hex-encoded except the recovered text.
 
 ## Run
 
+From the repo root, build and open the real macOS window — type a password and a
+message, hit **Hash & encrypt**, and the digest/ciphertext/round-trip come back
+from Zig:
+
 ```sh
-zigware dev      # Debug build, opens the window
-zigware build    # ReleaseSafe build with a strict per-script CSP
+zig build run-crypto
 ```
 
-> **Current limitation.** A running window can only call the framework's built-in
-> commands; an app cannot yet register its own command (`cryptoDemo`) into the
-> live window. Until that lands, the command is exercised headlessly by the tests
-> below, which drive the exact dispatch path a window will use.
+The window registers `cryptoDemo` through `App.initWithCommands` (see
+`src/main.zig`), which composes it with the framework builtins and grants it to
+the window — so `window.Zigware.invoke("cryptoDemo", …)` reaches the Zig handler.
 
 ## Test
 
@@ -56,8 +58,9 @@ zig build test-crypto
 ```
 crypto-vanilla/
   zigware.zon              app manifest (window, fuses, CSP)
+  src/main.zig             App(MacOSBackend) entry; registers cryptoDemo
   src/commands/crypto.zig  the cryptoDemo command + its unit tests
-  src/integration_test.zig headless bridge round-trip + gate-denial test
+  src/integration_test.zig headless bridge + App round-trip + gate-denial tests
   src/capabilities/        per-window origin grants
-  frontend/                static HTML/CSS/JS (no bundler)
+  frontend/                static HTML (inline CSS) + app.js, no bundler
 ```

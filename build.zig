@@ -417,6 +417,12 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
+    // Targeted runners for the App/security suites (the full `test` step can hang
+    // on unrelated long-running suites; these isolate the wiring under change).
+    const test_app_step = b.step("test-app", "Run only the src/app.zig tests");
+    addEmbedManifestTest(b, test_app_step, target, optimize, effective_zon, "src/app.zig");
+    const test_sec_step = b.step("test-sec", "Run only the src/sec_regression.zig tests");
+    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, "src/sec_regression.zig");
 
     // ─── In-repo example: examples/notes/ ────────────────────────────────────
     //
@@ -534,6 +540,42 @@ pub fn build(b: *std.Build) void {
     const crypto_it_tests = b.addTest(.{ .root_module = crypto_it_mod });
     test_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
     test_crypto_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
+
+    // The runnable crypto-vanilla window. Rooted at the example's src/main.zig, it
+    // builds an App(MacOSBackend) that registers + grants the app's cryptoDemo
+    // command and opens the window. The asset table serves the app:// frontend
+    // from the embeds named `frontend/*`, so this barrel instance OVERRIDES the
+    // index.html + app.js embeds with the example's own (the runtime shim
+    // zigware.js/window.js stay the framework's). That makes the window load the
+    // crypto UI, whose button invokes cryptoDemo over the bridge.
+    const crypto_zig_mod = b.createModule(.{
+        .root_source_file = b.path("src/zigware.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_zig_mod.addImport("objc", objc_mod);
+    crypto_zig_mod.linkFramework("Cocoa", .{});
+    crypto_zig_mod.linkFramework("WebKit", .{});
+    crypto_zig_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("examples/crypto-vanilla/frontend/index.html") });
+    crypto_zig_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("examples/crypto-vanilla/frontend/app.js") });
+    crypto_zig_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    crypto_zig_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
+    wireManifest(crypto_zig_mod, effective_zon);
+
+    const crypto_app_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_app_mod.addImport("zigware", crypto_zig_mod);
+    crypto_app_mod.linkFramework("Cocoa", .{});
+    crypto_app_mod.linkFramework("WebKit", .{});
+    const crypto_app_exe = b.addExecutable(.{ .name = "crypto-vanilla", .root_module = crypto_app_mod });
+    b.getInstallStep().dependOn(&b.addInstallArtifact(crypto_app_exe, .{ .dest_sub_path = "crypto-vanilla-example" }).step);
+    const run_crypto_step = b.step("run-crypto", "Build and run the crypto-vanilla example window");
+    run_crypto_step.dependOn(&b.addRunArtifact(crypto_app_exe).step);
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
