@@ -30,13 +30,26 @@ zigware dev      # Debug build, opens the window
 zigware build    # ReleaseSafe build with a strict per-script CSP
 ```
 
+> **Current limitation.** A running window can only call the framework's built-in
+> commands; an app cannot yet register its own command (`cryptoDemo`) into the
+> live window. Until that lands, the command is exercised headlessly by the tests
+> below, which drive the exact dispatch path a window will use.
+
 ## Test
 
-The command is a pure function, so its round-trip is proven headlessly:
+Two headless checks cover the command from the repo root:
 
 ```sh
-zig build test-crypto   # from the repo root
+zig build test-crypto
 ```
+
+- the unit tests in `src/commands/crypto.zig` prove the pure crypto core
+  (SHA-256 against a published vector, the encrypt/decrypt round-trip, distinct
+  keys per password, field sizing), and
+- `src/integration_test.zig` drives `cryptoDemo` end to end through the real
+  `Bridge`: a JSON envelope passes the capability gate, dispatches to the
+  handler, and resolves with the digest, recovered plaintext, and round-trip
+  flag — plus a negative case proving an ungranted command is denied.
 
 ## Layout
 
@@ -44,6 +57,7 @@ zig build test-crypto   # from the repo root
 crypto-vanilla/
   zigware.zon              app manifest (window, fuses, CSP)
   src/commands/crypto.zig  the cryptoDemo command + its unit tests
+  src/integration_test.zig headless bridge round-trip + gate-denial test
   src/capabilities/        per-window origin grants
   frontend/                static HTML/CSS/JS (no bundler)
 ```

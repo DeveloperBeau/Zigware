@@ -516,6 +516,24 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(crypto_tests).step);
     const test_crypto_step = b.step("test-crypto", "Run only the crypto example round-trip tests");
     test_crypto_step.dependOn(&b.addRunArtifact(crypto_tests).step);
+
+    // The crypto example's headless bridge integration test: drives the real
+    // cryptoDemo handler over a Bridge(NullBackend) through the gate + dispatch +
+    // JSON-encode path, the same surface a window would use. Rooted at the
+    // example's integration_test.zig, which imports the framework barrel by name
+    // and the command by relative path (both inside examples/crypto-vanilla/src/).
+    const crypto_it_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_it_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    crypto_it_mod.linkFramework("Cocoa", .{});
+    crypto_it_mod.linkFramework("WebKit", .{});
+    const crypto_it_tests = b.addTest(.{ .root_module = crypto_it_mod });
+    test_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
+    test_crypto_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");

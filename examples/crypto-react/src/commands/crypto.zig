@@ -23,6 +23,13 @@ const z = @import("zigware");
 /// ChaCha20-Poly1305 AEAD. key_length = 32, nonce_length = 12, tag_length = 16.
 const ChaCha = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 
+/// Per-app State injected into every handler. cryptoDemo is stateless, so this
+/// is empty — but it must be a NOMINAL type (not an inline `struct {}`) so the
+/// command surface and the bridge agree on one `*Ctx(State)` first-param type.
+/// Two separate inline `struct {}` literals are distinct types in Zig, which
+/// would not bind to a `Bridge(B)` constructed over a State type.
+pub const State = struct {};
+
 /// The handler's success payload. A nominal struct so the `Result(Out)` return
 /// coerces. Every field is hex except `decrypted` (the recovered plaintext) and
 /// `roundTrip` (whether decrypt authenticated AND matched the input).
@@ -39,7 +46,7 @@ const Out = struct {
 /// framework wires its own builtins (compute.cancel, window.*) alongside.
 pub const Commands = struct {
     pub fn cryptoDemo(
-        ctx: *z.Ctx(struct {}),
+        ctx: *z.Ctx(State),
         args: struct { password: []const u8, message: []const u8 },
     ) z.Result(Out) {
         return seal(ctx.arena, args.password, args.message) catch
