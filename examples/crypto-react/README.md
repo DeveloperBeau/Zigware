@@ -24,20 +24,25 @@ round-trip flag — all hex-encoded except the recovered text.
 
 ## Prerequisites
 
-- Zig 0.16, the `zigware` CLI on your `PATH`, and Node.js 18+.
+- Zig 0.16 and Node.js 18+.
 
 ## Run
 
+From the repo root — this bundles the React app with Vite into a single
+`app.js`, embeds it, and opens the macOS window:
+
 ```sh
-npm install
-zigware dev      # runs `npm run dev` (Vite on :5173), Debug build, opens the window
-zigware build    # runs `npm run build`, embeds dist/, ReleaseSafe build
+zig build run-crypto-react
 ```
+
+Type a password and a message, hit **Hash & encrypt**, and the digest /
+ciphertext / round-trip come back from `cryptoDemo` in Zig. The window registers
+the command through `App.initWithCommands` (`src/main.zig`).
 
 ## Test
 
-The command is a pure function shared by all four crypto examples, so its
-round-trip is proven headlessly from the repo root:
+The command is a pure function shared by all four crypto examples, proven
+headlessly from the repo root:
 
 ```sh
 zig build test-crypto
@@ -47,10 +52,13 @@ zig build test-crypto
 
 ```
 crypto-react/
-  zigware.zon              app manifest (window, fuses, build commands)
+  zigware.embed.zon        manifest for the runnable exe (title, show=true)
+  src/main.zig             App(MacOSBackend) entry; registers cryptoDemo
   src/commands/crypto.zig  the cryptoDemo command + its unit tests
-  src/capabilities/        per-window origin grants (app:// + dev server)
+  index.html               Vite entry (inline styles + CSP); built to dist/
+  vite.config.js           single-bundle build (app.js), dev server on 5173
   frontend/                React components (entry: frontend/main.jsx)
-  index.html               Vite entry document
-  vite.config.js           dev server pinned to 5173, builds to dist/
 ```
+
+The production build emits one external `app.js` (no inline scripts, so the
+`script-src 'self'` CSP stays strict); styles are inline in `index.html`.

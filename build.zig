@@ -581,6 +581,68 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&b.addInstallArtifact(crypto_app_exe, .{ .dest_sub_path = "crypto-vanilla-example" }).step);
     const run_crypto_step = b.step("run-crypto", "Build and run the crypto-vanilla example window");
     run_crypto_step.dependOn(&b.addRunArtifact(crypto_app_exe).step);
+
+    // The Vite-frontend crypto variants (react/vue/svelte) build the SAME way as
+    // crypto-vanilla, except a Node/npm step first bundles the frontend into a
+    // single external app.js + index.html (the asset table's two own-origin
+    // slots). The script stays external ('self', strict CSP); styles are inline.
+    // These exes are NOT in the default install (so `zig build` stays Node-free);
+    // each is built+run only by its `run-crypto-<fw>` step.
+    const addViteExample = struct {
+        fn add(
+            bb: *std.Build,
+            t: std.Build.ResolvedTarget,
+            o: std.builtin.OptimizeMode,
+            om: *std.Build.Module,
+            ee_exe: *std.Build.Step.Compile,
+            fw: []const u8,
+        ) void {
+            const dir = bb.fmt("examples/crypto-{s}", .{fw});
+            // Bundle the frontend. has_side_effects so the step always runs (it
+            // writes dist/); ordered before the exe compile that embeds dist/*.
+            const npm = bb.addSystemCommand(&.{ "sh", "-c", "npm install --no-audit --no-fund --silent && npm run build" });
+            npm.setCwd(bb.path(dir));
+            npm.has_side_effects = true;
+
+            const zmod = bb.createModule(.{
+                .root_source_file = bb.path("src/zigware.zig"),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+            });
+            zmod.addImport("objc", om);
+            zmod.linkFramework("Cocoa", .{});
+            zmod.linkFramework("WebKit", .{});
+            zmod.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path(bb.fmt("{s}/dist/index.html", .{dir})) });
+            zmod.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path(bb.fmt("{s}/dist/app.js", .{dir})) });
+            zmod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
+            zmod.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
+            const eff = bb.addRunArtifact(ee_exe);
+            const eff_out = eff.addOutputFileArg(bb.fmt("{s}.effective.zon", .{fw}));
+            eff.addFileArg(bb.path(bb.fmt("{s}/zigware.embed.zon", .{dir})));
+            wireManifest(zmod, eff_out);
+
+            const amod = bb.createModule(.{
+                .root_source_file = bb.path(bb.fmt("{s}/src/main.zig", .{dir})),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+            });
+            amod.addImport("zigware", zmod);
+            amod.linkFramework("Cocoa", .{});
+            amod.linkFramework("WebKit", .{});
+            const app_exe = bb.addExecutable(.{ .name = bb.fmt("crypto-{s}", .{fw}), .root_module = amod });
+            // The exe embeds dist/* (a plain path the build graph cannot see as
+            // produced), so force the bundle to run before the compile.
+            app_exe.step.dependOn(&npm.step);
+            const run_art = bb.addRunArtifact(app_exe);
+            const step = bb.step(bb.fmt("run-crypto-{s}", .{fw}), bb.fmt("Bundle (Vite) and run the crypto-{s} example window", .{fw}));
+            step.dependOn(&run_art.step);
+        }
+    }.add;
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "react");
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "vue");
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "svelte");
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");

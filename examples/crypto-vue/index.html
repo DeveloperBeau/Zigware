@@ -7,7 +7,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
     />
-    <title>Crypto Demo (React)</title>
+    <title>Crypto Demo (Vue)</title>
     <style>
       :root { color-scheme: light dark; }
       body { margin: 0; font-family: -apple-system, system-ui, sans-serif; }
@@ -18,14 +18,12 @@
       .field { padding: 0.5rem 0.75rem; font-size: 1rem; }
       .btn { margin-top: 1rem; padding: 0.6rem 1rem; font-size: 1rem; cursor: pointer; align-self: flex-start; }
       .out { margin-top: 1.5rem; padding: 1rem; background: rgba(127,127,127,0.12); border-radius: 0.4rem; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all; }
-      .err { margin-top: 1rem; color: #c0392b; }
+      .err { margin-top: 1rem; color: #c53030; }
     </style>
   </head>
   <body>
-    <div id="root"></div>
-    <!-- The Zigware bridge shim (served by the runtime asset table) must load
-         before the app bundle so window.Zigware exists when React mounts. -->
+    <div id="app"></div>
     <script src="/zigware.js"></script>
-    <script type="module" src="/frontend/main.jsx"></script>
+    <script type="module" src="/frontend/src/main.js"></script>
   </body>
 </html>

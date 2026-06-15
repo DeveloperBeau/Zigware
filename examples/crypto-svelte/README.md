@@ -13,42 +13,45 @@ The frontend collects a `password` and a `message` and calls one Zig command,
 3. encrypts the message with ChaCha20-Poly1305, and
 4. decrypts it back to prove the round-trip closes.
 
-It returns the digest, nonce, ciphertext, tag, recovered plaintext, and a
-round-trip flag — all hex-encoded except the recovered text.
-
 > **Security note.** Using `SHA-256(password)` directly as a cipher key is a
-> teaching shortcut, not secure password handling: a plain hash is fast and
-> brute-forceable. A real app would stretch the password through a KDF
-> (`std.crypto.pwhash.argon2`) and never use the digest as a key. This example
-> demonstrates the bridge round-trip and the `std.crypto` primitives.
+> teaching shortcut, not secure password handling. A real app would stretch the
+> password through a KDF (`std.crypto.pwhash.argon2`). This example demonstrates
+> the bridge round-trip and the `std.crypto` primitives.
 
 ## Prerequisites
 
-- Zig 0.16, the `zigware` CLI on your `PATH`, and Node.js 18+.
+- Zig 0.16 and Node.js 18+.
 
 ## Run
 
+From the repo root — bundles the Svelte app with Vite into a single `app.js`,
+embeds it, and opens the macOS window:
+
 ```sh
-cd frontend && npm install && cd ..
-zigware dev      # runs `npm run dev` (Vite on :5173), Debug build, opens the window
-zigware build    # runs `npm run build`, embeds dist/, ReleaseSafe build
+zig build run-crypto-svelte
 ```
+
+The window registers `cryptoDemo` through `App.initWithCommands` (`src/main.zig`),
+so the button's `window.Zigware.invoke("cryptoDemo", …)` reaches the Zig handler.
 
 ## Test
 
-The command is a pure function shared by all four crypto examples, so its
-round-trip is proven headlessly from the repo root:
-
 ```sh
-zig build test-crypto
+zig build test-crypto   # from the repo root
 ```
 
 ## Layout
 
 ```
 crypto-svelte/
-  zigware.zon              app manifest (window, fuses, build commands)
+  zigware.embed.zon        manifest for the runnable exe (title, show=true)
+  src/main.zig             App(MacOSBackend) entry; registers cryptoDemo
   src/commands/crypto.zig  the cryptoDemo command + its unit tests
-  src/capabilities/        per-window origin grants (app:// + dev server)
-  frontend/                Svelte app (package.json, vite.config.js, src/App.svelte)
+  index.html               Vite entry (inline styles + CSP); built to dist/
+  vite.config.js           single-bundle build (app.js), dev server on 5173
+  svelte.config.js         svelte preprocessor config
+  frontend/src/App.svelte  the Svelte component
 ```
+
+The production build emits one external `app.js` (strict `script-src 'self'`);
+styles are inline in `index.html`.

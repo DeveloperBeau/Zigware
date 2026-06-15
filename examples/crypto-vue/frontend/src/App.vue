@@ -8,8 +8,7 @@ const error = ref("");
 const busy = ref(false);
 
 // window.Zigware.invoke is injected by the Zigware runtime. The "cryptoDemo"
-// command is defined in src/commands/crypto.zig; `zig build dts` mirrors its
-// argument and return types into frontend/bindings.d.ts.
+// command is defined in src/commands/crypto.zig.
 async function run() {
   error.value = "";
   result.value = null;
@@ -36,13 +35,7 @@ async function run() {
     </p>
     <form class="form" @submit.prevent="run">
       <label class="label" for="password">Password</label>
-      <input
-        id="password"
-        class="field"
-        type="password"
-        autocomplete="off"
-        v-model="password"
-      />
+      <input id="password" class="field" type="password" autocomplete="off" v-model="password" />
       <label class="label" for="message">Message to encrypt</label>
       <input id="message" class="field" type="text" v-model="message" />
       <button class="btn" type="submit" :disabled="busy">
@@ -58,58 +51,3 @@ round-trip:        {{ result.roundTrip ? "ok ✓" : "FAILED ✗" }}</pre>
     <p v-if="error" class="err">error: {{ error }}</p>
   </main>
 </template>
-
-<style>
-.app {
-  font-family: system-ui, -apple-system, sans-serif;
-  max-width: 40rem;
-  margin: 3rem auto;
-  padding: 0 1.5rem;
-}
-
-.hint {
-  color: #888;
-  line-height: 1.5;
-}
-
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.label {
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin-top: 0.5rem;
-}
-
-.field {
-  padding: 0.5rem 0.75rem;
-  font-size: 1rem;
-}
-
-.btn {
-  margin-top: 1rem;
-  padding: 0.6rem 1rem;
-  font-size: 1rem;
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-.out {
-  margin-top: 1.5rem;
-  padding: 1rem;
-  background: rgba(127, 127, 127, 0.12);
-  border-radius: 0.4rem;
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.err {
-  margin-top: 1rem;
-  color: #c53030;
-}
-</style>
