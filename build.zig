@@ -453,6 +453,31 @@ pub fn build(b: *std.Build) void {
         }
     }.make;
 
+    // Public package surface for EXTERNAL consumers (a scaffolded app declares
+    // `zigware` as a dependency and consumes this module). Same wiring as
+    // makeZigwareModule, but the per-app manifest is left to the consumer: after
+    // running the emit_effective_manifest exe over their own zigware.zon they add
+    // the `zigware_manifest_zon` anonymous import onto this module (that is what
+    // parse.embedded() resolves). The framework's own self-build never consumes
+    // this instance (it uses makeZigwareModule), so its missing manifest is inert.
+    const public_zigware = b.addModule("zigware", .{
+        .root_source_file = b.path("src/zigware.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    public_zigware.addImport("objc", objc_mod);
+    public_zigware.linkFramework("Cocoa", .{});
+    public_zigware.linkFramework("WebKit", .{});
+    public_zigware.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    public_zigware.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    public_zigware.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    public_zigware.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
+
+    // Expose the manifest codegen exe so consumers run it via
+    // dep.artifact("emit_effective_manifest") to merge+validate their zigware.zon.
+    b.installArtifact(emit_eff_exe);
+
     // The example executable. Rooted at examples/notes/src/main.zig, it builds an
     // App(MacOSBackend) from the manifest and runs the platform loop. The notes
     // frontend is embedded as anonymous imports (served from the regenerated asset
