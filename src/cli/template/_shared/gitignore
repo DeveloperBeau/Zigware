@@ -3,3 +3,4 @@ zig-out/
 node_modules/
 dist/
 frontend/bindings.d.ts
+.DS_Store

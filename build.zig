@@ -114,6 +114,9 @@ pub fn build(b: *std.Build) void {
 
     const cli_exe = b.addExecutable(.{ .name = "zigware", .root_module = cli_mod });
     b.installArtifact(cli_exe);
+    // Short alias: same CLI module, installed as `zw` for ergonomic invocation.
+    const zw_exe = b.addExecutable(.{ .name = "zw", .root_module = cli_mod });
+    b.installArtifact(zw_exe);
     const cli_run = b.addRunArtifact(cli_exe);
     if (b.args) |args| cli_run.addArgs(args);
     const cli_step = b.step("cli", "Run the zigware CLI");
@@ -158,7 +161,7 @@ pub fn build(b: *std.Build) void {
     // gets package via addImport at line 78; these standalone test modules need it wired
     // here too or the test binary fails to compile.
     const addLogicTestWithManifestAndPackage = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -169,7 +172,9 @@ pub fn build(b: *std.Build) void {
             // build.zig routes compiler-error stderr through diag.
             m.addImport("diag", dm);
             const tt = bb.addTest(.{ .root_module = m });
-            ts.dependOn(&bb.addRunArtifact(tt).step);
+            const run = bb.addRunArtifact(tt);
+            ts.dependOn(&run.step);
+            return run;
         }
     }.add;
 
@@ -221,7 +226,9 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
-    addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
+    const build_test_run = addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
+    const test_build_step = b.step("test-build", "Run only the CLI build-orchestrator tests");
+    test_build_step.dependOn(&build_test_run.step);
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
@@ -458,6 +465,31 @@ pub fn build(b: *std.Build) void {
             return m;
         }
     }.make;
+
+    // Public package surface for EXTERNAL consumers (a scaffolded app declares
+    // `zigware` as a dependency and consumes this module). Same wiring as
+    // makeZigwareModule, but the per-app manifest is left to the consumer: after
+    // running the emit_effective_manifest exe over their own zigware.zon they add
+    // the `zigware_manifest_zon` anonymous import onto this module (that is what
+    // parse.embedded() resolves). The framework's own self-build never consumes
+    // this instance (it uses makeZigwareModule), so its missing manifest is inert.
+    const public_zigware = b.addModule("zigware", .{
+        .root_source_file = b.path("src/zigware.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    public_zigware.addImport("objc", objc_mod);
+    public_zigware.linkFramework("Cocoa", .{});
+    public_zigware.linkFramework("WebKit", .{});
+    public_zigware.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
+    public_zigware.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
+    public_zigware.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    public_zigware.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
+
+    // Expose the manifest codegen exe so consumers run it via
+    // dep.artifact("emit_effective_manifest") to merge+validate their zigware.zon.
+    b.installArtifact(emit_eff_exe);
 
     // The example executable. Rooted at examples/notes/src/main.zig, it builds an
     // App(MacOSBackend) from the manifest and runs the platform loop. The notes

@@ -114,31 +114,37 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]co
     defer out.close(io);
 
     try out.createDirPath(io, staged_dir);
-    const staged_index_rel = staged_dir ++ "/index.html";
-    try out.writeFile(io, .{ .sub_path = staged_index_rel, .data = transformed });
 
-    // Build the emit entry set: a copy with the index entry repointed at the staged file.
-    const emit_entries = try gpa.alloc(assets_embed.Entry, walked.entries.len);
-    defer gpa.free(emit_entries);
-    for (walked.entries, 0..) |e, i| {
+    // Stage EVERY frontend asset into the staged dir, colocated with the
+    // asset_table.zig emitted below so its `@embedFile(import_name)` names resolve
+    // by path. index.html is the CSP-injected copy; all other assets are copied
+    // from frontendDist verbatim.
+    for (walked.entries) |e| {
+        const dest = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ staged_dir, e.import_name });
+        defer gpa.free(dest);
+        if (std.fs.path.dirnamePosix(dest)) |parent| try out.createDirPath(io, parent);
         if (std.mem.eql(u8, e.serve_path, index_entry.serve_path)) {
-            emit_entries[i] = .{
-                .serve_path = e.serve_path,
-                .import_name = staged_index_rel,
-                .mime = e.mime,
-            };
+            try out.writeFile(io, .{ .sub_path = dest, .data = transformed });
         } else {
-            emit_entries[i] = e;
+            const bytes = try dist.readFileAlloc(io, e.import_name, gpa, .limited(16 * 1024 * 1024));
+            defer gpa.free(bytes);
+            try out.writeFile(io, .{ .sub_path = dest, .data = bytes });
         }
     }
 
-    try writeEmitted(io, gpa, out, asset_table_name, emit_entries, assets_embed.emitAssetTable);
-    try writeEmitted(io, gpa, out, build_fragment_name, emit_entries, assets_embed.emitBuildFragment);
+    // Emit asset_table.zig INTO the staged dir (colocated). The scaffold build
+    // wires it via -Dasset_table, shadowing the framework's default table.
+    const staged_table_rel = staged_dir ++ "/" ++ asset_table_name;
+    try writeEmitted(io, gpa, out, staged_table_rel, walked.entries, assets_embed.emitAssetTable);
+
+    // Path passed to the scaffold build (relative to the build cwd, like out_dir).
+    const asset_table_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ opts.out_dir, staged_table_rel });
+    defer gpa.free(asset_table_path);
 
     // (5) Release compile through the injected runner. ReleaseSafe ONLY (main.zig bans
     // ReleaseFast/ReleaseSmall). A non-ok result is fatal zig_build_failed; the captured
     // compiler stderr is printed verbatim and the buffer freed.
-    const result = try opts.builder.build(io, gpa, .{ .optimize = opts.optimize, .dev = false });
+    const result = try opts.builder.build(io, gpa, .{ .optimize = opts.optimize, .dev = false, .asset_table = asset_table_path });
     defer gpa.free(result.stderr);
     if (!result.ok) {
         if (result.stderr.len > 0) log.err("release build failed", &.{diag.str("stderr", result.stderr)});
