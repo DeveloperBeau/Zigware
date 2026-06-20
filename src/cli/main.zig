@@ -343,12 +343,19 @@ const SystemBuildRunner = struct {
 
     fn build(_: *anyopaque, io: std.Io, gpa: std.mem.Allocator, spec: dev.BuildSpec) anyerror!dev.BuildResult {
         // ReleaseSafe uses the repo's `-Drelease=true` flag (NOT -Doptimize); Debug omits it.
-        const argv: []const []const u8 = switch (spec.optimize) {
-            .Debug => &.{ "zig", "build" },
-            else => &.{ "zig", "build", "-Drelease=true" },
-        };
+        // A staged asset table (prod packaging) is wired via `-Dasset_table`.
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.appendSlice(gpa, &.{ "zig", "build" });
+        if (spec.optimize != .Debug) try argv.append(gpa, "-Drelease=true");
+        var at_buf: []u8 = &.{};
+        defer if (at_buf.len > 0) gpa.free(at_buf);
+        if (spec.asset_table) |at| {
+            at_buf = try std.fmt.allocPrint(gpa, "-Dasset_table={s}", .{at});
+            try argv.append(gpa, at_buf);
+        }
 
-        const result = try std.process.run(gpa, io, .{ .argv = argv });
+        const result = try std.process.run(gpa, io, .{ .argv = argv.items });
         // stderr is transferred into BuildResult; stdout is discarded here so it never leaks.
         defer gpa.free(result.stdout);
 

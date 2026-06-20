@@ -161,7 +161,7 @@ pub fn build(b: *std.Build) void {
     // gets package via addImport at line 78; these standalone test modules need it wired
     // here too or the test binary fails to compile.
     const addLogicTestWithManifestAndPackage = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, pm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -172,7 +172,9 @@ pub fn build(b: *std.Build) void {
             // build.zig routes compiler-error stderr through diag.
             m.addImport("diag", dm);
             const tt = bb.addTest(.{ .root_module = m });
-            ts.dependOn(&bb.addRunArtifact(tt).step);
+            const run = bb.addRunArtifact(tt);
+            ts.dependOn(&run.step);
+            return run;
         }
     }.add;
 
@@ -224,7 +226,9 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
-    addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
+    const build_test_run = addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
+    const test_build_step = b.step("test-build", "Run only the CLI build-orchestrator tests");
+    test_build_step.dependOn(&build_test_run.step);
     addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
