@@ -114,6 +114,9 @@ pub fn build(b: *std.Build) void {
 
     const cli_exe = b.addExecutable(.{ .name = "zigware", .root_module = cli_mod });
     b.installArtifact(cli_exe);
+    // Short alias: same CLI module, installed as `zw` for ergonomic invocation.
+    const zw_exe = b.addExecutable(.{ .name = "zw", .root_module = cli_mod });
+    b.installArtifact(zw_exe);
     const cli_run = b.addRunArtifact(cli_exe);
     if (b.args) |args| cli_run.addArgs(args);
     const cli_step = b.step("cli", "Run the zigware CLI");
