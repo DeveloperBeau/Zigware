@@ -6,7 +6,13 @@ const diag = @import("diag");
 
 const log = diag.scoped("dev");
 
-pub const BuildSpec = struct { optimize: std.builtin.OptimizeMode, dev: bool };
+pub const BuildSpec = struct {
+    optimize: std.builtin.OptimizeMode,
+    dev: bool,
+    /// When set (prod packaging), the path to a staged `asset_table.zig` the
+    /// scaffold build wires via `-Dasset_table`. Null for dev (loads from devUrl).
+    asset_table: ?[]const u8 = null,
+};
 pub const BuildResult = struct { ok: bool, stderr: []u8 }; // stderr owned by caller (gpa)
 
 pub const BuildRunner = struct {

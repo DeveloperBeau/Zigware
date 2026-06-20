@@ -37,13 +37,13 @@ fn parseCmd(s: []const u8) ?Cmd {
 }
 
 /// Maps argv[1] to a verb and dispatches.
-pub fn dispatch(io: std.Io, gpa: std.mem.Allocator, args: []const []const u8) CliError!void {
+pub fn dispatch(io: std.Io, gpa: std.mem.Allocator, args: []const []const u8, framework_env: ?[]const u8) CliError!void {
     if (args.len < 2) return printHelp();
     const cmd = parseCmd(args[1]) orelse return CliError.bad_usage;
     switch (cmd) {
         .help => return printHelp(),
         .version => return printVersion(),
-        .init => return runInit(io, gpa, args[2..]),
+        .init => return runInit(io, gpa, args[2..], framework_env),
         .dev => return runDev(io, gpa),
         .build => return runBuild(io, gpa),
     }
@@ -71,11 +71,12 @@ fn printVersion() CliError!void {
 /// The template defaults to vanilla when no `--template` flag is given (no interactive
 /// picker: a stdin prompt would not be headless-testable and the plan permits defaulting).
 /// `--name` defaults to the directory's basename.
-fn runInit(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliError!void {
+fn runInit(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8, framework_env: ?[]const u8) CliError!void {
     var dir: ?[]const u8 = null;
     var template: init_verb.Template = .vanilla;
     var force = false;
     var name: ?[]const u8 = null;
+    var framework_path: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < rest.len) : (i += 1) {
@@ -90,6 +91,10 @@ fn runInit(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliErro
             i += 1;
             if (i >= rest.len) return CliError.bad_usage;
             name = rest[i];
+        } else if (std.mem.eql(u8, a, "--framework-path")) {
+            i += 1;
+            if (i >= rest.len) return CliError.bad_usage;
+            framework_path = rest[i];
         } else if (std.mem.startsWith(u8, a, "--")) {
             return CliError.bad_usage;
         } else if (dir == null) {
@@ -102,11 +107,31 @@ fn runInit(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliErro
     const target_dir = dir orelse return CliError.bad_usage;
     const project_name = name orelse std.fs.path.basename(target_dir);
 
+    // Pre-release: the scaffold declares the framework as a path dependency. The
+    // path comes from --framework-path or the ZIGWARE_FRAMEWORK_PATH env var.
+    const fw_raw = framework_path orelse framework_env orelse {
+        std.debug.print(
+            "zigware init: the framework path is required.\n  pass --framework-path <path-to-zigware-checkout> or set ZIGWARE_FRAMEWORK_PATH\n",
+            .{},
+        );
+        return CliError.bad_usage;
+    };
+    // Resolve to an absolute path so init can compute the scaffold-relative dep path.
+    var fw_dir = std.Io.Dir.cwd().openDir(io, fw_raw, .{}) catch {
+        std.debug.print("zigware init: framework path not found: {s}\n", .{fw_raw});
+        return CliError.bad_usage;
+    };
+    defer fw_dir.close(io);
+    var fw_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const fw_n = fw_dir.realPath(io, &fw_buf) catch return CliError.bad_usage;
+    const fw_abs = fw_buf[0..fw_n];
+
     init_verb.run(io, gpa, .{
         .dir = target_dir,
         .name = project_name,
         .template = template,
         .force = force,
+        .framework_path = fw_abs,
     }) catch |err| return mapVerbError(err);
 }
 
@@ -318,12 +343,19 @@ const SystemBuildRunner = struct {
 
     fn build(_: *anyopaque, io: std.Io, gpa: std.mem.Allocator, spec: dev.BuildSpec) anyerror!dev.BuildResult {
         // ReleaseSafe uses the repo's `-Drelease=true` flag (NOT -Doptimize); Debug omits it.
-        const argv: []const []const u8 = switch (spec.optimize) {
-            .Debug => &.{ "zig", "build" },
-            else => &.{ "zig", "build", "-Drelease=true" },
-        };
+        // A staged asset table (prod packaging) is wired via `-Dasset_table`.
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.appendSlice(gpa, &.{ "zig", "build" });
+        if (spec.optimize != .Debug) try argv.append(gpa, "-Drelease=true");
+        var at_buf: []u8 = &.{};
+        defer if (at_buf.len > 0) gpa.free(at_buf);
+        if (spec.asset_table) |at| {
+            at_buf = try std.fmt.allocPrint(gpa, "-Dasset_table={s}", .{at});
+            try argv.append(gpa, at_buf);
+        }
 
-        const result = try std.process.run(gpa, io, .{ .argv = argv });
+        const result = try std.process.run(gpa, io, .{ .argv = argv.items });
         // stderr is transferred into BuildResult; stdout is discarded here so it never leaks.
         defer gpa.free(result.stdout);
 
@@ -438,7 +470,10 @@ pub fn main(init: std.process.Init) !void {
     const args = try arena.alloc([]const u8, argv.len);
     for (argv, 0..) |a, i| args[i] = a;
 
-    dispatch(io, gpa, args) catch |err| {
+    // ZIGWARE_FRAMEWORK_PATH fallback for `init --framework-path` (pre-release dep).
+    const framework_env = init.environ_map.array_hash_map.get("ZIGWARE_FRAMEWORK_PATH");
+
+    dispatch(io, gpa, args, framework_env) catch |err| {
         std.debug.print("zigware: {s}\n", .{messageFor(err)});
         std.process.exit(exitCodeFor(err));
     };

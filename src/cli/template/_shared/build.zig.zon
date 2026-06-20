@@ -1,0 +1,13 @@
+.{
+    .name = .{{name_ident}},
+    .version = "0.1.0",
+    .fingerprint = {{fingerprint}},
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Pre-release: a relative path to the Zigware framework checkout
+        // (Zig 0.16 rejects absolute path dependencies). Regenerate or edit this
+        // if you move the project relative to the framework.
+        .zigware = .{ .path = "{{framework_dep}}" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "frontend", "zigware.zon" },
+}
