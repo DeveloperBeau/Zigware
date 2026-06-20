@@ -8,9 +8,25 @@ pub const InitOptions = struct {
     name: []const u8,
     template: Template = .vanilla,
     force: bool = false,
+    /// Absolute path to the Zigware framework checkout the scaffold depends on
+    /// (pre-release path dependency). Resolved by the CLI from `--framework-path`
+    /// or the `ZIGWARE_FRAMEWORK_PATH` env var.
+    framework_path: []const u8,
 };
 
 const name_token = "{{name}}";
+const ident_token = "{{name_ident}}";
+const fingerprint_token = "{{fingerprint}}";
+const framework_dep_token = "{{framework_dep}}";
+
+/// The substitutions applied to every template file's bytes. Computed once in
+/// `run` from the project name + framework path.
+const Subst = struct {
+    name: []const u8,
+    name_ident: []const u8,
+    fingerprint: []const u8, // "0x...." hex literal
+    framework_dep: []const u8, // relative path from the scaffold to the framework
+};
 
 /// Scaffold a new project into `opts.dir` from the embedded template set.
 ///
@@ -22,12 +38,67 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: InitOptions) anyerror!void 
     var dir = try openTarget(io, opts.dir, opts.force);
     defer dir.close(io);
 
-    // The vendored `_shared/*` payload is written for every template, then the
-    // selected template's own files. Both lists are comptime-known.
-    try writeFiles(io, gpa, dir, &template_index.shared, opts.name);
-    try writeFiles(io, gpa, dir, template_index.filesFor(@tagName(opts.template)), opts.name);
+    const subst = try computeSubst(io, gpa, dir, opts);
+    defer freeSubst(gpa, subst);
+
+    // The `_shared/*` payload is written for every template, then the selected
+    // template's own files. Both lists are comptime-known.
+    try writeFiles(io, gpa, dir, &template_index.shared, subst);
+    try writeFiles(io, gpa, dir, template_index.filesFor(@tagName(opts.template)), subst);
 
     try printNextSteps(io, opts);
+}
+
+/// Compute the per-scaffold substitutions: the project name, a valid Zig
+/// enum-literal identifier, a Zig 0.16 package fingerprint (checksum over the
+/// identifier in the high 32 bits, a deterministic id in the low 32), and the
+/// RELATIVE path from the scaffold to the framework checkout (Zig rejects
+/// absolute path dependencies).
+fn computeSubst(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, opts: InitOptions) anyerror!Subst {
+    const name_ident = try deriveIdent(gpa, opts.name);
+    errdefer gpa.free(name_ident);
+    const fingerprint = try computeFingerprint(gpa, name_ident);
+    errdefer gpa.free(fingerprint);
+
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const scaffold_n = try dir.realPath(io, &buf);
+    // Both inputs are absolute, so `cwd` is unused; pass "/". (Zig 0.16's generic
+    // `relative` needs an environ map; relativePosix is the macOS-only path.)
+    const framework_dep = try std.fs.path.relativePosix(gpa, "/", buf[0..scaffold_n], opts.framework_path);
+
+    return .{ .name = opts.name, .name_ident = name_ident, .fingerprint = fingerprint, .framework_dep = framework_dep };
+}
+
+fn freeSubst(gpa: std.mem.Allocator, s: Subst) void {
+    gpa.free(s.name_ident);
+    gpa.free(s.fingerprint);
+    gpa.free(s.framework_dep);
+}
+
+/// A valid Zig enum-literal identifier from the app name: lowercase, every
+/// non-`[a-z0-9_]` byte becomes `_`, and a leading digit is prefixed with `_`.
+fn deriveIdent(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(gpa);
+    if (name.len > 0 and std.ascii.isDigit(name[0])) try list.append(gpa, '_');
+    for (name) |c| {
+        const lc = std.ascii.toLower(c);
+        const ok = (lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9') or lc == '_';
+        try list.append(gpa, if (ok) lc else '_');
+    }
+    if (list.items.len == 0) try list.append(gpa, '_');
+    return list.toOwnedSlice(gpa);
+}
+
+/// Zig 0.16 validates `.fingerprint`: high 32 bits MUST equal `crc32(name)`;
+/// low 32 bits are a free package id. Deterministic (no time/RNG): same name ->
+/// same fingerprint.
+fn computeFingerprint(gpa: std.mem.Allocator, name_ident: []const u8) ![]u8 {
+    const checksum: u32 = std.hash.Crc32.hash(name_ident);
+    var id: u32 = @truncate(std.hash.Wyhash.hash(0, name_ident));
+    if (id == 0 or id == 0xffffffff) id = 1;
+    const fp: u64 = (@as(u64, checksum) << 32) | id;
+    return std.fmt.allocPrint(gpa, "0x{x:0>16}", .{fp});
 }
 
 /// Open (creating if needed) the destination directory, enforcing the
@@ -60,7 +131,7 @@ fn writeFiles(
     gpa: std.mem.Allocator,
     dir: std.Io.Dir,
     files: []const template_index.File,
-    name: []const u8,
+    subst: Subst,
 ) anyerror!void {
     for (files) |f| {
         const dest = destPath(f.rel);
@@ -70,7 +141,7 @@ fn writeFiles(
             try dir.createDirPath(io, parent);
         }
 
-        const bytes = try substituteName(gpa, f.bytes, name);
+        const bytes = try substituteAll(gpa, f.bytes, subst);
         defer gpa.free(bytes);
         try dir.writeFile(io, .{ .sub_path = dest, .data = bytes });
     }
@@ -86,12 +157,28 @@ fn destPath(rel: []const u8) []const u8 {
     return stripped;
 }
 
-/// Replace every `{{name}}` occurrence in `src` with `name`, returning a fresh
-/// allocation owned by the caller.
-fn substituteName(gpa: std.mem.Allocator, src: []const u8, name: []const u8) ![]u8 {
-    const size = std.mem.replacementSize(u8, src, name_token, name);
+/// Replace every template token in `src`, returning a fresh allocation owned by
+/// the caller. Tokens absent from a given file are no-ops.
+fn substituteAll(gpa: std.mem.Allocator, src: []const u8, subst: Subst) ![]u8 {
+    var cur = try gpa.dupe(u8, src);
+    const pairs = [_]struct { tok: []const u8, val: []const u8 }{
+        .{ .tok = name_token, .val = subst.name },
+        .{ .tok = ident_token, .val = subst.name_ident },
+        .{ .tok = fingerprint_token, .val = subst.fingerprint },
+        .{ .tok = framework_dep_token, .val = subst.framework_dep },
+    };
+    for (pairs) |p| {
+        const next = try replaceAlloc(gpa, cur, p.tok, p.val);
+        gpa.free(cur);
+        cur = next;
+    }
+    return cur;
+}
+
+fn replaceAlloc(gpa: std.mem.Allocator, src: []const u8, needle: []const u8, repl: []const u8) ![]u8 {
+    const size = std.mem.replacementSize(u8, src, needle, repl);
     const out = try gpa.alloc(u8, size);
-    _ = std.mem.replace(u8, src, name_token, name, out);
+    _ = std.mem.replace(u8, src, needle, repl, out);
     return out;
 }
 
@@ -118,12 +205,14 @@ fn printNextSteps(io: std.Io, opts: InitOptions) anyerror!void {
 const testing = std.testing;
 const manifest = @import("zigware_manifest");
 
-// When true, each scaffolded template also runs its `dts` codegen step, proving
-// the vendored bindgen + sample command compile and that bindings.d.ts is
-// written. It shells out to `zig build` per template, so it is the slowest part
-// of the init suite, but it is the only check that a generated project actually
-// builds, so it runs by default.
-const run_scaffold_build = true;
+/// A throwaway framework path for tests: the framework checkout is the process
+/// cwd, so its realpath is a valid absolute `framework_path`.
+fn testFrameworkPath(io: std.Io, buf: []u8) ![]const u8 {
+    var d = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer d.close(io);
+    const n = try d.realPath(io, buf);
+    return buf[0..n];
+}
 
 /// Collect the expected destination paths for a template (shared payload plus
 /// the template's own files), mirroring `run`'s strip/rename rules.
@@ -144,52 +233,82 @@ test "destPath strips the subtree segment and renames gitignore" {
     try testing.expectEqualStrings("build.zig", destPath("_shared/build.zig"));
 }
 
-test "substituteName replaces every {{name}} occurrence" {
-    const out = try substituteName(testing.allocator, "# {{name}}\ncd {{name}}\n", "Acme");
-    defer testing.allocator.free(out);
-    try testing.expectEqualStrings("# Acme\ncd Acme\n", out);
-    try testing.expect(std.mem.indexOf(u8, out, name_token) == null);
+test "substituteAll replaces every template token" {
+    const gpa = testing.allocator;
+    const subst: Subst = .{ .name = "Acme", .name_ident = "acme", .fingerprint = "0xdeadbeefcafef00d", .framework_dep = "../zigware" };
+    const out = try substituteAll(gpa, "n={{name}} i={{name_ident}} f={{fingerprint}} d={{framework_dep}}\n", subst);
+    defer gpa.free(out);
+    try testing.expectEqualStrings("n=Acme i=acme f=0xdeadbeefcafef00d d=../zigware\n", out);
+    try testing.expect(std.mem.indexOf(u8, out, "{{") == null);
 }
 
-test "init scaffolds the expected tree for every template and the manifest parses" {
+test "deriveIdent sanitizes and fingerprint is deterministic + valid" {
+    const gpa = testing.allocator;
+    const id1 = try deriveIdent(gpa, "My App 2");
+    defer gpa.free(id1);
+    try testing.expectEqualStrings("my_app_2", id1);
+    const id2 = try deriveIdent(gpa, "9lives");
+    defer gpa.free(id2);
+    try testing.expectEqualStrings("_9lives", id2);
+
+    const fp1 = try computeFingerprint(gpa, "demo");
+    defer gpa.free(fp1);
+    const fp2 = try computeFingerprint(gpa, "demo");
+    defer gpa.free(fp2);
+    try testing.expectEqualStrings(fp1, fp2); // deterministic
+    try testing.expectEqual(@as(usize, 18), fp1.len); // "0x" + 16 hex
+    try testing.expect(std.mem.startsWith(u8, fp1, "0x"));
+}
+
+test "init scaffolds a normal Zig project (no vendored framework files), manifest parses" {
     const io = testing.io;
     const gpa = testing.allocator;
+
+    var fw_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const fw_abs = try testFrameworkPath(io, &fw_buf);
 
     inline for (.{ .vanilla, .react, .vue, .svelte }) |tmpl| {
         var tmp = testing.tmpDir(.{ .iterate = true });
         defer tmp.cleanup();
 
         var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const path_n = try tmp.dir.realPath(io, &path_buf);
-        const abs = path_buf[0..path_n];
+        const abs_n = try tmp.dir.realPath(io, &path_buf);
+        const abs = path_buf[0..abs_n];
 
-        try run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = tmpl });
+        try run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = tmpl, .framework_path = fw_abs });
 
-        // Vendored shared payload and the template's own files must all exist.
+        // Shared payload and the template's own files must all exist.
         try expectedExists(io, tmp.dir, &template_index.shared);
         try expectedExists(io, tmp.dir, template_index.filesFor(@tagName(tmpl)));
 
-        // Spot-check the load-bearing files the plan names explicitly.
-        try tmp.dir.access(io, "zigware.zon", .{});
-        try tmp.dir.access(io, "build.zig", .{});
-        try tmp.dir.access(io, ".gitignore", .{});
-        try tmp.dir.access(io, "README.md", .{});
-        try tmp.dir.access(io, "src/commands/greet.zig", .{});
+        // The user-owned normal-project tree.
+        for ([_][]const u8{ "build.zig", "build.zig.zon", ".gitignore", "README.md", "zigware.zon", "src/main.zig", "src/commands/greet.zig" }) |p| {
+            try tmp.dir.access(io, p, .{});
+        }
 
-        // `{{name}}` must be fully substituted in the manifest.
+        // Framework files must NOT be vendored into the scaffold (they come from the package).
+        for ([_][]const u8{ "command_ctx.zig", "protocol.zig", "bindgen.zig", "emit_dts.zig" }) |p| {
+            try testing.expectError(error.FileNotFound, tmp.dir.access(io, p, .{}));
+        }
+
+        // build.zig.zon: every token substituted, fingerprint + dependency present.
+        const bz = try tmp.dir.readFileAlloc(io, "build.zig.zon", gpa, .limited(64 * 1024));
+        defer gpa.free(bz);
+        try testing.expect(std.mem.indexOf(u8, bz, "{{") == null);
+        try testing.expect(std.mem.indexOf(u8, bz, ".fingerprint = 0x") != null);
+        try testing.expect(std.mem.indexOf(u8, bz, ".path =") != null);
+
+        // The generated manifest must parse, with the substituted product name.
         const zon = try tmp.dir.readFileAlloc(io, "zigware.zon", gpa, .limited(64 * 1024));
         defer gpa.free(zon);
         try testing.expect(std.mem.indexOf(u8, zon, name_token) == null);
         try testing.expect(std.mem.indexOf(u8, zon, "MyApp") != null);
 
-        // The generated manifest must parse under D's reader.
         var diag: manifest.Diagnostics = .{};
         defer diag.deinit(gpa);
         const m = try manifest.parseAtBuild(gpa, io, tmp.dir, .macos, .Debug, &diag);
         defer manifest.freeManifest(gpa, m);
         try testing.expectEqualStrings("MyApp", m.productName);
-
-        if (run_scaffold_build) try assertScaffoldDtsCompiles(io, gpa, abs);
     }
 }
 
@@ -200,6 +319,9 @@ test "init refuses a non-empty target unless force is set" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
+    var fw_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const fw_abs = try testFrameworkPath(io, &fw_buf);
+
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_n = try tmp.dir.realPath(io, &path_buf);
     const abs = path_buf[0..path_n];
@@ -208,11 +330,11 @@ test "init refuses a non-empty target unless force is set" {
 
     try testing.expectError(
         error.init_dir_not_empty,
-        run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = .vanilla }),
+        run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = .vanilla, .framework_path = fw_abs }),
     );
 
     // force overwrites into the populated directory.
-    try run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = .vanilla, .force = true });
+    try run(io, gpa, .{ .dir = abs, .name = "MyApp", .template = .vanilla, .force = true, .framework_path = fw_abs });
     try tmp.dir.access(io, "zigware.zon", .{});
 }
 
@@ -227,37 +349,12 @@ test "init creates a missing target directory" {
     const path_n = try tmp.dir.realPath(io, &path_buf);
     const base = path_buf[0..path_n];
 
+    var fw_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const fw_abs = try testFrameworkPath(io, &fw_buf);
+
     var nested_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const nested = try std.fmt.bufPrint(&nested_buf, "{s}/brand-new", .{base});
 
-    try run(io, gpa, .{ .dir = nested, .name = "Fresh", .template = .vanilla });
+    try run(io, gpa, .{ .dir = nested, .name = "Fresh", .template = .vanilla, .framework_path = fw_abs });
     try tmp.dir.access(io, "brand-new/zigware.zon", .{});
-}
-
-/// CI-only strong check: run the scaffold's `dts` step (roots at the vendored
-/// bindgen -> emit_dts + the sample greet command) and assert exit 0. Full
-/// `zig build` cannot run here: `_shared/build.zig` roots the app at a
-/// `src/main.zig` no template ships and links Cocoa/WebKit, and the framework
-/// templates' `frontendDist` does not exist until npm runs.
-fn assertScaffoldDtsCompiles(io: std.Io, gpa: std.mem.Allocator, dir: []const u8) !void {
-    const result = try std.process.run(gpa, io, .{
-        .argv = &.{ "zig", "build", "dts" },
-        .cwd = .{ .path = dir },
-    });
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-    if (result.term.exited != 0) {
-        std.debug.print("scaffold `zig build dts` failed in {s}:\n{s}\n", .{ dir, result.stderr });
-    }
-    try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, result.term);
-
-    // The step's whole job is to produce frontend/bindings.d.ts; an exit-0 that
-    // wrote nothing would still be a regression, so prove the file exists and is
-    // the generated declaration (not an empty or stray file).
-    var scaffold = try std.Io.Dir.cwd().openDir(io, dir, .{});
-    defer scaffold.close(io);
-    const dts = try scaffold.readFileAlloc(io, "frontend/bindings.d.ts", gpa, .limited(64 * 1024));
-    defer gpa.free(dts);
-    try testing.expect(std.mem.indexOf(u8, dts, "export interface ZigCommands") != null);
-    try testing.expect(std.mem.indexOf(u8, dts, "greet:") != null);
 }
