@@ -101,7 +101,10 @@ pub fn Bridge(comptime B: type) type {
             backend: *B,
             window: B.WindowHandle,
             comptime State: type,
-            comptime UserCommands: type,
+            // A single command struct OR a comptime tuple of structs (e.g. the
+            // framework builtins composed with the app's own commands). Forwarded
+            // verbatim to registry.Commands, which flattens the namespaces.
+            comptime UserCommands: anytype,
             state: *State,
             opts: BridgeOptions,
             grants: *const security.grant.GrantTable,

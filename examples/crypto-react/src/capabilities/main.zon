@@ -1,0 +1,12 @@
+.{
+    .identifier = "main",
+    .windows = .{"main"},
+    // The Vite dev server origin is trusted for navigation in Debug builds only;
+    // a release manifest carries no dev_url origin. app_scheme (app://) is the
+    // production origin. cryptoDemo declares no path scope, so no app:* grant is
+    // needed beyond the command surface.
+    .origins = .{
+        .app_scheme,
+        .{ .dev_url = "http://localhost:5173" },
+    },
+}

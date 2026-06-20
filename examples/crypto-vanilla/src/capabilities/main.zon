@@ -1,0 +1,11 @@
+.{
+    .identifier = "main",
+    .windows = .{"main"},
+    // Vanilla ships no dev server, so the main window trusts only the app://
+    // production origin. cryptoDemo declares no path scope (it touches no
+    // filesystem), so no app:* permission is needed — the command surface alone
+    // makes it callable from the trusted window.
+    .origins = .{
+        .app_scheme,
+    },
+}

@@ -46,7 +46,7 @@ const Harness = struct {
         // Harness per iteration (>=10000 of them); arming and cancelling a timer
         // per Harness is pointless work for tests that assert message-handling
         // safety, not window visibility, so skip it.
-        const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 0) catch |err| {
+        const app = App(NullBackend).initWithConfig(struct {}, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 0) catch |err| {
             grants.deinit();
             std.testing.allocator.destroy(grants);
             return err;
@@ -622,7 +622,7 @@ test "I2: a 1000-message flood stays within a bounded transient budget (concurre
     // Build on `a` so the App (owns_grants=true) frees them with the same allocator.
     const grants = try fixtures.buildTestGrants(a);
     const windows = [_]manifest_types.Window{.{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true }};
-    const app = App(NullBackend).initWithConfig(a, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 5000) catch |err| {
+    const app = App(NullBackend).initWithConfig(struct {}, a, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         a.destroy(grants);
         return err;

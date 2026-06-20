@@ -1,0 +1,29 @@
+.{
+    .identifier = "com.zigware.crypto-svelte",
+    .productName = "Crypto Demo (Svelte)",
+    .version = "0.1.0",
+    .app = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .url = "app://localhost/index.html",
+                .title = "Crypto Demo (Svelte)",
+            },
+        },
+    },
+    .security = .{
+        .capabilities = .{"main"},
+        .fuses = .{
+            .allowRemoteContent = false,
+            .allowEval = false,
+            .allowShell = false,
+            .debugInspector = false,
+        },
+    },
+    .build = .{
+        .beforeDevCommand = "npm run dev",
+        .devUrl = "http://localhost:5173",
+        .beforeBuildCommand = "npm run build",
+        .frontendDist = "dist",
+    },
+}
