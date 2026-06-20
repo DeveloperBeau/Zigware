@@ -28,6 +28,10 @@ pub const done = command_ctx.done;
 pub const Bytes = command_ctx.Bytes;
 pub const Channel = command_ctx.Channel;
 pub const CommandError = command_ctx.CommandError;
+/// The shared command State. App handlers take `*Ctx(State)`; this is the exact
+/// type the App's bridge instantiates, so an app's commands compose with the
+/// builtins over one State. Stateless apps simply ignore `ctx.state`.
+pub const State = @import("commands/builtin.zig").State;
 
 // ── Compute sugar (offload progress + cancel) ───────────────────────────────
 pub const Sink = compute_mod.Sink;

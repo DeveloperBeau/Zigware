@@ -14,6 +14,7 @@ const window_lifecycle = @import("window/lifecycle.zig");
 const window_commands = @import("window/commands.zig");
 const compute_commands = @import("commands/compute.zig");
 const app_catalog = @import("app_catalog.zig");
+const registry = @import("registry.zig");
 const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
 const Lifecycle = window_lifecycle.Lifecycle;
@@ -75,6 +76,72 @@ fn AppCommands(comptime B: type) type {
         pub const @"window.setSize" = W.@"window.setSize";
         pub const @"window.setFullscreen" = W.@"window.setFullscreen";
     };
+}
+
+/// Compile a GrantTable that authorizes every command in `AppCmds` for `labels`,
+/// alongside `core:default`. Each command `c` is granted through the permission
+/// `app:c`: if the runtime catalog already declares it (e.g. the notes example's
+/// scoped `app:hashFile`), that declaration is reused so its scope is PRESERVED;
+/// otherwise an unscoped `app:c` permission is synthesized. Deny-by-default holds
+/// — only the app's declared commands (plus core:default) are granted, and only
+/// to the app's own window labels. Caller owns the returned table.
+///
+/// v0.1 scope (intentional, documented):
+///   - Origin: the grant trusts only `.app_scheme` (app://). Production windows
+///     load from app://, so this is correct for a shipped app; a Debug dev-server
+///     window (http://localhost) cannot yet invoke app commands. Per-origin app
+///     grants arrive with manifest-driven capability loading.
+///   - Breadth: every app command is granted to EVERY window label uniformly
+///     (Tauri-like: your own commands are invokable). Per-window scoping also
+///     waits on capability-file loading. Scopes on individual commands are still
+///     enforced (see the scope-preservation path above).
+fn synthAppGrants(
+    alloc: std.mem.Allocator,
+    labels: []const []const u8,
+    comptime AppCmds: type,
+) !*security_grant.GrantTable {
+    // Command names are independent of the backend B and the builtins, so a dummy
+    // namespace pairing is enough to enumerate them (registry ignores B).
+    const names = comptime registry.Commands(struct {}, builtin.State, AppCmds).command_names;
+
+    // Comptime-build the permission-id list the capability grants, plus any
+    // permissions the catalog does not already define (unscoped).
+    const synth = comptime blk: {
+        var perm_ids: []const []const u8 = &[_][]const u8{"core:default"};
+        var extra: []const security_cap.Permission = &.{};
+        for (names) |name| {
+            const id = "app:" ++ name;
+            perm_ids = perm_ids ++ &[_][]const u8{id};
+            var declared = false;
+            for (app_catalog.runtime_catalog.permissions) |p| {
+                if (std.mem.eql(u8, p.identifier, id)) {
+                    declared = true;
+                    break;
+                }
+            }
+            if (!declared)
+                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commands_allow = &[_][]const u8{name} }};
+        }
+        break :blk .{ .perm_ids = perm_ids, .extra = extra };
+    };
+
+    const catalog = security_cap.Catalog{
+        .permissions = app_catalog.runtime_catalog.permissions ++ synth.extra,
+        .sets = app_catalog.runtime_catalog.sets,
+    };
+    const caps = [_]security_cap.Capability{.{
+        .identifier = "app",
+        .windows = labels,
+        .origins = &.{.app_scheme},
+        .permissions = synth.perm_ids,
+    }};
+
+    const gt = try alloc.create(security_grant.GrantTable);
+    errdefer alloc.destroy(gt);
+    var diags: manifest_types.Diagnostics = .{};
+    defer diags.deinit(alloc);
+    gt.* = try security_grant.GrantTable.compile(alloc, &caps, &catalog, .{}, labels, &diags);
+    return gt;
 }
 
 /// A process-lifetime static the fail-closed sentinel callbacks read as their
@@ -165,6 +232,44 @@ pub fn App(comptime B: type) type {
             errdefer grants.deinit();
             const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
             return initWithConfig(
+                struct {},
+                alloc,
+                io,
+                backend,
+                grants,
+                bases,
+                std.Io.Dir.cwd(),
+                (@import("builtin").mode == .Debug),
+                true,
+                windows,
+                manifest.app.quitOnLastWindowClosed,
+                manifest.app.windowShowFallbackMs,
+            );
+        }
+
+        /// Production entry for an app that ships its own commands. Identical to
+        /// `init` except the bridge also registers `AppCmds` (composed with the
+        /// builtins over the shared State), and the grant table authorizes those
+        /// commands for the app's windows via `synthAppGrants` (deny-by-default
+        /// preserved; declared scopes preserved). main.zig calls this with its
+        /// `pub const Commands` to make web-UI → Zig command calls work live.
+        pub fn initWithCommands(comptime AppCmds: type, alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
+            const manifest = parse.embedded();
+            const windows = manifest.app.windows;
+
+            var labels_list: std.ArrayList([]const u8) = .empty;
+            defer labels_list.deinit(alloc);
+            for (windows) |w| try labels_list.append(alloc, w.label);
+            const labels = labels_list.items;
+
+            const grants = try synthAppGrants(alloc, labels, AppCmds);
+            errdefer {
+                grants.deinit();
+                alloc.destroy(grants);
+            }
+            const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
+            return initWithConfig(
+                AppCmds,
                 alloc,
                 io,
                 backend,
@@ -190,6 +295,7 @@ pub fn App(comptime B: type) type {
         /// `windows` is the manifest window list (at least one, label "main");
         /// `policy` and `fallback_ms` come from D's App config.
         pub fn initWithConfig(
+            comptime AppCmds: type,
             alloc: std.mem.Allocator,
             io: std.Io,
             backend: *B,
@@ -286,7 +392,10 @@ pub fn App(comptime B: type) type {
                 backend,
                 boot_handle,
                 builtin.State,
-                AppCommands(B),
+                // The framework builtins composed with the app's own commands over
+                // the one builtin.State. An empty AppCmds contributes no decls, so
+                // a command-less app registers exactly the builtin surface.
+                .{ AppCommands(B), AppCmds },
                 &self.state,
                 .{},
                 grants,
@@ -489,7 +598,7 @@ const single_window = [_]manifest_types.Window{.{ .label = "main", .url = "app:/
 fn makeApp() !struct { backend: *NullBackend, app: *App(NullBackend) } {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const grants = try fixtures.buildTestGrants(std.testing.allocator);
-    const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+    const app = App(NullBackend).initWithConfig(struct {}, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
         return err;
@@ -519,7 +628,7 @@ fn makeAppMulti(policy: manifest_types.QuitPolicy) !struct { backend: *NullBacke
         .{ .label = "main", .url = "app://localhost/index.html", .title = "Zigware", .show = true },
         .{ .label = "viewer", .url = "app://localhost/v", .title = "Viewer", .show = true },
     };
-    const app = App(NullBackend).initWithConfig(std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, policy, 5000) catch |err| {
+    const app = App(NullBackend).initWithConfig(struct {}, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &windows, policy, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
         return err;
@@ -543,6 +652,130 @@ fn buildAppGrantsMulti(alloc: std.mem.Allocator) !*fixtures.GrantTable {
     const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "main", "viewer" }, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
     gt.* = try fixtures.GrantTable.compile(alloc, &caps, &fixtures.test_catalog, .{}, &.{ "main", "viewer" }, &diags);
     return gt;
+}
+
+const ctxmod = @import("command_ctx.zig");
+
+/// A stand-in app command namespace — the role a real app's `pub const Commands`
+/// (in main.zig) plays. Proves App registers and authorizes commands the
+/// framework itself never declared, sharing the builtin State.
+const TestAppCommands = struct {
+    pub fn ping(_: *ctxmod.Ctx(builtin.State), args: struct { x: i64 }) ctxmod.Result(struct { pong: i64 }) {
+        return .{ .ok = .{ .pong = args.x + 1 } };
+    }
+};
+
+/// Grants the app-defined `ping` command to "main" via an unscoped app
+/// permission, mirroring how an app's capability would grant its own command.
+fn buildPingGrants(alloc: std.mem.Allocator) !*security_grant.GrantTable {
+    const gt = try alloc.create(security_grant.GrantTable);
+    errdefer alloc.destroy(gt);
+    var diags: manifest_types.Diagnostics = .{};
+    defer diags.deinit(alloc);
+    const perm = security_cap.Permission{ .identifier = "app:ping", .commands_allow = &.{"ping"} };
+    const catalog = security_cap.Catalog{ .permissions = &.{perm}, .sets = &.{} };
+    const caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"app:ping"} }};
+    gt.* = try security_grant.GrantTable.compile(alloc, &caps, &catalog, .{}, &.{"main"}, &diags);
+    return gt;
+}
+
+test "initWithCommands registers and grants the app's commands end to end" {
+    // The production-shaped entry: pass a command namespace, get an App whose
+    // window can call those commands. No hand-built grants or config here.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const app = try App(NullBackend).initWithCommands(TestAppCommands, std.testing.allocator, std.testing.io, backend);
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":11,\"cmd\":\"ping\",\"args\":{\"x\":7}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("window.Zigware._resolve(11, "));
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":8"));
+}
+
+test "synthesized app grants authorize the app's own commands" {
+    // No hand-built permission here: synthAppGrants must derive the grant for
+    // every command in the namespace, the way init() does for a real app.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands);
+    const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":9,\"cmd\":\"ping\",\"args\":{\"x\":1}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("window.Zigware._resolve(9, "));
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":2"));
+}
+
+/// A namespace whose command name (`hashFile`) collides with the catalog's
+/// scoped `app:hashFile` permission ($APPDATA/notes/**). Used to prove the
+/// synthesis REUSES that scoped permission rather than minting an unscoped one.
+const TestScopedCommands = struct {
+    pub fn hashFile(_: *ctxmod.Ctx(builtin.State), args: struct { path: []const u8 }) ctxmod.Result(struct { ok: bool }) {
+        _ = args;
+        return .{ .ok = .{ .ok = true } };
+    }
+};
+
+test "synthesized grants preserve a declared command scope" {
+    // synthAppGrants must reuse the catalog's scoped `app:hashFile`, so an
+    // out-of-scope path is denied at the path gate. Were the synthesis to mint an
+    // unscoped `app:hashFile`, the gate would dispatch /etc/passwd and resolve —
+    // a real privilege escalation. dummy_bases anchors $APPDATA at /tmp, so
+    // /etc/passwd is outside $APPDATA/notes/** and must be rejected.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestScopedCommands);
+    const app = App(NullBackend).initWithConfig(TestScopedCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":12,\"cmd\":\"hashFile\",\"args\":{\"path\":\"/etc/passwd\"}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 0), backend.countContaining("window.Zigware._resolve(12, "));
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("scope.path.no_match"));
+}
+
+test "synthesized app grants still deny an undeclared command" {
+    // A command the app never declared must NOT be authorized by the synthesis.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands);
+    const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":10,\"cmd\":\"sha256\",\"args\":{\"megabytes\":1}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 0), backend.countContaining("window.Zigware._resolve(10, "));
+}
+
+test "app-defined command resolves through App" {
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try buildPingGrants(std.testing.allocator);
+    const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":7,\"cmd\":\"ping\",\"args\":{\"x\":41}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("window.Zigware._resolve(7, "));
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":42"));
 }
 
 test "end to end: simulated invoke resolves through the real pool into eval_log" {

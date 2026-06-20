@@ -417,6 +417,12 @@ pub fn build(b: *std.Build) void {
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
+    // Targeted runners for the App/security suites (the full `test` step can hang
+    // on unrelated long-running suites; these isolate the wiring under change).
+    const test_app_step = b.step("test-app", "Run only the src/app.zig tests");
+    addEmbedManifestTest(b, test_app_step, target, optimize, effective_zon, "src/app.zig");
+    const test_sec_step = b.step("test-sec", "Run only the src/sec_regression.zig tests");
+    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, "src/sec_regression.zig");
 
     // ─── In-repo example: examples/notes/ ────────────────────────────────────
     //
@@ -491,6 +497,152 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(notes_tests).step);
     const test_notes_step = b.step("test-notes", "Run only the notes example integration tests");
     test_notes_step.dependOn(&b.addRunArtifact(notes_tests).step);
+
+    // ─── In-repo example: examples/crypto-*/ ─────────────────────────────────
+    //
+    // The crypto round-trip demo ships as four scaffolds (vanilla/react/vue/
+    // svelte) that share ONE command: src/commands/crypto.zig derives a key as
+    // SHA-256(password) and runs a ChaCha20-Poly1305 encrypt/decrypt over the
+    // per-call arena. The command is a pure function, so its proof is a headless
+    // unit test rooted at the command file — no window or backend needed. The
+    // four variants carry byte-identical command files (only their frontends
+    // differ), so testing the vanilla copy covers all four. Rooted against the
+    // real framework barrel (same `zigware` module the shipping app links) so the
+    // test exercises the production Ctx/Result types, not the vendored stubs.
+    const crypto_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/commands/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_test_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    crypto_test_mod.linkFramework("Cocoa", .{});
+    crypto_test_mod.linkFramework("WebKit", .{});
+    const crypto_tests = b.addTest(.{ .root_module = crypto_test_mod });
+    test_step.dependOn(&b.addRunArtifact(crypto_tests).step);
+    const test_crypto_step = b.step("test-crypto", "Run only the crypto example round-trip tests");
+    test_crypto_step.dependOn(&b.addRunArtifact(crypto_tests).step);
+
+    // The crypto example's headless bridge integration test: drives the real
+    // cryptoDemo handler over a Bridge(NullBackend) through the gate + dispatch +
+    // JSON-encode path, the same surface a window would use. Rooted at the
+    // example's integration_test.zig, which imports the framework barrel by name
+    // and the command by relative path (both inside examples/crypto-vanilla/src/).
+    const crypto_it_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_it_mod.addImport("zigware", makeZigwareModule(b, target, optimize, objc_mod, effective_zon));
+    crypto_it_mod.linkFramework("Cocoa", .{});
+    crypto_it_mod.linkFramework("WebKit", .{});
+    const crypto_it_tests = b.addTest(.{ .root_module = crypto_it_mod });
+    test_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
+    test_crypto_step.dependOn(&b.addRunArtifact(crypto_it_tests).step);
+
+    // The runnable crypto-vanilla window. Rooted at the example's src/main.zig, it
+    // builds an App(MacOSBackend) that registers + grants the app's cryptoDemo
+    // command and opens the window. The asset table serves the app:// frontend
+    // from the embeds named `frontend/*`, so this barrel instance OVERRIDES the
+    // index.html + app.js embeds with the example's own (the runtime shim
+    // zigware.js/window.js stay the framework's). That makes the window load the
+    // crypto UI, whose button invokes cryptoDemo over the bridge.
+    const crypto_zig_mod = b.createModule(.{
+        .root_source_file = b.path("src/zigware.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_zig_mod.addImport("objc", objc_mod);
+    crypto_zig_mod.linkFramework("Cocoa", .{});
+    crypto_zig_mod.linkFramework("WebKit", .{});
+    crypto_zig_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("examples/crypto-vanilla/frontend/index.html") });
+    crypto_zig_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("examples/crypto-vanilla/frontend/app.js") });
+    crypto_zig_mod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
+    crypto_zig_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
+    // The exe embeds the example's own manifest (title + show=true) rather than
+    // the framework default, so the window appears at launch with the right title.
+    const crypto_eff_run = b.addRunArtifact(emit_eff_exe);
+    const crypto_effective_zon: std.Build.LazyPath = crypto_eff_run.addOutputFileArg("crypto.effective.zon");
+    crypto_eff_run.addFileArg(b.path("examples/crypto-vanilla/zigware.embed.zon"));
+    wireManifest(crypto_zig_mod, crypto_effective_zon);
+
+    const crypto_app_mod = b.createModule(.{
+        .root_source_file = b.path("examples/crypto-vanilla/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    crypto_app_mod.addImport("zigware", crypto_zig_mod);
+    crypto_app_mod.linkFramework("Cocoa", .{});
+    crypto_app_mod.linkFramework("WebKit", .{});
+    const crypto_app_exe = b.addExecutable(.{ .name = "crypto-vanilla", .root_module = crypto_app_mod });
+    b.getInstallStep().dependOn(&b.addInstallArtifact(crypto_app_exe, .{ .dest_sub_path = "crypto-vanilla-example" }).step);
+    const run_crypto_step = b.step("run-crypto", "Build and run the crypto-vanilla example window");
+    run_crypto_step.dependOn(&b.addRunArtifact(crypto_app_exe).step);
+
+    // The Vite-frontend crypto variants (react/vue/svelte) build the SAME way as
+    // crypto-vanilla, except a Node/npm step first bundles the frontend into a
+    // single external app.js + index.html (the asset table's two own-origin
+    // slots). The script stays external ('self', strict CSP); styles are inline.
+    // These exes are NOT in the default install (so `zig build` stays Node-free);
+    // each is built+run only by its `run-crypto-<fw>` step.
+    const addViteExample = struct {
+        fn add(
+            bb: *std.Build,
+            t: std.Build.ResolvedTarget,
+            o: std.builtin.OptimizeMode,
+            om: *std.Build.Module,
+            ee_exe: *std.Build.Step.Compile,
+            fw: []const u8,
+        ) void {
+            const dir = bb.fmt("examples/crypto-{s}", .{fw});
+            // Bundle the frontend. has_side_effects so the step always runs (it
+            // writes dist/); ordered before the exe compile that embeds dist/*.
+            const npm = bb.addSystemCommand(&.{ "sh", "-c", "npm install --no-audit --no-fund --silent && npm run build" });
+            npm.setCwd(bb.path(dir));
+            npm.has_side_effects = true;
+
+            const zmod = bb.createModule(.{
+                .root_source_file = bb.path("src/zigware.zig"),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+            });
+            zmod.addImport("objc", om);
+            zmod.linkFramework("Cocoa", .{});
+            zmod.linkFramework("WebKit", .{});
+            zmod.addAnonymousImport("frontend/index.html", .{ .root_source_file = bb.path(bb.fmt("{s}/dist/index.html", .{dir})) });
+            zmod.addAnonymousImport("frontend/app.js", .{ .root_source_file = bb.path(bb.fmt("{s}/dist/app.js", .{dir})) });
+            zmod.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
+            zmod.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
+            const eff = bb.addRunArtifact(ee_exe);
+            const eff_out = eff.addOutputFileArg(bb.fmt("{s}.effective.zon", .{fw}));
+            eff.addFileArg(bb.path(bb.fmt("{s}/zigware.embed.zon", .{dir})));
+            wireManifest(zmod, eff_out);
+
+            const amod = bb.createModule(.{
+                .root_source_file = bb.path(bb.fmt("{s}/src/main.zig", .{dir})),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+            });
+            amod.addImport("zigware", zmod);
+            amod.linkFramework("Cocoa", .{});
+            amod.linkFramework("WebKit", .{});
+            const app_exe = bb.addExecutable(.{ .name = bb.fmt("crypto-{s}", .{fw}), .root_module = amod });
+            // The exe embeds dist/* (a plain path the build graph cannot see as
+            // produced), so force the bundle to run before the compile.
+            app_exe.step.dependOn(&npm.step);
+            const run_art = bb.addRunArtifact(app_exe);
+            const step = bb.step(bb.fmt("run-crypto-{s}", .{fw}), bb.fmt("Bundle (Vite) and run the crypto-{s} example window", .{fw}));
+            step.dependOn(&run_art.step);
+        }
+    }.add;
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "react");
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "vue");
+    addViteExample(b, target, optimize, objc_mod, emit_eff_exe, "svelte");
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");

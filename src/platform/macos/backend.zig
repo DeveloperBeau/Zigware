@@ -302,8 +302,12 @@ pub const MacOSBackend = struct {
         window_mod.setFullscreen(h.window, on);
     }
 
-    pub fn showWindow(_: *MacOSBackend, h: WindowHandle) void {
+    pub fn showWindow(self: *MacOSBackend, h: WindowHandle) void {
         window_mod.show(h.window);
+        // A window launched from a terminal opens behind the launching app and an
+        // accessory-style process does not steal focus. Activate so the shown
+        // window is actually frontmost and visible to the user.
+        _ = objc.msgSend(*const fn (objc.id, objc.SEL, bool) callconv(.c) void)(self.app, objc.sel("activateIgnoringOtherApps:"), true);
     }
 
     pub fn focusWindow(_: *MacOSBackend, h: WindowHandle) void {
@@ -427,6 +431,10 @@ pub const MacOSBackend = struct {
     }
 
     pub fn run(self: *MacOSBackend) void {
+        // Bring the app to the foreground as the loop starts, so any window
+        // already shown at creation (manifest show=true) is visible and frontmost
+        // rather than buried behind the launching terminal.
+        _ = objc.msgSend(*const fn (objc.id, objc.SEL, bool) callconv(.c) void)(self.app, objc.sel("activateIgnoringOtherApps:"), true);
         objc.msgSend(*const fn (objc.id, objc.SEL) callconv(.c) void)(self.app, objc.sel("run"));
     }
 
