@@ -341,11 +341,12 @@ test "build: asset_table embeds the CSP-injected index.html, hashes present, no 
     });
     defer testing.allocator.free(binary_path);
 
-    // The generated asset_table.zig points index.html at the staged copy.
-    const table = try tmp.dir.readFileAlloc(io, "out/asset_table.zig", testing.allocator, .limited(1 << 20));
+    // The generated asset_table.zig is emitted INTO the staged dir, colocated with
+    // every staged asset, so its @embedFile names are dist-relative (resolved from
+    // the table's own directory) rather than prefixed with "staged/".
+    const table = try tmp.dir.readFileAlloc(io, "out/staged/asset_table.zig", testing.allocator, .limited(1 << 20));
     defer testing.allocator.free(table);
-    try testing.expect(std.mem.indexOf(u8, table, "@embedFile(\"staged/index.html\")") != null);
-    // External .js keeps its dist-relative import name.
+    try testing.expect(std.mem.indexOf(u8, table, "@embedFile(\"index.html\")") != null);
     try testing.expect(std.mem.indexOf(u8, table, "@embedFile(\"app.js\")") != null);
 
     // The staged index.html carries a CSP meta with the strict policy and the computed
