@@ -40,16 +40,10 @@ jobs:
       - name: Build
         run: zig build
 
-      # Run the dedicated test steps under a watchdog timeout (macOS runners have
+      # Run every dedicated test step under a watchdog timeout (macOS runners have
       # no GNU `timeout`), so a runaway suite is bounded and reported rather than
       # running to the job-level timeout. Every step runs (one slow/failing suite
-      # never hides the others) and the job fails if any executed step failed.
-      #
-      # KNOWN-HANG steps are listed separately and SKIPPED (logged, not silently
-      # dropped): `test-main` and `test-build` do not terminate in this project
-      # (the same pre-existing non-termination as the aggregate `zig build test`).
-      # They are not executed so CI stays green and fast; re-enable them here once
-      # the underlying hang is fixed.
+      # never hides the others) and the job fails if any step failed or timed out.
       - name: Tests
         run: |
           set -uo pipefail
@@ -67,14 +61,9 @@ jobs:
             return "$rc"
           }
 
-          STEPS="test-init test-app test-sec test-notes test-crypto"
-          KNOWN_HANG="test-main test-build"
+          STEPS="test-init test-main test-app test-sec test-notes test-crypto test-build"
           PER_STEP_TIMEOUT=600
           failed=""
-
-          for step in $KNOWN_HANG; do
-            echo "SKIP: $step (known to hang; tracked separately, not run in CI)"
-          done
 
           for step in $STEPS; do
             echo "::group::$step"
@@ -89,9 +78,8 @@ jobs:
           done
 
           echo "----- test summary -----"
-          echo "skipped (known hang):$KNOWN_HANG"
           if [ -n "$failed" ]; then
             echo "failed steps:$failed"
             exit 1
           fi
-          echo "all executed test steps passed"
+          echo "all test steps passed"
