@@ -6,6 +6,21 @@ pub const ChildSpec = struct {
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
     env: []const EnvPair = &.{}, // override pairs merged onto the parent env; empty => inherit unchanged
+    /// true  => child inherits the parent's stdin/stdout/stderr (the terminal).
+    /// false => child is fully DETACHED: all three go to /dev/null.
+    ///
+    /// !!! ONLY tests may set this false. ALL non-test code — production AND dev —
+    /// must keep it true. !!! `false` exists for ONE reason: the proc.zig tests
+    /// spawn real children under the Zig test runner's `--listen=-` protocol,
+    /// where the runner's stdin+stdout ARE the IPC pipe to `zig build`. A child
+    /// inheriting that pipe deadlocks the whole test suite (the build system never
+    /// sees EOF). Detaching keeps the pipe private. Nothing outside the tests runs
+    /// under that protocol, so nothing else needs — or should use — false.
+    ///
+    /// Do NOT set this false to "quiet" a child: it SILENTLY discards the child's
+    /// stdout AND stderr, so real failures vanish. If you need the child's stderr,
+    /// use `capture_stderr`; to hide a noisy child, redirect at the command level
+    /// instead. See SystemSpawner.spawn.
     inherit_stdio: bool = true,
     capture_stderr: bool = false, // when true, stderr is piped and returned by the BuildRunner caller
     // When true, the child is placed in its OWN process group (detached from the
@@ -64,6 +79,24 @@ const SystemSpawner = struct {
             opts.stdin = .inherit;
             opts.stdout = .inherit;
             opts.stderr = .inherit;
+        } else {
+            // Explicitly DETACH the child from the parent's stdio rather than
+            // leaving std's default (which is .inherit for all three).
+            //
+            // stdin + stdout are load-bearing: under the Zig test runner's
+            // build-system protocol (`zig build <step>` / `--listen=-`), the
+            // runner's stdin+stdout ARE the IPC channel to/from `zig build`. A
+            // child that inherits them keeps that channel open after the tests
+            // finish, so the build system never sees EOF and deadlocks (the whole
+            // suite hangs); an inherited stdin could also consume protocol bytes.
+            // stderr is not part of the IPC channel, but is detached too so
+            // `inherit_stdio = false` means one thing: a fully headless child.
+            // `capture_stderr` below is the escape hatch when a caller needs the
+            // child's stderr. `.ignore` routes to /dev/null (safer than `.close`,
+            // which would fault a child that writes to the stream).
+            opts.stdin = .ignore;
+            opts.stdout = .ignore;
+            opts.stderr = .ignore;
         }
         if (spec.capture_stderr) opts.stderr = .pipe;
 
@@ -162,6 +195,7 @@ test "spawn /bin/echo exits 0" {
 
     var child = try sp.spawn(io, std.testing.allocator, .{
         .argv = &.{ "/bin/echo", "hi" },
+        .inherit_stdio = false, // detach: never leak the test-runner IPC pipe to the child
     });
     const term = try sp.wait(io, &child);
     try std.testing.expectEqual(Term{ .exited = 0 }, term);
@@ -175,6 +209,7 @@ test "spawn /bin/sh -c exit 3 reports exit code 3" {
 
     var child = try sp.spawn(io, std.testing.allocator, .{
         .argv = &.{ "/bin/sh", "-c", "exit 3" },
+        .inherit_stdio = false,
     });
     const term = try sp.wait(io, &child);
     try std.testing.expectEqual(Term{ .exited = 3 }, term);
@@ -190,6 +225,7 @@ test "kill terminates a sleeper within the grace window" {
     var child = try sp.spawn(io, std.testing.allocator, .{
         .argv = &.{ "/bin/sh", "-c", "sleep 30" },
         .new_process_group = true,
+        .inherit_stdio = false,
     });
 
     const start = std.Io.Clock.now(.awake, io);
@@ -216,6 +252,7 @@ test "env-merge applies overrides and preserves inherited PATH" {
     var child = try sp.spawn(io, std.testing.allocator, .{
         .argv = &.{ "/bin/sh", "-c", "[ \"$ZIGWARE_TEST\" = x ] && [ -n \"$PATH\" ]" },
         .env = &.{.{ .key = "ZIGWARE_TEST", .value = "x" }},
+        .inherit_stdio = false,
     });
     const term = try sp.wait(io, &child);
     try std.testing.expectEqual(Term{ .exited = 0 }, term);
