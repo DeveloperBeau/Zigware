@@ -119,7 +119,7 @@ The integration test asserts both halves from one fixture. An in-scope path that
 exists on disk **resolves** with the hex digest, and an out-of-scope path
 **rejects** with `scope.path.no_match`. Asserting only the deny would prove
 nothing: if `$APPDATA` expansion or path resolution failed, both halves would
-fail closed for the same reason. Requiring the in-scope file to actually exist,
+fail closed for the same reason. Requiring the in-scope file to exist,
 and asserting it allows, makes the allow a real allow and confirms G4 is
 discriminating allow from deny on the path, not failing closed on both.
 
@@ -128,8 +128,12 @@ discriminating allow from deny on the path, not failing closed on both.
 v0.1.0 ships on macOS only.
 
 The in-repo example builds, packages, and signs into a `.app` and has both a
-headless integration test and a GUI smoke. The **scaffolded** `init -> build ->
-signed .app` round-trip is not yet deliverable: a generated project cannot link
-the framework as a dependency. That work pends the framework-as-package
-follow-up tracked in `docs/FOLLOWUPS.md` ("A scaffolded project cannot yet build
-into a full app").
+headless integration test and a GUI smoke. A **scaffolded** project now builds
+the same way: `zigware init` produces a normal Zig project that consumes the
+framework as a package dependency, so `init -> zig build` yields a runnable
+binary and `zigware build` packages a signed `.app`/`.dmg`. One gap remains for a
+*shipped scoped command*: `App.init` does not yet load author-declared
+capabilities or resolve a real app-data base (it compiles a `core:default`-only
+grant and passes `appdata = "."`), so the scoped-path feature works in the
+headless integration test but not yet in a shipped GUI app. See
+`docs/FOLLOWUPS.md` ("App.init must consume loaded capabilities").
