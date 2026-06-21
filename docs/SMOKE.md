@@ -75,13 +75,13 @@ Failure triage:
 - An in-scope path denied at step 24, or an out-of-scope path allowed at step 27: a G4 scope-matching regression; check that `$APPDATA` expansion resolves the fixture `notes/` dir and that the bridge extracts `path` from the same `args_json` the handler decodes.
 
 ## Automated coverage
-- `zig build test` runs the logic unit, integration, and headless end-to-end tests. This now covers scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only.
+- The per-suite test steps (`zig build test-init`/`test-app`/`test-sec`/`test-notes`/`test-crypto`/`test-main`/`test-build`) run the logic unit, integration, and headless end-to-end tests. They cover scheme serving (200/404/reserved), lifecycle shutdown, shutdown idempotency, post-terminate message drops, window identity, navigation policy, origin formatting, and scheme path extraction, all previously smoke-only. Run the per-suite steps rather than the aggregate `zig build test`, which does not terminate on the current toolchain. CI (GitHub Actions, macOS) runs `zig fmt --check`, `zig build`, and every per-suite step on each PR.
 - `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.
 
 ## Manifest is build-embedded
 The app manifest (`zigware.zon`, plus any per-OS overrides and the capability files under `src/capabilities/`) is build-embedded. `embedded()` is a comptime `@import` of the codegen's merged-and-validated `zigware.effective.zon` artifact, so a manifest change requires a rebuild. There is no runtime config read or parse path. To regenerate the effective manifest by hand, run `zig build emit-effective-manifest`.
 
-## Capability gate — v0.1.0 demo state
+## Capability gate: v0.1.0 demo state
 
 The shipped `App` compiles a `GrantTable` from `core:default` only. The `sha256`, `echoBytes`, and `echo` commands are not in `core:default`, so the GUI "Hash 300 MB in Zig" demo (step 3 above) is now denied at the capability gate (G2) rather than completing. The invoke returns a structured `command.not_granted` error to the frontend instead of a hash result. This is the correct behavior: the gate is live and fail-closed.
 

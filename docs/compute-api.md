@@ -3,7 +3,7 @@
 The compute API runs a command off the UI thread, streams typed progress back
 to the page, and lets the page cancel a single in-flight call. It is a thin
 layer over the command dispatch path: there is no separate job system to set up
-and nothing to construct in `main`. A handler opts into the worker pool simply
+and nothing to construct in `main`. A handler opts into the worker pool
 by returning `Async(Result(...))`, and the framework runs its body on a worker.
 
 The worked example throughout is `examples/notes/src/commands/hash_file.zig`,
@@ -136,7 +136,7 @@ cancellation, for unit tests and callers with no live invocation flag.
 
 There is one terminal reject site. A failure reaches the page as a `ZigError`
 whose `.code` is the string the handler put in the `Result.err`, or the string
-the dispatch emits before the handler runs. The codes a page actually observes:
+the dispatch emits before the handler runs. The codes a page observes:
 
 | Code | Source |
 |---|---|
