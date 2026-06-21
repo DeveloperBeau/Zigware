@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+# One run per PR; cancel superseded runs to save macOS minutes (billed at 10x).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # macOS only: the app links Cocoa/WebKit, so the build needs the macOS SDK.
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Zig version
+        run: zig version
+
+      # Templates carry `{{placeholder}}` tokens and are not valid Zig until the
+      # CLI substitutes them, so they are excluded from the format check.
+      - name: Format check
+        run: zig fmt --check --exclude src/cli/template build.zig src
+
+      # Compiles the framework app, the CLI (zigware + zw), the manifest codegen,
+      # and the in-repo examples. The primary, reliable regression signal.
+      - name: Build
+        run: zig build
+
+      # Run every dedicated test step under a watchdog timeout (macOS runners have
+      # no GNU `timeout`), so a runaway suite is bounded and reported rather than
+      # running to the job-level timeout. Every step runs (one slow/failing suite
+      # never hides the others) and the job fails if any step failed or timed out.
+      - name: Tests
+        run: |
+          set -uo pipefail
+
+          run_with_timeout() {
+            local secs="$1"; shift
+            "$@" &
+            local cmd_pid=$!
+            ( sleep "$secs"; kill -TERM "$cmd_pid" 2>/dev/null; sleep 5; kill -KILL "$cmd_pid" 2>/dev/null ) &
+            local watchdog_pid=$!
+            local rc=0
+            wait "$cmd_pid" 2>/dev/null || rc=$?
+            kill -TERM "$watchdog_pid" 2>/dev/null
+            wait "$watchdog_pid" 2>/dev/null || true
+            return "$rc"
+          }
+
+          STEPS="test-init test-main test-app test-sec test-notes test-crypto test-build"
+          PER_STEP_TIMEOUT=600
+          failed=""
+
+          for step in $STEPS; do
+            echo "::group::$step"
+            if run_with_timeout "$PER_STEP_TIMEOUT" zig build "$step"; then
+              echo "PASS: $step"
+            else
+              rc=$?
+              echo "FAIL: $step (exit $rc; 143/137 indicates the watchdog timeout)"
+              failed="$failed $step"
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "----- test summary -----"
+          if [ -n "$failed" ]; then
+            echo "failed steps:$failed"
+            exit 1
+          fi
+          echo "all test steps passed"
