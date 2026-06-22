@@ -191,7 +191,7 @@ fn writeEmitted(
 /// Append each inline `<script>…</script>` BODY (the bytes between the tags, excluding a
 /// `<script src=…>` external reference) to `scripts`. Each appended slice is a fresh dupe
 /// owned by the caller. A `<script>` carrying a `src=` attribute references an external
-/// file (covered by its own .js entry, or simply not own-origin) and contributes no inline
+/// file (covered by its own .js entry, or not own-origin) and contributes no inline
 /// body, so it is skipped.
 fn collectInlineScripts(gpa: std.mem.Allocator, scripts: *std.ArrayList([]const u8), html: []const u8) !void {
     var i: usize = 0;

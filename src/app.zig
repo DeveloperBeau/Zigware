@@ -82,9 +82,9 @@ fn AppCommands(comptime B: type) type {
 /// alongside `core:default`. Each command `c` is granted through the permission
 /// `app:c`: if the runtime catalog already declares it (e.g. the notes example's
 /// scoped `app:hashFile`), that declaration is reused so its scope is PRESERVED;
-/// otherwise an unscoped `app:c` permission is synthesized. Deny-by-default holds
-/// — only the app's declared commands (plus core:default) are granted, and only
-/// to the app's own window labels. Caller owns the returned table.
+/// otherwise an unscoped `app:c` permission is synthesized. Deny-by-default holds.
+/// Only the app's declared commands (plus core:default) are granted, and only to
+/// the app's own window labels. Caller owns the returned table.
 ///
 /// v0.1 scope (intentional, documented):
 ///   - Origin: the grant trusts only `.app_scheme` (app://). Production windows
@@ -289,7 +289,7 @@ pub fn App(comptime B: type) type {
         /// it (so each window carries the gate-chain user-scripts + window.js +
         /// its per-window label constant), wires the bridge to the manager, and
         /// builds the quit-policy lifecycle. `owns_grants` => deinit frees
-        /// `grants`. On error this does NOT free `grants` — ownership transfers
+        /// `grants`. On error this does NOT free `grants`. Ownership transfers
         /// to the App only on success, so the caller's errdefer frees it once.
         ///
         /// `windows` is the manifest window list (at least one, label "main");
@@ -434,8 +434,8 @@ pub fn App(comptime B: type) type {
         }
 
         /// Ordered, exactly-once, infallible shutdown:
-        ///   1. close every window + terminate the backend — but only if the
-        ///      lifecycle did NOT already run the ordered shutdown (single owner:
+        ///   1. close every window + terminate the backend if the lifecycle has
+        ///      NOT already run the ordered shutdown (single owner:
         ///      a will_terminate / quit-policy window_all_closed already did
         ///      closeAll+terminate via Lifecycle.orderedShutdown; a bare deinit
         ///      under keep-running has not, so we do it here),
@@ -528,7 +528,7 @@ pub fn App(comptime B: type) type {
         /// teardown off its terminate flag (single ordered-shutdown owner):
         ///   will_terminate     -> orderedShutdown (always) + App.shutdown,
         ///   window_all_closed   -> policy decides; shutdown only if it terminated
-        ///                          (keep_running stays alive — E's macOS default),
+        ///                          (keep_running stays alive; E's macOS default),
         ///   reopen              -> under keep_running with no live windows, the App
         ///                          recreates the default window from the manifest
         ///                          (app-owned, since app.zig holds the manifest),
@@ -656,7 +656,7 @@ fn buildAppGrantsMulti(alloc: std.mem.Allocator) !*fixtures.GrantTable {
 
 const ctxmod = @import("command_ctx.zig");
 
-/// A stand-in app command namespace — the role a real app's `pub const Commands`
+/// A stand-in app command namespace that fills the role a real app's `pub const Commands`
 /// (in main.zig) plays. Proves App registers and authorizes commands the
 /// framework itself never declared, sharing the builtin State.
 const TestAppCommands = struct {
@@ -725,8 +725,8 @@ const TestScopedCommands = struct {
 test "synthesized grants preserve a declared command scope" {
     // synthAppGrants must reuse the catalog's scoped `app:hashFile`, so an
     // out-of-scope path is denied at the path gate. Were the synthesis to mint an
-    // unscoped `app:hashFile`, the gate would dispatch /etc/passwd and resolve —
-    // a real privilege escalation. dummy_bases anchors $APPDATA at /tmp, so
+    // unscoped `app:hashFile`, the gate would dispatch /etc/passwd and resolve.
+    // This would be a real privilege escalation. dummy_bases anchors $APPDATA at /tmp, so
     // /etc/passwd is outside $APPDATA/notes/** and must be rejected.
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestScopedCommands);
@@ -846,7 +846,7 @@ test "M6: navigation denies by default, allows only the app://localhost origin" 
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("https://x/"));
     // A bare "app://" host other than localhost must not slip through.
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://evil/"));
-    // A host that merely begins with "localhost" is a different origin.
+    // A host that only begins with "localhost" is a different origin.
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("app://localhost.attacker.com/"));
     // The scheme match is case-sensitive.
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, h.backend.simulateNavigation("APP://localhost/"));

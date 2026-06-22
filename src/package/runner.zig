@@ -3,7 +3,7 @@ const std = @import("std");
 /// Captured outcome of a child process. `stdout`/`stderr` are gpa-owned (freed by the
 /// caller with `gpa.free`). The fields are `[]const u8`: `std.process.run` returns `[]u8`
 /// which const-widens on assignment, and `FakeRunner` returns gpa-owned `[]const u8`
-/// copies — so both runners yield the same const-typed, gpa-owned slices the stages free
+/// copies; both runners yield the same const-typed, gpa-owned slices the stages free
 /// uniformly.
 pub const RunResult = struct {
     term: std.process.Child.Term,
@@ -12,7 +12,7 @@ pub const RunResult = struct {
 };
 
 /// The runner's narrow, pure-domain error set. Wider than a 2-variant set on purpose so
-/// output truncation (`StreamTooLong`) and timeouts are not silently collapsed onto a
+/// output truncation (`StreamTooLong`) and timeouts do not collapse silently onto a
 /// generic spawn failure (Locked decision #5: those must not be lost).
 pub const RunError = error{
     SpawnFailed,

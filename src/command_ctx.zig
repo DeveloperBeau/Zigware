@@ -124,7 +124,7 @@ pub fn Ctx(comptime State: type) type {
         /// Park `bytes` and emit a _bin control frame so the frontend pulls them
         /// out-of-band, using the per-call bin_seq (so terminal Bytes and streamed
         /// chunks never collide on a seq, H2). Returns true when the bytes were
-        /// parked (regardless of whether the _bin control frame was actually
+        /// parked (regardless of whether the _bin control frame was
         /// emitted: frame emission degrades silently on arena OOM, parallel to
         /// Channel.send, and the parked bytes are reclaimed at call-arena
         /// teardown). Returns false only when the per-id binary budget is exceeded

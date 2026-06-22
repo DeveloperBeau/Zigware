@@ -13,7 +13,7 @@ const Diagnostic = diagnostics.Diagnostic;
 const Runner = runner_mod.Runner;
 
 // ---------------------------------------------------------------------------
-// buildSignArgv — the pure codesign argv builder. Returns a gpa-owned slice of
+// buildSignArgv is the pure codesign argv builder. Returns a gpa-owned slice of
 // gpa-owned strings; the caller frees each element then the slice. A
 // Developer-ID identity gets the hardened-runtime form (`--timestamp --options
 // runtime`); the ad-hoc identity ("-") drops BOTH (the secure timestamp server
@@ -64,10 +64,10 @@ fn appendDup(gpa: std.mem.Allocator, args: *std.ArrayList([]const u8), s: []cons
 }
 
 // ---------------------------------------------------------------------------
-// sign — drive the inside-out codesign + verify + (pre-staple) spctl preflight.
+// sign drives the inside-out codesign + verify + (pre-staple) spctl preflight.
 //
 // `signing_identity` is the RESOLVED identity (`$APPLE_SIGNING_IDENTITY` over
-// manifest) that `package()` resolved via `resolveCredentials` — NOT
+// manifest) that `package()` resolved via `resolveCredentials`, not
 // `cfg.macos.signingIdentity`. Reading it from `cfg` would silently ignore the
 // documented env override and leave the resolved/duped identity with no consumer.
 // The null-without-skip preflight and the ad-hoc detection both key off this
@@ -92,8 +92,8 @@ pub fn sign(
     // Preflight (test (c)): skip_sign short-circuits everything first, so a null
     // identity is legal only on that lane. The skip_sign signal is a separate
     // input from the identity because both the skip lane and a genuinely missing
-    // identity present as `signing_identity == null` — they are only
-    // distinguishable by this flag.
+    // identity present as `signing_identity == null`; the flag is the only
+    // way to tell them apart.
     if (skip_sign) return;
 
     const identity = signing_identity orelse return error.MissingSigningIdentity;
@@ -101,7 +101,7 @@ pub fn sign(
     const ad_hoc = std.mem.eql(u8, identity, "-");
     if (ad_hoc and cfg.macos.notarize) {
         // An ad-hoc signature can never be notarized; surface it as a missing
-        // real identity rather than failing opaquely at the notary service.
+        // Developer-ID identity rather than failing opaquely at the notary service.
         const detail = gpa.dupe(u8, "ad-hoc signing identity ('-') cannot be notarized") catch
             return error.OutOfMemory;
         diag.* = diagnostics.diagnose(.identity_not_found, detail);
@@ -185,7 +185,7 @@ fn classifyCodesignFailure(gpa: std.mem.Allocator, stderr: []const u8, diag: *?D
 }
 
 /// Case-insensitive substring match (codesign/Security framework messages vary
-/// in casing across macOS versions, so the triggers match case-insensitively).
+/// in casing across macOS versions).
 fn containsCi(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (needle.len > haystack.len) return false;

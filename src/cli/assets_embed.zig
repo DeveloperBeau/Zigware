@@ -18,8 +18,8 @@ pub const WalkResult = struct {
 };
 
 /// True when `entry_canon` lies within `base_canon` at a SEGMENT BOUNDARY.
-/// A bare `startsWith` lets `/a/foo` match `/a/foobar` (foobar starts with foo) —
-/// an out-of-scope escape — so the candidate must equal the base or have a '/'
+/// A bare `startsWith` lets `/a/foo` match `/a/foobar` (foobar starts with foo, an
+/// out-of-scope escape), so the candidate must equal the base or have a '/'
 /// immediately after the base prefix. Both arguments are canonical absolute paths.
 /// This is the realpath-then-segment-boundary containment pattern; it deliberately
 /// does NOT import src/security/scope/path.zig (which drags in the capability
@@ -73,7 +73,7 @@ pub fn walk(io: std.Io, gpa: std.mem.Allocator, dist_dir: []const u8) anyerror!W
         if (entry.kind == .directory) continue;
 
         // entry.path aliases the walker's name_buffer, invalidated on the next
-        // next() call — read it before any further iteration and dupe what we keep.
+        // next() call; read it before any further iteration and dupe what we keep.
         const rel = entry.path;
         if (isStructurallyRejected(rel)) return error.asset_outside_dist;
 
@@ -372,7 +372,7 @@ test "mimeForExt: known and unknown extensions" {
 fn checkContainmentProperty(rel: []const u8) !void {
     const base = "/proj/dist";
 
-    // Direct adversarial probes — these hold regardless of the random `rel`.
+    // Direct adversarial probes: these hold regardless of the random `rel`.
     try testing.expect(!withinBase(base, "/proj/distractor/x")); // sibling prefix
     try testing.expect(!withinBase(base, "/etc/passwd")); // unrelated root
     try testing.expect(!withinBase(base, "/proj")); // parent

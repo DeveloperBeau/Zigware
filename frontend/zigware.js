@@ -1,4 +1,4 @@
-// window.Zigware — the single framework global. B owns it; later sub-projects
+// window.Zigware is the single framework global. B owns it; later sub-projects
 // hang their surfaces (E's Window.*, F's __dev) off this root.
 class ZigError extends Error {
   constructor(e) {
@@ -47,8 +47,8 @@ window.Zigware = {
     p.pending++;
     // Path-based URL: __zigware_stream is a PATH segment under the app://localhost
     // origin (NOT the URL host), so the path reaching the scheme handler is
-    // /__zigware_stream/<id>/<seq> — which is what serveStream's parseStreamPath
-    // and the reserved-route guard (isReservedRoute) both match. A host-based
+    // /__zigware_stream/<id>/<seq>, matching serveStream's parseStreamPath
+    // and the reserved-route guard (isReservedRoute). A host-based
     // app://__zigware_stream/... URL would arrive with path /<id>/<seq>, which the
     // reserved-route guard would NOT catch.
     fetch(`app://localhost/__zigware_stream/${id}/${seq}`)

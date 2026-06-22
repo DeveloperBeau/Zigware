@@ -12,13 +12,13 @@
 //!      ONLY the fields that helper successfully duped, then re-raises so the
 //!      caller's errdefer unwinds its own prior dups. Borrowed-unchanged
 //!      slices (those still pointing at a comptime static default) are never
-//!      freed by an errdefer — the static-skip rule is consulted before every
+//!      freed by an errdefer. The static-skip rule is consulted before every
 //!      `gpa.dupe` AND inside every cleanup path, exactly as `freeManifest`
 //!      does.
 //!
 //! Ownership: every returned Manifest is FULLY gpa-owned (deep-duped).
 //! Callers free the merged result with `parse.freeManifest`. `std.zon.parse.free`
-//! is NOT safe on Manifest — it double-frees the static-literal defaults like
+//! is NOT safe on Manifest: it double-frees the static-literal defaults like
 //! Csp.scriptSrc = &.{"'self'"}; verified empirically in Task 1's spike.
 //! Base and override may be freed via parse.freeManifest immediately after
 //! merge returns (deep-dup makes both disposable).
@@ -182,7 +182,7 @@ fn dupOptString(
 
 /// Dup a `[]const []const u8` field (e.g. `Csp.scriptSrc`). When the outer
 /// slice is still the static-literal default, no allocation happens. Otherwise
-/// the outer slice is duped AND every inner string is duped — the inner
+/// the outer slice is duped AND every inner string is duped. The inner
 /// strings have no per-element static default, so dup is unconditional.
 /// An OOM partway through frees the prefix of inner strings already duped
 /// then frees the outer slice.
@@ -248,7 +248,7 @@ fn dupWindowList(
 }
 
 /// Dup a `[]const Target` (enum) field. When still the static default, return
-/// it unchanged. Otherwise just dup the outer slice (enum elements own no
+/// it unchanged. Otherwise dup the outer slice (enum elements own no
 /// memory).
 fn dupTargetList(
     gpa: std.mem.Allocator,

@@ -213,7 +213,7 @@ const Poller = struct {
 
 /// `shutdown` is observed by next()'s scan/sleep loop: when it is set, next() returns
 /// null on the next interval boundary (at the latest) instead of blocking until a file
-/// changes. The Poller stores this pointer; it does NOT widen the Watcher vtable — fakes
+/// changes. The Poller stores this pointer; it does NOT widen the Watcher vtable; fakes
 /// receive the same flag by construction.
 pub fn polling(gpa: std.mem.Allocator, roots: []const []const u8, interval_ms: u32, shutdown: *std.atomic.Value(bool)) !Watcher {
     const self = try gpa.create(Poller);
@@ -349,8 +349,8 @@ test "close frees a seeded watcher cleanly" {
     const w = try polling(testing.allocator, &roots, 5, &shutdown);
     // Seed so the close path frees a populated map + the gpa-owned keys; the
     // testing allocator then verifies no leak. The locked Watcher API exposes only
-    // next()/close(), so close() is the sole teardown and destroys the Poller itself
-    // — there is no post-close next() (that would dereference freed memory).
+    // next()/close(), so close() is the sole teardown and destroys the Poller itself.
+    // There is no post-close next() (that would dereference freed memory).
     _ = try w.next(io);
     w.close();
 }

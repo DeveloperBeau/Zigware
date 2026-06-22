@@ -3,9 +3,9 @@
 //! `App(MacOSBackend).initWithCommands` builds the secure window/lifecycle shell
 //! from the manifest, REGISTERS this app's `Commands` alongside the framework
 //! builtins, and synthesizes the grant that authorizes them for the app's
-//! windows. So the frontend's `window.Zigware.invoke("cryptoDemo", …)` reaches
-//! the real Zig handler in `commands/crypto.zig` — the web-UI ↔ Zig round-trip
-//! the whole framework exists for.
+//! windows. The frontend's `window.Zigware.invoke("cryptoDemo", …)` reaches
+//! the real Zig handler in `commands/crypto.zig`, exercising the web-UI ↔ Zig
+//! round-trip the framework exists for.
 
 const std = @import("std");
 const builtin = @import("builtin");

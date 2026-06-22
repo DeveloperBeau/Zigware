@@ -229,7 +229,7 @@ pub const NullBackend = struct {
 
     /// Schedule `work(ctx)` to fire on the main thread after `delay_ms`. Returns
     /// a non-zero token. All timer ops here run on the (single) test thread, so
-    /// cancel-vs-fire is serialized — no lock is needed. `ctx` is caller-owned;
+    /// cancel-vs-fire is serialized. No lock is needed. `ctx` is caller-owned;
     /// this backend never frees it. On OOM appending the timer, return 0 (no
     /// valid token); the caller treats a 0 token as "not scheduled" and tears the
     /// window down via its own errdefer. Mirrors evalJS's drop-don't-trap policy.

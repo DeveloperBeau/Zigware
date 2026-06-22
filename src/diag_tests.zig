@@ -9,7 +9,7 @@ const diag = @import("diag.zig");
 
 /// A capturing transport: stores every record's level, scope, message, and a
 /// flattened "key=rendered" view of each field so a test can inspect what the
-/// logger actually emitted (including redaction).
+/// logger emitted (including redaction).
 const Capture = struct {
     const Entry = struct {
         level: diag.Level,
@@ -142,7 +142,7 @@ test "jsonTransport emits one valid JSON object per line" {
 }
 
 test "secret renders *** and no raw value can appear" {
-    // `secret(key)` records ONLY the key — there is no value channel for a raw
+    // `secret(key)` records ONLY the key; no value channel exists for a raw
     // value to leak through. Assert the rendered field is `<key>=***`, and that
     // the chosen sentinel raw value never appears anywhere in the line.
     const raw = "super-secret-token-value";

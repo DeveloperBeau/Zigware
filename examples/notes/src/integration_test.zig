@@ -11,7 +11,7 @@
 //!     `scope.path.no_match` (NOT the non-existent "out_of_scope").
 //!
 //! Both halves are asserted from one fixture, order-independently. The in-scope
-//! file actually exists so the allow half is a real allow, not a fail-closed
+//! file exists so the allow half is a real allow, not a fail-closed
 //! accident (if realPathFile failed, both halves would reject for the same reason
 //! and the deny would prove nothing).
 

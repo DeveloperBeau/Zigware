@@ -7,14 +7,14 @@
 //!
 //! Build-gating: `trace` and `debug` lower to no-ops whenever
 //! `comptime builtin.mode != .Debug` (the single normative predicate). The
-//! no-op performs NO format/transport work — under ReleaseSafe/ReleaseFast/
+//! no-op performs NO format/transport work. Under ReleaseSafe/ReleaseFast/
 //! ReleaseSmall those two levels produce no output at all. `info`/`warn`/`err`
 //! are always live so ship builds keep their error diagnostics. Because `fields`
 //! is a runtime slice, the CALLER still materialises the slice literal before a
 //! gated-out call is entered; the only guarantee is that the no-op emits nothing.
 //!
-//! Redaction: `secret(key)` records ONLY the key — the raw value never enters
-//! the logger — and renders as `***` in every transport.
+//! Redaction: `secret(key)` records ONLY the key and renders as `***` in every transport.
+//! The raw value never enters the logger.
 //!
 //! Transport default flips by mode: human-readable lines in Debug, JSON-lines
 //! in release. `setTransport` swaps the sink (used by tests to capture output).
@@ -45,7 +45,7 @@ pub const Level = enum {
     }
 };
 
-/// A typed field value. `.redacted` carries no payload — only the key survives,
+/// A typed field value. `.redacted` carries no payload. Only the key survives,
 /// rendered as `***`.
 pub const Value = union(enum) {
     str: []const u8,
@@ -74,7 +74,7 @@ pub fn boolean(key: []const u8, v: bool) Field {
     return .{ .key = key, .value = .{ .boolean = v } };
 }
 
-/// Records ONLY the key — the raw value never enters the logger and renders as
+/// Records ONLY the key; the raw value never enters the logger. Renders as
 /// `***`. Takes the key alone by design (Locked decision 7).
 pub fn secret(key: []const u8) Field {
     return .{ .key = key, .value = .redacted };

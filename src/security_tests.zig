@@ -44,7 +44,7 @@ const manifest = @import("manifest/types.zig");
 // table must ALLOW an in-scope path and DENY an out-of-scope one with the real
 // G4 path-miss code `scope.path.no_match`. Asserting both halves from one fixture
 // proves G4 discriminates allow-from-deny ON THE PATH, not a fail-closed accident:
-// the in-scope file actually exists on disk so `$APPDATA` expansion + realPathFile
+// the in-scope file exists on disk so `$APPDATA` expansion + realPathFile
 // succeed for the allow half.
 test "live scope: hashFile allows an in-scope path and denies an out-of-scope one" {
     const io = std.testing.io;

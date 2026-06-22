@@ -533,7 +533,7 @@ test "own-window fast path: a core:default window sets its OWN title; close on s
 // emitted FIRST so the bridge's scanId always correlates a decode-failure (e.g.
 // an oversized value tripping JSON_PARSE_OPTIONS.max_value_len) back to a
 // terminal reject instead of a silent drop. A teeth counter proves a
-// non-trivial number of well-formed-but-denied inputs actually reached the G4
+// non-trivial number of well-formed-but-denied inputs reached the G4
 // scope-deny path (scope.label.no_match / scope.host.no_match).
 
 const FUZZ_ITERS: usize = 10_000;

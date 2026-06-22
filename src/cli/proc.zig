@@ -9,13 +9,13 @@ pub const ChildSpec = struct {
     /// true  => child inherits the parent's stdin/stdout/stderr (the terminal).
     /// false => child is fully DETACHED: all three go to /dev/null.
     ///
-    /// !!! ONLY tests may set this false. ALL non-test code — production AND dev —
+    /// !!! ONLY tests may set this false. ALL non-test code (production AND dev)
     /// must keep it true. !!! `false` exists for ONE reason: the proc.zig tests
     /// spawn real children under the Zig test runner's `--listen=-` protocol,
     /// where the runner's stdin+stdout ARE the IPC pipe to `zig build`. A child
     /// inheriting that pipe deadlocks the whole test suite (the build system never
     /// sees EOF). Detaching keeps the pipe private. Nothing outside the tests runs
-    /// under that protocol, so nothing else needs — or should use — false.
+    /// under that protocol, so nothing else needs false or should use it.
     ///
     /// Do NOT set this false to "quiet" a child: it SILENTLY discards the child's
     /// stdout AND stderr, so real failures vanish. If you need the child's stderr,
@@ -25,7 +25,7 @@ pub const ChildSpec = struct {
     capture_stderr: bool = false, // when true, stderr is piped and returned by the BuildRunner caller
     // When true, the child is placed in its OWN process group (detached from the
     // controlling terminal's foreground group). Dev children (app, beforeDevCommand)
-    // set this so an interactive Ctrl-C delivers SIGINT to the CLI only — the CLI's
+    // set this so an interactive Ctrl-C delivers SIGINT to the CLI only; the CLI's
     // ordered teardown is then the sole path that signals the group, preserving the
     // "kill app before dev server" ordering. Because the child leads its own group,
     // teardown MUST signal the whole GROUP (`kill(-pid, …)`), not just the leader pid:

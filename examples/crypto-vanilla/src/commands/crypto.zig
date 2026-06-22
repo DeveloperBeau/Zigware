@@ -11,7 +11,7 @@
 //! frontend can render the digest, nonce, ciphertext, tag, and recovered text.
 //!
 //! DEMO SECURITY NOTE: deriving an encryption key straight from SHA-256(password)
-//! is NOT how to handle real passwords — a plain hash is fast and brute-forceable.
+//! is NOT how to handle real passwords. A plain hash is fast and brute-forceable.
 //! A production app would stretch the password through a KDF
 //! (`std.crypto.pwhash.argon2`) and store only the KDF verifier, never use the
 //! digest as a cipher key. This example exists to show the bridge round-trip and
@@ -66,7 +66,7 @@ fn seal(arena: std.mem.Allocator, password: []const u8, message: []const u8) !z.
 
     // Fresh random nonce, unique per call. NEVER reuse a nonce with the same key
     // or Poly1305's authentication guarantee collapses. The handler runs off the
-    // UI thread with no Ctx-threaded io, so it owns a blocking io purely to reach
+    // UI thread with no Ctx-threaded io, so it owns a blocking io to reach
     // the platform CSPRNG; `random` is threadsafe and cannot fail.
     var nonce: [ChaCha.nonce_length]u8 = undefined;
     {

@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
     // cross-import BY PATH and must all live in ONE compilation, so root a
     // dedicated module at parse.zig (it transitively pulls in its siblings by
     // path) and satisfy its `zigware_manifest_zon` anonymous import with the raw
-    // zigware.zon — the CLI never calls embedded(), so the placeholder suffices.
+    // zigware.zon; the CLI never calls embedded(), so the placeholder suffices.
     const manifest_mod = b.createModule(.{
         .root_source_file = b.path("src/manifest/parse.zig"),
         .target = target,
@@ -536,7 +536,7 @@ pub fn build(b: *std.Build) void {
     // svelte) that share ONE command: src/commands/crypto.zig derives a key as
     // SHA-256(password) and runs a ChaCha20-Poly1305 encrypt/decrypt over the
     // per-call arena. The command is a pure function, so its proof is a headless
-    // unit test rooted at the command file — no window or backend needed. The
+    // unit test rooted at the command file; no window or backend needed. The
     // four variants carry byte-identical command files (only their frontends
     // differ), so testing the vanilla copy covers all four. Rooted against the
     // real framework barrel (same `zigware` module the shipping app links) so the
@@ -781,7 +781,7 @@ const template_root = "src/cli/template";
 
 /// Recursively walk src/cli/template/ at configure time and return every file's
 /// path relative to that root (forward-slash separated, sorted for determinism).
-/// Uses Dir.walk (recursive) — NOT a one-level iterate — so nested template
+/// Uses Dir.walk (recursive, NOT a one-level iterate), so nested template
 /// subtrees (frontend/, src/commands/, _shared/) are all registered without a
 /// per-template build.zig edit. Returns an empty slice if the dir is absent.
 fn walkTemplateTree(b: *std.Build) []const []const u8 {

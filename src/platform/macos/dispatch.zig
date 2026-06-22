@@ -3,7 +3,7 @@ const std = @import("std");
 /// VERIFY-ON-TOOLCHAIN ADAPTATION (L2): `dispatch_get_main_queue()` is a
 /// header-only `static inline` in <dispatch/queue.h>; it is NOT an exported
 /// symbol, so `extern fn dispatch_get_main_queue()` fails to link
-/// (`undefined symbol: _dispatch_get_main_queue`). The inline simply returns
+/// (`undefined symbol: _dispatch_get_main_queue`). The inline returns
 /// `&_dispatch_main_q`, the real exported global. Declare that global and take
 /// its address; libdispatch links via libSystem (pulled in by Cocoa + libc).
 pub extern var _dispatch_main_q: anyopaque;
@@ -19,7 +19,7 @@ pub extern fn dispatch_sync_f(queue: ?*anyopaque, context: ?*anyopaque, work: *c
 // runs, the event handler is GUARANTEED never to fire, so a late fallback cannot
 // touch freed state. (A bare dispatch_after_f would still fire at its deadline
 // even after teardown and dereference a freed backend/map.) The handler is a C
-// function pointer, so no Objective-C block literal is needed — Zig has none.
+// function pointer. Zig has no block literals, so no Objective-C block is needed.
 //
 // DISPATCH_SOURCE_TYPE_TIMER is a header-only global struct address (like
 // _dispatch_main_q in this file is for dispatch_get_main_queue): declare the

@@ -184,7 +184,7 @@ pub const MacOSBackend = struct {
     }
 
     /// Bridge from the scheme IMP into onSchemeRequest. The scheme IMP already
-    /// gated alive; this just forwards through the registered callback.
+    /// gated alive; this forwards through the registered callback.
     pub fn dispatchSchemeRequest(self: *MacOSBackend, req: seam.Request) seam.Response {
         const cb = self.cb orelse return notFound();
         return cb.onSchemeRequest(cb.ctx, req);
@@ -306,7 +306,7 @@ pub const MacOSBackend = struct {
         window_mod.show(h.window);
         // A window launched from a terminal opens behind the launching app and an
         // accessory-style process does not steal focus. Activate so the shown
-        // window is actually frontmost and visible to the user.
+        // window is frontmost and visible to the user.
         _ = objc.msgSend(*const fn (objc.id, objc.SEL, bool) callconv(.c) void)(self.app, objc.sel("activateIgnoringOtherApps:"), true);
     }
 
@@ -360,7 +360,7 @@ pub const MacOSBackend = struct {
 
     /// GCD event handler for a fired one-shot timer. Runs on the main queue. Runs
     /// the user work, then retires the source: drop it from the map, cancel +
-    /// release it, and free this context. (A cancelled timer never reaches here —
+    /// release it, and free this context. (A cancelled timer never reaches here.
     /// dispatch_source_cancel guarantees the handler will not fire.)
     fn timerFired(context: ?*anyopaque) callconv(.c) void {
         const tc: *MacTimerCtx = @ptrCast(@alignCast(context.?));

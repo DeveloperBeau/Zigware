@@ -45,11 +45,10 @@ pub const JSON_PARSE_OPTIONS: std.json.ParseOptions = .{
 };
 
 /// Reserved internal route prefixes that must never be served as static assets
-/// and never reach the command gate. Owned here in protocol.zig. The list is
-/// intended to be consulted by serveAsset (Task 4) to exclude reserved routes
-/// from the asset allowlist, and by the command gate (sub-project B), which will
-/// also extend this list (for example the binary streaming scheme). Those
-/// consumers do not exist in the tree yet.
+/// and never reach the command gate. Owned here in protocol.zig. serveAsset
+/// (Task 4) will consult this to exclude reserved routes from the asset allowlist;
+/// the command gate (sub-project B) will also extend it (for example, the binary
+/// streaming scheme). Those consumers do not yet exist in the tree.
 pub const reserved_route_prefixes = [_][]const u8{
     "/__zigware_stream",
 };
@@ -196,8 +195,8 @@ pub fn jsString(w: *std.Io.Writer, s: []const u8) !void {
 ///
 /// CONTRACT: `text` MUST be already-`std.json`-serialized output (no raw user
 /// bytes in string positions). Callers passing raw user data here bypass the
-/// `jsString` escape and break the injection boundary — raw user strings must
-/// go through `jsString`, never here.
+/// `jsString` escape and break the injection boundary. Raw user strings must
+/// go through `jsString`, not this function.
 pub fn writeJsonAsJsLiteral(w: *std.Io.Writer, text: []const u8) !void {
     var i: usize = 0;
     while (i < text.len) {
@@ -350,7 +349,7 @@ pub fn assertSafeJsLiteral(out: []const u8) !void {
                     i += 2;
                 },
                 'u' => {
-                    // \uXXXX — need exactly 4 hex digits after \u.
+                    // \uXXXX: need exactly 4 hex digits after \u.
                     if (i + 6 > interior.len) return error.ShortUnicodeEscape;
                     for (interior[i + 2 .. i + 6]) |hc| {
                         if (!std.ascii.isHex(hc)) return error.InvalidHexInUnicodeEscape;
@@ -449,20 +448,20 @@ test "jsString is breakout-safe across adversarial inputs" {
     // oracle is acceptable" (used for raw high-byte pass-throughs).
     const Case = struct { input: []const u8, expected: ?[]const u8 };
     const cases = [_]Case{
-        // ── invalid UTF-8 — jsString passes bytes raw; still safe ─────────
+        // ── invalid UTF-8: jsString passes bytes raw; still safe ─────────
         .{ .input = &.{0xE2}, .expected = null },
         .{ .input = &.{ 0xE2, 0x80 }, .expected = null },
         .{ .input = &.{ 0xFF, 0xFE }, .expected = null },
         .{ .input = &.{0x80}, .expected = null },
-        // ── DEL 0x7F — raw passthrough (≥ 0x20, no special handling) ──────
+        // ── DEL 0x7F: raw passthrough (≥ 0x20, no special handling) ──────
         .{ .input = &.{0x7F}, .expected = null },
         // ── U+2029 must be escaped to   ──────────────────────────────
         .{ .input = "\u{2029}", .expected = "\"\\u2029\"" },
         // ── </SCRIPT>: slash must be escaped to \/ ─────────────────────────
         .{ .input = "</SCRIPT>", .expected = "\"<\\/SCRIPT>\"" },
-        // ── NEL U+0085 (C2 85) — valid UTF-8, raw passthrough ─────────────
+        // ── NEL U+0085 (C2 85): valid UTF-8, raw passthrough ─────────────
         .{ .input = "\u{0085}", .expected = null },
-        // ── BOM U+FEFF (EF BB BF) — valid UTF-8, raw passthrough ──────────
+        // ── BOM U+FEFF (EF BB BF): valid UTF-8, raw passthrough ──────────
         .{ .input = "\u{FEFF}", .expected = null },
         // ── backtick template safe in double-quoted JS literal ────────────
         .{ .input = "`${x}`", .expected = null },
@@ -480,7 +479,7 @@ test "jsString is breakout-safe across adversarial inputs" {
         try jsString(&aw.writer, c.input);
         const out = aw.writer.buffered();
 
-        // Structural safety oracle — must pass for ALL inputs.
+        // Structural safety oracle: must pass for ALL inputs.
         try assertSafeJsLiteral(out);
 
         // Exact output check for deterministic ASCII-clean cases.
@@ -593,7 +592,7 @@ fn fuzzEscape(_: void, smith: *std.testing.Smith) anyerror!void {
     try jsString(&aw.writer, input);
     const out = aw.writer.buffered();
 
-    // Always: structurally safe — no breakout possible.
+    // Always: structurally safe. No breakout possible.
     try assertSafeJsLiteral(out);
 
     // Round-trip: only when input is valid UTF-8 (jsString intentionally passes

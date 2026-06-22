@@ -53,7 +53,7 @@ pub const ComputeError = error{ Cancelled, QueueFull, OutOfMemory, WorkerFailed 
 ///
 /// `Sink` does NOT store `*Ctx(State)`: `Ctx(State)` is generic over the app's
 /// `State` (command_ctx.zig), so framework code cannot name `*Ctx(AppState)`.
-/// Instead it stores exactly the State-independent fields its methods use —
+/// Instead it stores exactly the State-independent fields its methods use.
 /// `cancelled()` reads only `cancel`; `channel`/`binaryChunk` read only
 /// `emit`/`id`/`arena`/`bin_seq`, never `state`. `bin_seq` is a POINTER to the
 /// Ctx's mutable `bin_seq` so `progressBytes` bumps the SAME counter `binaryChunk`
@@ -93,7 +93,7 @@ pub fn Sink(comptime P: type) type {
         /// so terminal `Bytes` and streamed chunks never collide on a seq.
         /// `mime` is mandatory (caller-supplied; `from` has no mime to project).
         /// Returns false ONLY when the per-id binary budget is exceeded (nothing
-        /// parked, no frame) — the caller must surface a dropped chunk rather than
+        /// parked, no frame). The caller must surface a dropped chunk rather than
         /// lose it. Mirrors `Ctx.binaryChunk` against the stored fields.
         pub fn progressBytes(self: Self, chunk: []const u8, mime: []const u8) bool {
             const seq = self.bin_seq.*;

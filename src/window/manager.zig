@@ -102,7 +102,7 @@ pub fn WindowManager(comptime B: type) type {
             // gate; dev_client_src is referenced nowhere else, so a default build
             // (allowEval = false) compiles the string out entirely. Invariant: the
             // 4th user_scripts entry is present iff allow_eval. Core IPC evalJS is
-            // untouched — only this injection is gated.
+            // untouched. Only this injection is gated.
             const base_scripts = [_][]const u8{ zigware_js, window_js, label_script_aw.writer.buffered() };
             const user_scripts = if (comptime fuses.allow_eval)
                 base_scripts ++ [_][]const u8{dev_client_src}
@@ -315,7 +315,7 @@ pub fn WindowManager(comptime B: type) type {
         /// entry by label; if present, clears the entry's timer bookkeeping (so a
         /// later cancelWatchdog is a no-op) BEFORE transitioning, then shows the
         /// window if still wanted (idempotent via e.shown). Finally frees the
-        /// FireCtx — the single free site on the fire path.
+        /// FireCtx. This is the single free site on the fire path.
         fn fireMain(ptr: ?*anyopaque) callconv(.c) void {
             const fc: *FireCtx = @ptrCast(@alignCast(ptr.?));
             const self = fc.mgr;

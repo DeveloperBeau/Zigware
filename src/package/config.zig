@@ -10,7 +10,7 @@ const Environ = std.process.Environ;
 /// (`providerShortName`, `hardenedRuntime` is kept for the plist/entitlements path).
 pub const MacSignConfig = struct {
     /// codesign identity. The RESOLVED identity (env-over-manifest) is what
-    /// `sign` actually uses; this manifest value is only the fallback source.
+    /// `sign` uses; this manifest value is only the fallback source.
     signingIdentity: ?[]const u8 = null,
     hardenedRuntime: bool = true,
     /// Path to an entitlements .plist (reaches an argv slot → leading-`-` checked).

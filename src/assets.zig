@@ -110,7 +110,7 @@ test "fuzz: serveAsset oracle (manual >= 10000 iterations)" {
     const rand = prng.random();
     var iter: usize = 0;
     while (iter < 10_000) : (iter += 1) {
-        // Uniformly random bytes essentially never spell "/index.html", so this
+        // Uniformly random bytes almost never spell "/index.html", so this
         // driver exercises the no-panic and no-false-200 properties on long,
         // arbitrary input rather than known-path collision coverage. The exact
         // known-path contract is pinned by the unit tests above.
