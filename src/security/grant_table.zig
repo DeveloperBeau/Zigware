@@ -120,7 +120,7 @@ pub const GrantTable = struct {
     ///
     /// SECURITY TODO(multi-cap, deviation #5): this returns the FIRST matched cap's
     /// scopes only. If TWO caps match the same window and one carries a DENY scope,
-    /// that deny is IGNORED when a different cap is the first allow-match — a
+    /// that deny is IGNORED when a different cap is the first allow-match. This is a
     /// deny-beats-allow hole at the TABLE level. This is INERT in v0.1.0 because every
     /// caller (App.init, all test harnesses) declares exactly ONE capability per
     /// window. Before D allows multiple caps per window-label, scopeFor MUST merge
@@ -185,7 +185,7 @@ pub const GrantTable = struct {
 /// Expand a permission-or-set id into the accumulators. A set expands its members
 /// transitively (bounded depth guards against a cycle the catalog check should
 /// already reject). An unknown id is a hard error. The shell: family is dropped
-/// when allowShell is off (force-deny: the grant is gone, not merely unreachable).
+/// when allowShell is off (force-deny: the grant is gone, not left unreachable).
 fn resolvePerm(
     a: std.mem.Allocator,
     catalog: *const Catalog,

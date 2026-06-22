@@ -303,8 +303,8 @@ pub fn Bridge(comptime B: type) type {
         /// Derive the G4 scope input for (label, command) from the command's
         /// COMPILED scope set, discriminating on `.path` PRESENCE (never on
         /// emptiness). If neither the allow nor the deny set carries a `.path`
-        /// scope, the command is unscoped and gets `.none` (G4 no-op allow) —
-        /// this covers every existing command (sha256/echoBytes/window.* carry no
+        /// scope, the command is unscoped and gets `.none` (G4 no-op allow).
+        /// This covers every existing command (sha256/echoBytes/window.* carry no
         /// path scope), so they stay allowed exactly as before. If a `.path` scope
         /// is present, extract the candidate `path` from `args_json` and feed
         /// `.path`. The extract is provably non-divergent from the registry's typed
@@ -341,9 +341,9 @@ pub fn Bridge(comptime B: type) type {
 
         // ── Registry-facing surface (duck-typed by registry.dispatch) ──────────
 
-        /// G5 reservation. Returns true if the call may proceed (slot reserved),
-        /// false if it was rejected (duplicate id, budget exceeded, or OOM) — in
-        /// which case this method has already emitted the terminal reject.
+        /// G5 reservation. Returns true if the call may proceed (slot reserved).
+        /// Returns false on rejection (duplicate id, budget exceeded, or OOM);
+        /// this method emits the terminal reject before returning false.
         pub fn reserveCall(self: *Self, label: []const u8, id: u64) bool {
             self.inflight_mutex.lockUncancelable(self.io);
             defer self.inflight_mutex.unlock(self.io);
@@ -482,8 +482,8 @@ pub fn Bridge(comptime B: type) type {
         }
 
         /// Push the same event to EVERY live window. Requires a manager (the
-        /// single-window path has only one window; broadcast there is the no-op
-        /// of doing nothing). Snapshots the live handles under the map mutex, then
+        /// single-window path has only one window; broadcast there is a no-op).
+        /// Snapshots the live handles under the map mutex, then
         /// evals OUTSIDE the lock (never hold the map lock across a seam call).
         pub fn emitAll(self: *Self, event: []const u8, json_payload: []const u8) void {
             const m = self.manager orelse return;

@@ -94,7 +94,7 @@ pub fn buildCsp(gpa: std.mem.Allocator, hashes: []const ScriptHash, manifest: *c
     try w.writeAll("; ");
 
     // script-src: 'self' + hash sources + validated host tokens (keywords like the default
-    // 'self' are dropped — manifest input never adds keyword sources to script-src).
+    // 'self' are dropped; manifest input never adds keyword sources to script-src).
     try w.writeAll("script-src 'self'");
     for (hashes) |h| {
         try w.print(" 'sha256-{s}'", .{h.b64});
@@ -231,7 +231,7 @@ fn extractContent(html: []const u8, meta: MetaSpan) ?[]const u8 {
     return null;
 }
 
-/// Insertion point: just after the opening `<head ...>` tag. null when there is no <head>.
+/// Insertion point: immediately after the opening `<head ...>` tag. null when there is no <head>.
 fn findHeadInsertPoint(html: []const u8) ?usize {
     const head_rel = ciIndex(html, "<head") orelse return null;
     const gt = std.mem.indexOfScalar(u8, html[head_rel..], '>') orelse return null;

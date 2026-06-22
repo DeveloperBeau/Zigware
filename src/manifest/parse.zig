@@ -1,7 +1,7 @@
 //! Build-time manifest loader. Reads `zigware.zon` and any per-OS override,
 //! merges them, validates, and returns the effective `Manifest`. The runtime
 //! accessor `embedded()` returns a comptime `@import` of the build-embedded
-//! `.zon` artifact — there is no runtime file read on the production path.
+//! `.zon` artifact. The production path reads no files at runtime.
 //!
 //! Ownership:
 //! - `parseAtBuild` / `parseAtBuildFromPaths` return a `Manifest` owned by the
@@ -11,7 +11,7 @@
 //!   (e.g. `Csp.scriptSrc = &.{"'self'"}`), which crashes. The in-house
 //!   `freeManifest` below consults `@typeInfo(...).default_value_ptr` and
 //!   skips slices whose runtime `.ptr` still equals the comptime default's
-//!   `.ptr` — that is the static-default skip rule.
+//!   `.ptr` (the static-default skip rule).
 //! - `std.zon.parse.free` IS safe on `OverrideManifest` (every default is
 //!   `null`, no static-literal slice defaults exist); the override is freed
 //!   in-function before this routine returns.
@@ -332,7 +332,7 @@ fn freeField(comptime f: std.builtin.Type.StructField, gpa: std.mem.Allocator, v
             }
         },
         .@"struct" => freeStruct(FT, gpa, v),
-        else => {}, // scalars, enums — no allocation to free.
+        else => {}, // scalars and enums carry no allocation.
     }
 }
 

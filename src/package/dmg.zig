@@ -13,7 +13,7 @@ const sign_mod = @import("sign.zig");
 const notarize_mod = @import("notarize.zig");
 
 // ---------------------------------------------------------------------------
-// buildDmgArgv — the pure hdiutil argv builder. Returns a gpa-owned slice of
+// buildDmgArgv is the pure hdiutil argv builder. Returns a gpa-owned slice of
 // gpa-owned strings; the caller frees each element then the slice. v0.1.0 ships
 // a plain compressed (UDZO) HFS+ image with no background art. `volname` reaches
 // an argv slot and is leading-`-`-checked by `validateConfig` (Locked decision #7).
@@ -61,11 +61,11 @@ fn freeArgvOwned(gpa: std.mem.Allocator, argv: []const []const u8) void {
 }
 
 // ---------------------------------------------------------------------------
-// makeDmg — stage the `.app` + an `/Applications` symlink, build the dmg via
+// makeDmg stages the `.app` + an `/Applications` symlink, builds the dmg via
 // hdiutil, then re-enter sign + notarize ON THE DMG.
 //
 // `signing_identity` is the RESOLVED identity (env-overridden value) that
-// `package()` carries — NOT `cfg.macos.signingIdentity` — so the env override
+// `package()` carries, not `cfg.macos.signingIdentity`, so the env override
 // applies to dmg signing too. It is forwarded into the internal `sign` call.
 // `creds` is the notary union, forwarded into the internal `notarize` call.
 //
@@ -81,7 +81,7 @@ fn freeArgvOwned(gpa: std.mem.Allocator, argv: []const []const u8) void {
 // variant): OOM → OutOfMemory, else → HdiutilFailed. A non-zero hdiutil exit
 // writes a gpa-duped Diagnostic through `diag` (its detail copied BEFORE the
 // RunResult is freed) and returns `error.HdiutilFailed` BEFORE any dmg
-// sign/notarize. The POST-staple `spctl --assess` on the dmg is NOT here — it is
+// sign/notarize. The POST-staple `spctl --assess` on the dmg is NOT here; it is
 // `package()`'s (the staple ticket exists only at that layer).
 // ---------------------------------------------------------------------------
 
@@ -147,7 +147,7 @@ pub fn makeDmg(
         }
     }
 
-    // 3) Re-sign the dmg (only with a resolved identity — the skip_sign lane
+    // 3) Re-sign the dmg (only with a resolved identity; the skip_sign lane
     //    passes null and the dmg stays unsigned). `skip_sign = false` here: the
     //    null-identity skip is expressed by NOT calling sign at all, so a genuine
     //    missing identity inside the call would still be a hard error.
@@ -155,7 +155,7 @@ pub fn makeDmg(
         try sign_mod.sign(io, gpa, runner, dmg_path, signing_identity, cfg, false, diag);
     }
 
-    // 4) Re-notarize + staple the dmg (only with real notary creds — the
+    // 4) Re-notarize + staple the dmg (only with notary creds; the
     //    skip_notarize lane passes `.none`, and notarize treats `.none` as a
     //    caller bug, so the gate here is mandatory).
     switch (creds) {
@@ -443,7 +443,7 @@ test "makeDmg with a null signing identity (skip_sign lane) builds an unsigned d
     defer gpa.free(dmg);
 
     try testing.expect(diag == null);
-    // No codesign/notarytool/stapler: just hdiutil.
+    // No codesign/notarytool/stapler: only hdiutil.
     try testing.expectEqual(@as(usize, 1), fr.argv_log.items.len);
     try testing.expectEqualStrings("hdiutil", fr.argv_log.items[0][0]);
 }

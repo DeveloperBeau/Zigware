@@ -114,7 +114,7 @@ fn declFns(comptime UserCommands: anytype) []const FnDecl {
                 // A command name shared by two namespaces would let the dispatcher
                 // silently bind one handler while the gate allowlist carries an
                 // ambiguous entry. Reject the collision at comptime rather than
-                // shadow — the registry never resolves a command name by luck.
+                // shadow it. The registry never resolves a command name by luck.
                 for (list) |existing| {
                     if (std.mem.eql(u8, existing.name, d.name))
                         @compileError("duplicate command '" ++ d.name ++ "' across command namespaces");

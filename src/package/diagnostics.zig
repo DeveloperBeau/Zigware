@@ -10,7 +10,7 @@ const config = @import("config.zig");
 /// `Dir.CreateDirPathError`/`CopyFileError`/`SymLinkError`/`SetPermissionsError`
 /// and maps it to one of these so the `Code` table can render every failure.
 /// `CreateDirPathFailed` replaces the spec's `MakePathFailed` (the `makePath`
-/// name is gone; the real call is `createDirPath`).
+/// name is gone; the call is `createDirPath`).
 pub const BundleError = error{
     IconConvertFailed,
     PlistWriteFailed,
@@ -55,7 +55,7 @@ pub const DmgError = error{
 } || SignError || NotarizeError || config.CredError;
 
 /// The full packaging error surface. `CredError`/`ConfigError` are NOT redefined
-/// here — they are config's vocabulary, unioned in (config needs nothing from
+/// here: they are config's vocabulary, unioned in (config needs nothing from
 /// diagnostics, so the config -> diagnostics task order has no import cycle).
 pub const PackageError =
     config.CredError ||

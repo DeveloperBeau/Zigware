@@ -182,7 +182,7 @@ fn runDev(io: std.Io, gpa: std.mem.Allocator) CliError!void {
 // ─────────────────────────── build verb ───────────────────────────
 
 /// `zigware build`: read the project manifest (validated under .ReleaseSafe, the shipped
-/// release mode), then run the build orchestrator. No SIGINT install — build has no
+/// release mode), then run the build orchestrator. No SIGINT install. Build has no
 /// long-lived child loop to interrupt.
 fn runBuild(io: std.Io, gpa: std.mem.Allocator) CliError!void {
     const manifest = readManifest(io, gpa, .ReleaseSafe) catch |err| return mapVerbError(err);
@@ -206,7 +206,7 @@ fn runBuild(io: std.Io, gpa: std.mem.Allocator) CliError!void {
 /// `runner` are all injected by pointer/value so the integration tests drive the whole verb
 /// over fakes (mirroring how `build_verb.run` takes `builder`/`proc`). On a packaging
 /// failure the populated `*Diagnostic` is rendered through `printPackageDiagnostic` and the
-/// error collapses to `package_failed` — NOT routed through `mapVerbError` (whose `else`
+/// error collapses to `package_failed`. It is not routed through `mapVerbError` (whose `else`
 /// arm would mislabel the named G errors as `internal error`/`bad_usage` and double-print).
 fn runBuildInner(
     io: std.Io,
@@ -270,7 +270,7 @@ fn printPackageDiagnostic(d: *const package.Diagnostic) void {
 
 /// Read the END-USER's zigware.zon from the process cwd (the scaffolded project root) via
 /// D's disk reader. The returned Manifest is allocator-OWNED and must be freed with
-/// freeManifest — this is NOT parse.embedded() (which would return Zigware's OWN baked-in
+/// freeManifest. This is NOT parse.embedded() (which would return Zigware's OWN baked-in
 /// manifest). Load errors are mapped to the CLI's structured variants.
 fn readManifest(io: std.Io, gpa: std.mem.Allocator, optimize: std.builtin.OptimizeMode) CliError!parse.Manifest {
     var diag: parse.Diagnostics = .{};
@@ -331,7 +331,7 @@ fn mapVerbError(err: anyerror) CliError {
 // ─────────────────────────── real BuildRunner ───────────────────────────
 
 /// Production BuildRunner over `std.process.run` (which spawns, collects stdout/stderr, and
-/// reaps the child itself — no separate kill/wait needed). It maps the run result's term to
+/// reaps the child itself with no separate kill/wait needed). It maps the run result's term to
 /// the seam's `ok` bool and transfers ONLY stderr into BuildResult; the captured stdout is
 /// freed here (a leaked compiler-stdout buffer per dev rebuild would accumulate across the
 /// long-lived dev loop).
@@ -390,7 +390,7 @@ fn exitCodeFor(err: CliError) u8 {
     };
 }
 
-/// A human-readable stderr line for each CliError — never a bare "command failed". The
+/// A human-readable stderr line for each CliError; never a bare "command failed". The
 /// compiler/child stderr itself is printed verbatim at the point of failure (dev.run /
 /// build.run); this is the one-line summary the top-level catch emits.
 fn messageFor(err: CliError) []const u8 {
@@ -416,7 +416,7 @@ fn messageFor(err: CliError) []const u8 {
 // flag it must flip is reached through a file-scope pointer the install routine stores.
 // The dev dispatch constructs the flag on its stack, installs the handler pointed at it,
 // and `defer`s uninstall so the handler is disarmed and `g_shutdown` nulled before the
-// flag leaves scope — a late SIGINT after the dev frame unwinds then finds a null pointer
+// flag leaves scope. A late SIGINT after the dev frame unwinds then finds a null pointer
 // instead of storing through freed stack.
 
 var g_shutdown: ?*std.atomic.Value(bool) = null;
@@ -460,7 +460,7 @@ pub fn main(init: std.process.Init) !void {
     // Use init.io directly: it already carries the REAL process environ, so spawned
     // children (npm/zig/the BuildRunner) inherit PATH. Building a fresh
     // `std.Io.Threaded.init(gpa, .{})` would default `environ` to `.empty`, spawning
-    // children with NO environment (broken npm/zig) — do NOT construct one.
+    // children with NO environment (broken npm/zig). Do NOT construct one.
     const io = init.io;
 
     // toSlice yields []const [:0]const u8; dispatch wants []const []const u8. The
@@ -547,7 +547,7 @@ const StubBuilder = struct {
     }
 };
 
-/// Minimal Spawner fake — the integration manifests declare no beforeBuildCommand, so it
+/// Minimal Spawner fake. The integration manifests declare no beforeBuildCommand, so it
 /// is never spawned; it exists only to satisfy build.run's `proc` seam.
 const StubSpawner = struct {
     fn make(self: *StubSpawner) proc.Spawner {

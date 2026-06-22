@@ -77,15 +77,15 @@ pub fn assertPackager(comptime P: type) void {
 }
 
 // NOTE: there is NO `Packager(P)` wrapper type. The conformance seam is `assertPackager`
-// alone, called once at the `builtin.os` packager-selection site in `package()` (Task 11) —
+// alone, called once at the `builtin.os` packager-selection site in `package()` (Task 11),
 // exactly as `src/app.zig:93` calls `assertBackend(B)` at its selection site. A holds no
 // `Backend(P)` wrapper either; its only comptime gate is `assertBackend`. `MacPackager`'s
 // four stages are then called individually by `package()`, never through an instantiated
-// generic. Do NOT add an empty `Packager(P)` wrapper — it would hold no state, forward
+// generic. Do NOT add an empty `Packager(P)` wrapper: it would hold no state, forward
 // nothing, and have no callers.
 
 // ---------------------------------------------------------------------------
-// PackageOptions — the F -> G handoff inputs (spec lines 72-86). `gpa` lives
+// PackageOptions holds the F -> G handoff inputs (spec lines 72-86). `gpa` lives
 // INSIDE the options so `package(io, opts)` stays a two-arg entry. The env map is
 // NOT a field: it is built from the real process environ by `package()` and passed
 // down to `packageInner` so tests can inject a scripted map without widening the
@@ -108,7 +108,7 @@ pub const PackageOptions = struct {
 };
 
 // ---------------------------------------------------------------------------
-// MacPackager — the four conformance stages. Each forwards `opts.diag` (and the
+// MacPackager contains the four conformance stages. Each forwards `opts.diag` (and the
 // destructured `ResolvedCredentials` pieces) to its delegate so the out-pointer
 // reaches every stage. The stages are called individually by `packageInner`,
 // never through an instantiated generic (there is no `Packager(P)` wrapper).
@@ -256,7 +256,7 @@ pub fn packageInner(
     // resolved. `resolveCredentials` populates `creds.notary` from a complete ambient
     // env set unconditionally (it only consults the skip flags to decide whether to
     // ERROR on an incomplete set), so the offline lanes (`skip_notarize` or a manifest
-    // `notarize == false`) must be re-gated HERE — otherwise ambient `$APPLE_ID`/`$APPLE_API_KEY`
+    // `notarize == false`) must be re-gated HERE; otherwise ambient `$APPLE_ID`/`$APPLE_API_KEY`
     // would silently notarize over the network on a build that asked to skip it.
     // `effective_notary` aliases `creds.notary` (owns nothing; `freeCredentials` still
     // frees the original on every path), and collapses to `.none` on the skip lanes so
@@ -346,7 +346,7 @@ test "assertPackager accepts a conformant stub and the four stage names are stab
 }
 
 // ---------------------------------------------------------------------------
-// Task 11 pipeline tests — the whole headless `packageInner` flow over a
+// Task 11 pipeline tests: the whole headless `packageInner` flow over a
 // FakeRunner + a scripted Environ.Map + a real tmp out_dir. Every case runs over
 // `std.testing.allocator` and must be LEAK-CLEAN.
 // ---------------------------------------------------------------------------
@@ -737,7 +737,7 @@ test "package skip_notarize suppresses notarization even with ambient notary cre
     const gpa = testing.allocator;
 
     // Full notary env present, but skip_notarize is set: the offline lane must NOT
-    // notarize over the network just because ambient creds resolved.
+    // notarize over the network only because ambient creds resolved.
     const fx = try Fixture.init(io, gpa, &fullNotaryEnv());
     defer fx.deinit(gpa);
 

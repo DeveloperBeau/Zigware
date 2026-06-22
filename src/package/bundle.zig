@@ -9,11 +9,11 @@ const Diagnostic = diagnostics.Diagnostic;
 const Runner = runner_mod.Runner;
 
 // ---------------------------------------------------------------------------
-// plistEscape — THE injection boundary for config bytes into the Info.plist.
+// plistEscape is THE injection boundary for config bytes into the Info.plist.
 // Mirrors `protocol.jsString`: a single writer-based switch that is the only
 // path from arbitrary config bytes into a plist string position. Every value
-// `writeInfoPlist` emits goes through here; only the two hardcoded constant
-// values (`APPL`, `true`) bypass it.
+// `writeInfoPlist` emits goes through here; only the two hardcoded constants
+// (`APPL`, `true`) bypass it.
 // ---------------------------------------------------------------------------
 
 /// Escape `s` so it cannot inject plist structure. Emits XML entities for the
@@ -48,7 +48,7 @@ pub fn plistEscape(w: *std.Io.Writer, s: []const u8) !void {
 }
 
 // ---------------------------------------------------------------------------
-// writeInfoPlist — build the Info.plist XML, routing EVERY config-sourced value
+// writeInfoPlist builds the Info.plist XML, routing EVERY config-sourced value
 // through plistEscape. The only raw values are the two compile-time constants
 // CFBundlePackageType=APPL and NSHighResolutionCapable=true.
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ fn plistStringKey(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
 
 /// Build the Info.plist for `cfg`. Returns gpa-owned bytes; the caller frees.
 /// `cfg.displayName` names CFBundleName, CFBundleDisplayName, and (critically)
-/// CFBundleExecutable — it MUST match the executable filename `assembleBundle`
+/// CFBundleExecutable, which MUST match the executable filename `assembleBundle`
 /// writes under Contents/MacOS or the bundle will not launch.
 pub fn writeInfoPlist(gpa: std.mem.Allocator, cfg: PackageConfig) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(gpa);
@@ -78,7 +78,7 @@ pub fn writeInfoPlist(gpa: std.mem.Allocator, cfg: PackageConfig) ![]u8 {
         \\
     );
 
-    // Constant package type (raw — not config-sourced).
+    // Constant package type (raw, not config-sourced).
     try w.writeAll("  <key>CFBundlePackageType</key>\n  <string>APPL</string>\n");
 
     try plistStringKey(w, "CFBundleIdentifier", cfg.identifier);
@@ -87,7 +87,7 @@ pub fn writeInfoPlist(gpa: std.mem.Allocator, cfg: PackageConfig) ![]u8 {
     try plistStringKey(w, "CFBundleExecutable", cfg.displayName);
     try plistStringKey(w, "CFBundleShortVersionString", cfg.version);
     try plistStringKey(w, "CFBundleVersion", cfg.bundleVersion);
-    // User-controlled free-text manifest value — escaped like every other.
+    // User-controlled free-text manifest value, escaped like every other.
     try plistStringKey(w, "LSMinimumSystemVersion", cfg.minimumSystemVersion);
 
     if (cfg.category) |category| {
@@ -102,7 +102,7 @@ pub fn writeInfoPlist(gpa: std.mem.Allocator, cfg: PackageConfig) ![]u8 {
         try plistStringKey(w, "CFBundleIconFile", "icon");
     }
 
-    // Constant boolean (raw — not config-sourced).
+    // Constant boolean (raw, not config-sourced).
     try w.writeAll("  <key>NSHighResolutionCapable</key>\n  <true/>\n");
 
     try w.writeAll(
@@ -115,10 +115,10 @@ pub fn writeInfoPlist(gpa: std.mem.Allocator, cfg: PackageConfig) ![]u8 {
 }
 
 // ---------------------------------------------------------------------------
-// assembleBundle — lay out the .app, write the plist, copy the binary, resolve
-// the icon. Every filesystem call is catch-and-mapped into BundleError's pure
-// domain variants (never `try`-propagated — the raw std FS errors are not
-// members of BundleError).
+// assembleBundle lays out the .app, writes the plist, copies the binary, and
+// resolves the icon. Every filesystem call is caught and mapped into BundleError's
+// pure domain variants. Raw std FS errors are not members of BundleError, so
+// `try` propagation would be an error-set mismatch.
 // ---------------------------------------------------------------------------
 
 /// Assemble `<displayName>.app` under `out_dir`. Returns the gpa-owned `.app`
@@ -163,7 +163,7 @@ pub fn assembleBundle(
         .make_path = true,
     }) catch return error.BinaryCopyFailed;
 
-    // Write Info.plist. The Allocating writer's only real failure is OOM; any
+    // Write Info.plist. The Allocating writer's only failure is OOM; any
     // other writer error maps to the plist-write domain variant.
     const plist_bytes = writeInfoPlist(gpa, cfg) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -208,8 +208,8 @@ fn resolveIcon(
         return;
     }
 
-    // .png (or any non-.icns): convert through iconutil. The icon_path reaches
-    // an argv slot — its leading-`-` rejection is enforced by validateConfig.
+    // .png (or any non-.icns): convert through iconutil. `icon_path` reaches
+    // an argv slot; `validateConfig` enforces the leading-`-` rejection.
     const argv = [_][]const u8{ "iconutil", "-c", "icns", "-o", dest, icon_path };
     const result = runner.run(io, gpa, &argv) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -617,7 +617,7 @@ test "assembleBundle surfaces an iconutil failure as a populated diagnostic" {
     const r = assembleBundle(io, gpa, &runner, cfg, &.{bin_path}, out_dir, &diag);
     try testing.expectError(error.IconConvertFailed, r);
 
-    // The diagnostic is populated with the captured stderr (gpa-owned).
+    // The diagnostic carries the captured stderr (gpa-owned).
     try testing.expect(diag != null);
     try testing.expectEqual(diagnostics.Code.unknown_tool_failure, diag.?.code);
     try testing.expectEqualStrings("iconutil: bad png", diag.?.detail);

@@ -646,9 +646,9 @@ test "I2: a 1000-message flood stays within a bounded transient budget (concurre
     }
     app.bridge.drainForTest();
     backend.pumpMain();
-    // The concurrency cap must have actually tripped: a large fraction of the
+    // The concurrency cap must have tripped: a large fraction of the
     // flood is shed as "server busy" without hashing, so the gate path is
-    // genuinely covered (not just queued and resolved).
+    // covered (not just queued and resolved).
     try std.testing.expect(backend.countContaining("busy") > 0);
     // Every id received exactly one terminal emission (resolve OR busy-reject).
     // Tally in a single O(n) pass: parse each emission's id and bump its slot,
@@ -962,7 +962,7 @@ test "fuzz: typed args_json decode for registered commands never traps (manual >
         const f1 = fields[rand.uintLessThan(usize, fields.len)];
         const v1 = values[rand.uintLessThan(usize, values.len)];
         var msg: [256]u8 = undefined;
-        // Sometimes one field, sometimes two, sometimes empty {} — all valid JSON.
+        // Sometimes one field, sometimes two, sometimes empty {}; all valid JSON.
         const text = switch (rand.uintLessThan(u8, 3)) {
             0 => std.fmt.bufPrint(&msg, "{{\"id\":{d},\"cmd\":\"{s}\",\"args\":{{}}}}", .{ it, cmd }) catch continue,
             1 => std.fmt.bufPrint(&msg, "{{\"id\":{d},\"cmd\":\"{s}\",\"args\":{{\"{s}\":{s}}}}}", .{ it, cmd, f1, v1 }) catch continue,

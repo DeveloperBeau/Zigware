@@ -12,7 +12,7 @@ pub const Progress = struct {
 pub const HexDigest = [64]u8;
 
 /// Hash `data` in 64KB chunks. Reports integer-percent progress and observes the
-/// cancel token (own OR shutdown) between chunks. Pure — no allocator.
+/// cancel token (own OR shutdown) between chunks. Allocator-free.
 pub fn hashBuffer(data: []const u8, progress: ?Progress, cancel: compute.CancelToken) !HexDigest {
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     const chunk: usize = 64 * 1024;

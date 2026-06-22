@@ -121,7 +121,7 @@ const required_methods = [_][]const u8{
 ///     not to run. Idempotent: an unknown or already-fired token is a no-op.
 ///
 /// CONTRACT: all timer scheduling, cancellation, and firing happen on the main
-/// thread, so cancel-vs-fire is serialized — there is no data race between a
+/// thread, so cancel-vs-fire is serialized, so there is no data race between a
 /// cancel and a fire. The CALLER owns `ctx` and frees it exactly once: on the
 /// cancel path the caller frees it (the timer will not fire); on the fire path
 /// the `work` callback frees it.

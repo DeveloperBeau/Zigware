@@ -38,7 +38,7 @@ pub const Pool = struct {
     max_queue: usize,
     shutdown: bool = false,
     /// Checked lock-free by the hashing loop between 64 KB chunks.
-    /// Written under mutex in deinit before broadcast — the `.release` store
+    /// Written under mutex in deinit before broadcast. The `.release` store
     /// is correctly sequenced with the mutex unlock that follows.
     cancel_all: std.atomic.Value(bool) = .{ .raw = false },
 

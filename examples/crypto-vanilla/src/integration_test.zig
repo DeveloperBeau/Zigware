@@ -24,18 +24,18 @@ const Bridge = z.Bridge;
 const sha256_abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
 /// The example command surface the bridge registers. `crypto.Commands` already
-/// exposes `pub fn cryptoDemo`, so it IS the surface — no wrapper needed.
+/// exposes `pub fn cryptoDemo`, so it IS the surface. No wrapper needed.
 const CryptoCommands = crypto.Commands;
 
 /// An unscoped app permission granting the one command. `cryptoDemo` touches no
-/// filesystem, so unlike the notes example it carries no path scope — the gate
-/// authorizes it purely on the command being in `commands_allow`.
+/// filesystem, so unlike the notes example it carries no path scope. The gate
+/// authorizes it on the command being in `commands_allow`.
 const crypto_permission = z.capability.Permission{
     .identifier = "app:cryptoDemo",
     .commands_allow = &.{"cryptoDemo"},
 };
 
-/// A minimal catalog holding just that permission. The capability references
+/// A minimal catalog holding that permission. The capability references
 /// only `app:cryptoDemo`, so no built-in sets are needed to resolve it.
 const crypto_catalog = z.capability.Catalog{
     .permissions = &.{crypto_permission},
@@ -135,7 +135,7 @@ test "crypto example: cryptoDemo resolves through the real bridge with the diges
     try std.testing.expectEqual(@as(usize, 0), h.backend.countRejectExactly(1));
 
     // The resolve carries the real SHA-256 digest, the recovered plaintext, and a
-    // successful round-trip flag — the full encrypt/decrypt closed over the bridge.
+    // successful round-trip flag: the full encrypt/decrypt closed over the bridge.
     try std.testing.expect(h.backend.countContaining(sha256_abc) >= 1);
     try std.testing.expect(h.backend.countContaining("\"decrypted\":\"hi\"") >= 1);
     try std.testing.expect(h.backend.countContaining("\"roundTrip\":true") >= 1);
@@ -144,7 +144,7 @@ test "crypto example: cryptoDemo resolves through the real bridge with the diges
 test "crypto example: cryptoDemo resolves through a real App via initWithCommands" {
     // The production wiring: App.initWithCommands registers cryptoDemo AND
     // synthesizes the grant that authorizes it for the "main" window. This is the
-    // exact path the shipping exe (src/main.zig) takes — no hand-built grants.
+    // exact path the shipping exe (src/main.zig) takes, with no hand-built grants.
     const backend = try z.NullBackend.init(std.testing.allocator, std.testing.io);
     const app = try z.App(z.NullBackend).initWithCommands(crypto.Commands, std.testing.allocator, std.testing.io, backend);
     defer {
@@ -170,7 +170,7 @@ test "crypto example: an ungranted command is denied at the gate" {
     defer h.deinit();
 
     // "encryptAll" is not in commands_allow, so the gate must reject it before any
-    // handler runs — proving the grant actually gates the surface.
+    // handler runs, proving the grant gates the surface.
     h.send(
         \\{"id":2,"cmd":"encryptAll","args":{}}
     );

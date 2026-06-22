@@ -69,7 +69,7 @@ const State = struct {
     /// Set by the latched worker if IT observes cancellation at release time.
     /// Because the latch is released only after cancelId(1) has landed, a SHARED
     /// flag (the old cancel_all behavior) would flip this true. A per-id flag
-    /// leaves it false. This is the assertion that actually discriminates
+    /// leaves it false. This is the assertion that discriminates
     /// per-invocation isolation from a shared flag.
     other_saw_cancel: std.atomic.Value(bool) = .{ .raw = false },
 };
@@ -202,8 +202,8 @@ test "armCancel OOM before submit releases the reservation with no leak or doubl
     defer h.deinit();
 
     // Reserve normally (the map alloc must succeed), then arm the one-shot failer
-    // so the NEXT allocation — armCancel's flag create() (hoisted ahead of the
-    // JobCtx create/dupe block) — fails. Only that one allocation fails; the
+    // so the NEXT allocation (armCancel's flag create(), hoisted ahead of the
+    // JobCtx create/dupe block) fails. Only that one allocation fails; the
     // rollback's emitErrorReject then encodes a real internal/OOM reject.
     var one_shot = OneShotFail{ .base = std.testing.allocator };
     std.debug.assert(h.bridge.reserveCall("main", 7));
@@ -545,7 +545,7 @@ const FuzzSink = struct {
 /// position) MUST be a jsString-safe JS literal (no breakout). A purely random
 /// chunk byte can collide with the digits inside `_bin(id, seq, len, ...)`, so a
 /// naive "exact bytes never a substring" check has false positives; the real G6
-/// guarantee is structural — the only attacker-influenced string on the channel
+/// guarantee is structural. The only attacker-influenced string on the channel
 /// is the escaped mime, and assertSafeJsLiteral proves it cannot break out.
 fn assertControlFrame(frame: []const u8) !void {
     if (frame.len == 0) return; // trailing split fragment after the last '\n'
@@ -556,7 +556,7 @@ fn assertControlFrame(frame: []const u8) !void {
         std.mem.indexOf(u8, frame, "window.Zigware._resolve(") != null or
         std.mem.indexOf(u8, frame, "window.Zigware._reject(") != null);
     if (is_bin) {
-        // _bin(id, seq, len, "<mime>"); — the mime literal is the only string
+        // _bin(id, seq, len, "<mime>"); the mime literal is the only string
         // position. Slice it from the first '"' to the last '"' and assert it is
         // a safe JS literal (the G6 boundary jsString enforces).
         const open = std.mem.indexOfScalar(u8, frame, '"') orelse return error.MissingMimeLiteral;

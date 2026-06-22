@@ -30,7 +30,7 @@ pub const Channel = command_ctx.Channel;
 pub const CommandError = command_ctx.CommandError;
 /// The shared command State. App handlers take `*Ctx(State)`; this is the exact
 /// type the App's bridge instantiates, so an app's commands compose with the
-/// builtins over one State. Stateless apps simply ignore `ctx.state`.
+/// builtins over one State. Stateless apps ignore `ctx.state`.
 pub const State = @import("commands/builtin.zig").State;
 
 // ── Compute sugar (offload progress + cancel) ───────────────────────────────

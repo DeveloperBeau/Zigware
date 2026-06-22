@@ -35,7 +35,7 @@ test "manifest test root mounted" {
 //
 // Parsed manifests are freed via `parse.freeManifest` (which honors the
 // static-default-slice skip rule). `std.zon.parse.free` is NOT safe on
-// Manifest — it would walk the static-literal default pointers and call
+// Manifest: it would walk the static-literal default pointers and call
 // gpa.free on them.
 //
 // This is a robustness fuzz over the author-trust boundary (zigware.zon is

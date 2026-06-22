@@ -17,8 +17,8 @@ const Runner = runner_mod.Runner;
 // No secret reaches a LOG line: the API-key form carries only the .p8 PATH +
 // issuer + key-id (never the key bytes). The Apple-ID fallback necessarily puts
 // `--password <app-specific-pw>` in the child argv (inherent to notarytool's
-// CLI, visible to local `ps` for the call's lifetime) — this is why API-key is
-// preferred. The guarantee is "no secret in a Diagnostic / log line", NOT
+// CLI, visible to local `ps` for the call's lifetime), so API-key is preferred.
+// The guarantee is "no secret in a Diagnostic / log line", NOT
 // "argv is secret-free"; `notarize` never copies an argv into a Diagnostic.
 // ---------------------------------------------------------------------------
 
@@ -87,7 +87,7 @@ pub fn buildStapleArgv(
 
 /// Append the credential flags for whichever notary strategy is active. API-key
 /// passes the .p8 PATH only; Apple-ID passes the app-specific password into argv
-/// (inherent to notarytool — never copied into a Diagnostic). `.none` is a caller
+/// (inherent to notarytool; the password is never copied into a Diagnostic). `.none` is a caller
 /// bug (package() gates it), so it is unreachable.
 fn appendCreds(gpa: std.mem.Allocator, args: *std.ArrayList([]const u8), creds: Credentials) std.mem.Allocator.Error!void {
     switch (creds) {
@@ -119,7 +119,7 @@ fn appendDup(gpa: std.mem.Allocator, args: *std.ArrayList([]const u8), s: []cons
 }
 
 // ---------------------------------------------------------------------------
-// notarize — submit, wait, parse, then staple-on-accept / fetch-log-on-reject.
+// notarize: submit, wait, parse, then staple-on-accept / fetch-log-on-reject.
 //
 // On a failure path `notarize` writes a `gpa.dupe`-owned `Diagnostic` through
 // `diag` BEFORE freeing its `RunResult` / parse result, then returns the typed
@@ -129,7 +129,7 @@ fn appendDup(gpa: std.mem.Allocator, args: *std.ArrayList([]const u8), s: []cons
 // Parse lifetimes: each `parseNotaryResult` returns a `std.json.Parsed` owning a
 // parser arena the `status`/`id`/`issues` slices borrow, so each is `defer
 // parsed.deinit()`'d. Anything kept past the arena (the formatted issue list into
-// `Diagnostic.detail`) is `gpa.dupe`'d FIRST — never a borrow into the parsed value.
+// `Diagnostic.detail`) is `gpa.dupe`'d before the arena frees; no slice may borrow into the parsed value.
 // ---------------------------------------------------------------------------
 
 pub fn notarize(

@@ -120,7 +120,7 @@ fn matchPattern(io: std.Io, base_dir: std.Io.Dir, pattern: []const u8, canon_can
     const canon_prefix = pr_buf[0..ppn];
     // The canonical candidate must start with canon_prefix AT A SEGMENT BOUNDARY.
     // SECURITY: a bare startsWith lets `/a/foo/**` match `/a/foobar/x` (foobar
-    // starts with foo) — an out-of-scope escape. Require the candidate to equal the
+    // starts with foo). That is an out-of-scope escape. Require the candidate to equal the
     // prefix or have a '/' immediately after it.
     if (!std.mem.startsWith(u8, canon_candidate, canon_prefix)) return false;
     if (canon_candidate.len != canon_prefix.len and canon_candidate[canon_prefix.len] != '/') return false;
@@ -245,7 +245,7 @@ test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
     const bn = try tmp.dir.realPath(io, &bp);
     const base = bp[0..bn];
     // Create the allowed zone: $APPDATA/ok/f.
-    // ALSO create an on-disk sibling $APPDATA/okf/f — a path whose canonical form
+    // ALSO create an on-disk sibling $APPDATA/okf/f, a path whose canonical form
     // starts with base/ok but violates the segment boundary (base/okf, not base/ok/).
     // Without the boundary fix, a bare startsWith would match okf/f against
     // $APPDATA/ok/**, producing a false allow (escape). The fuzz MUST catch that.
@@ -295,7 +295,7 @@ test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
         if (pathMatches(io, tmp.dir, allow_set, cand, bases)) {
             allowed_hits += 1;
             // SECURITY INVARIANT: if allowed, the canonical path MUST be under
-            // base/ok AT A SEGMENT BOUNDARY. A bare startsWith would pass base/okf —
+            // base/ok AT A SEGMENT BOUNDARY. A bare startsWith would pass base/okf, so
             // tighten to require canon == ok_base or canon[ok_base.len] == '/'.
             // If this assertion fires it is a REAL security bug; do NOT weaken.
             var rb: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -316,7 +316,7 @@ test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
 // On a case-insensitive filesystem (macOS APFS default), realPathFile normalises
 // the on-disk CASE of the candidate. The glob TAIL however is matched byte-exact
 // (no case folding). This means an author who writes a deny pattern with the
-// wrong case — e.g. `*.KEY` when the file on disk is `k.key` — will find the
+// wrong case (e.g. `*.KEY` when the file on disk is `k.key`) will find the
 // deny silently inactive, because the canonical candidate (`…/k.key`) does not
 // byte-match `*.KEY`.
 //
@@ -325,7 +325,7 @@ test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
 // name, so an attacker cannot choose which case the canonical string uses.
 //
 // This is an AUTHOR FOOTGUN: the app author (trusted) who typos a deny pattern
-// case produces a deny that never fires. The workaround is simple: always match
+// case produces a deny that never fires. The workaround: always match
 // the deny glob case to the on-disk file case, or use a case-insensitive glob.
 // Fixing this properly (case-fold both pattern tail and canonical path) is
 // deferred until a real `fs:` command lands (sub-project D).
@@ -343,7 +343,7 @@ test "case-insensitivity caveat: mismatched deny pattern case does not fire (aut
     var fk = try tmp.dir.createFile(io, "k.key", .{});
     fk.close(io);
     const bases = Bases{ .appdata = base, .home = base, .appconfig = base };
-    // Allow everything; deny only `*.KEY` (uppercase extension — mismatched case).
+    // Allow everything; deny only `*.KEY` (uppercase extension, mismatched case).
     const set = ScopeSet{
         .allow = &.{.{ .path = "$APPDATA/**" }},
         .deny = &.{.{ .path = "$APPDATA/**/*.KEY" }},
@@ -353,7 +353,7 @@ test "case-insensitivity caveat: mismatched deny pattern case does not fire (aut
     // DOCUMENTED BEHAVIOR: on a case-insensitive FS the deny glob `*.KEY` does
     // NOT match the canonical `k.key` (byte-exact tail match). pathMatches => true.
     // On a case-sensitive FS (Linux) the canonical name IS `k.key` and `*.KEY`
-    // also fails the byte-exact match — so the result is true on BOTH platforms.
+    // also fails the byte-exact match. The result is true on BOTH platforms.
     // ASSERT: allow fires, deny does not (regardless of platform case sensitivity).
     // This is NOT a security escape (attacker cannot control pattern case).
     try std.testing.expect(pathMatches(io, tmp.dir, set, cand, bases));

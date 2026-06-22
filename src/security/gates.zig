@@ -55,8 +55,8 @@ fn originTrusted(origins: []const OriginPattern, origin: []const u8, is_debug: b
 
 /// The trusted prod origin is EXACTLY app://localhost (the one app host), not any
 /// app:// host. Matching a bare `app://` prefix would trust `app://evil/` and
-/// `app://localhost.attacker.com/` — the exact bug the current app.zig nav guard
-/// fixed (see its deny-by-default comment). Match `app://localhost/` (with a path)
+/// `app://localhost.attacker.com/`. The current app.zig nav guard fixed that bug
+/// (see its deny-by-default comment). Match `app://localhost/` (with a path)
 /// or the bare `app://localhost` origin, nothing else. An empty, opaque,
 /// javascript:, or foreign origin does not match.
 pub fn isAppScheme(origin: []const u8) bool {
