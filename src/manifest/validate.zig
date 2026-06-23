@@ -184,14 +184,14 @@ pub fn validate(
         ok = false;
     }
 
-    // devUrl without beforeDevCommand: WARNING (does not flip `ok`).
-    if (m.build.devUrl != null and m.build.beforeDevCommand == null) {
-        const path = try gpa.dupe(u8, "build.devUrl");
+    // serveUrl without a dev command: WARNING (does not flip `ok`).
+    if (m.frontend.serveUrl != null and m.frontend.dev == null) {
+        const path = try gpa.dupe(u8, "frontend.serveUrl");
         errdefer gpa.free(path);
         try diag.add(gpa, .{
             .code = .dev_url_without_command,
             .is_error = false,
-            .message = "devUrl is set but no beforeDevCommand was provided; dev server may not start",
+            .message = "serveUrl is set but no dev command was provided; dev server may not start",
             .path = path,
         });
     }
@@ -514,13 +514,13 @@ test "validate emits dev_url_without_command as a warning that does not fail" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.build = .{ .devUrl = "http://localhost:5173" };
+    m.frontend = .{ .serveUrl = "http://localhost:5173" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .dev_url_without_command));
     try std.testing.expect(!diag.hasErrors());
     const d = findOne(diag, .dev_url_without_command).?;
     try std.testing.expect(!d.is_error);
-    try std.testing.expectEqualStrings("build.devUrl", d.path.?);
+    try std.testing.expectEqualStrings("frontend.serveUrl", d.path.?);
 }
 
 test "validate does not emit dev_url_without_command when both fields are set" {
@@ -528,7 +528,7 @@ test "validate does not emit dev_url_without_command when both fields are set" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.build = .{ .devUrl = "http://localhost:5173", .beforeDevCommand = "bun run dev" };
+    m.frontend = .{ .serveUrl = "http://localhost:5173", .dev = "bun run dev" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .dev_url_without_command));
 }
@@ -624,7 +624,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .{ .label = "dup", .title = "B" },
     } };
     m.security = .{ .capabilities = &.{ "missing.one", "missing.two" } };
-    m.build = .{ .devUrl = "http://localhost:5173" };
+    m.frontend = .{ .serveUrl = "http://localhost:5173" };
 
     _ = try validate(gpa, m, .Debug, &.{}, &diag);
 }

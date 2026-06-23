@@ -28,7 +28,7 @@
             .debugInspector = false,
         },
     },
-    .build = .{
-        .frontendDist = "frontend",
+    .frontend = .{
+        .outDir = "frontend",
     },
 }

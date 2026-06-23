@@ -24,14 +24,14 @@ pub const ChildSpec = struct {
     inherit_stdio: bool = true,
     capture_stderr: bool = false, // when true, stderr is piped and returned by the BuildRunner caller
     // When true, the child is placed in its OWN process group (detached from the
-    // controlling terminal's foreground group). Dev children (app, beforeDevCommand)
+    // controlling terminal's foreground group). Dev children (app, frontend.dev)
     // set this so an interactive Ctrl-C delivers SIGINT to the CLI only; the CLI's
     // ordered teardown is then the sole path that signals the group, preserving the
     // "kill app before dev server" ordering. Because the child leads its own group,
     // teardown MUST signal the whole GROUP (`kill(-pid, …)`), not just the leader pid:
     // `npm run dev` forks Vite/esbuild grandchildren into this same group, and a
     // leader-only signal would leak them (still holding port 5173). See B1 Step 3.
-    // Generic spawns and the build verb's beforeBuildCommand leave this false.
+    // Generic spawns and the build verb's frontend.build leave this false.
     new_process_group: bool = false,
 };
 

@@ -20,9 +20,9 @@
             .debugInspector = false,
         },
     },
-    .build = .{
-        .beforeDevCommand = null,
-        .devUrl = null,
-        .frontendDist = "frontend",
+    .frontend = .{
+        .dev = null,
+        .serveUrl = null,
+        .outDir = "frontend",
     },
 }

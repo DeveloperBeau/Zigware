@@ -3,5 +3,5 @@
     .productName = "Embed",
     .version = "0.1.0",
     .app = .{ .windows = .{.{ .label = "main", .title = "Embed Main" }} },
-    .build = .{ .frontendDist = "dist" },
+    .frontend = .{ .outDir = "dist" },
 }

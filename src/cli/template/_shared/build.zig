@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
 
     // Production frontend assets: `zigware build` stages a CSP-injected
     // asset_table.zig (colocated with the assets) and passes its path here; that
-    // shadows the framework's default table. In dev the app loads from devUrl, so
+    // shadows the framework's default table. In dev the app loads from serveUrl, so
     // this option stays unset and the framework default is used.
     if (b.option([]const u8, "asset_table", "Path to a staged asset_table.zig (set by `zigware build`)")) |asset_table| {
         zigware_mod.addAnonymousImport("asset_table.zig", .{ .root_source_file = .{ .cwd_relative = asset_table } });

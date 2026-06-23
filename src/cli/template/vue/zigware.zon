@@ -10,10 +10,10 @@
     .security = .{
         .fuses = .{},
     },
-    .build = .{
-        .beforeDevCommand = "npm run dev",
-        .devUrl = "http://localhost:5173",
-        .beforeBuildCommand = "npm run build",
-        .frontendDist = "dist",
+    .frontend = .{
+        .dev = "npm run dev",
+        .serveUrl = "http://localhost:5173",
+        .build = "npm run build",
+        .outDir = "dist",
     },
 }

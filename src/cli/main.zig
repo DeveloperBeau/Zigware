@@ -547,7 +547,7 @@ const StubBuilder = struct {
     }
 };
 
-/// Minimal Spawner fake. The integration manifests declare no beforeBuildCommand, so it
+/// Minimal Spawner fake. The integration manifests declare no frontend.build command, so it
 /// is never spawned; it exists only to satisfy build.run's `proc` seam.
 const StubSpawner = struct {
     fn make(self: *StubSpawner) proc.Spawner {
@@ -620,7 +620,7 @@ test "runBuildInner surfaces a packaging failure through printPackageDiagnostic 
     var builder = StubBuilder{};
     var spawner = StubSpawner{};
     var manifest = buildTestManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
     // A signing identity is configured so the sign stage runs and the scripted codesign
     // failure (below) classifies a real packaging Diagnostic.
     manifest.bundle.macos.signingIdentity = "Developer ID Application: Acme (TEAMID)";
@@ -665,7 +665,7 @@ test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only
     var builder = StubBuilder{};
     var spawner = StubSpawner{};
     var manifest = buildTestManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     // skip_sign + skip_notarize: the package pipeline assembles the .app and builds an
     // unsigned dmg, so only the single hdiutil call reaches the runner.

@@ -27,10 +27,10 @@
             .debugInspector = false,
         },
     },
-    .build = .{
+    .frontend = .{
         // Vanilla ships no dev server; the frontend is served as static files.
-        .beforeDevCommand = null,
-        .devUrl = null,
-        .frontendDist = "frontend",
+        .dev = null,
+        .serveUrl = null,
+        .outDir = "frontend",
     },
 }

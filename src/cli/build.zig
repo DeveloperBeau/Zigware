@@ -29,7 +29,7 @@ const staged_dir = "staged";
 const asset_table_name = "asset_table.zig";
 const build_fragment_name = "assets.build.zig";
 
-/// build orchestrator: beforeBuildCommand -> asset embed -> CSP inject -> release compile.
+/// build orchestrator: frontend.build -> asset embed -> CSP inject -> release compile.
 ///
 /// Operates relative to the process cwd (the scaffolded project root). It reads the
 /// frontend dist named by the manifest, computes the strict CSP with this build's own
@@ -44,9 +44,9 @@ const build_fragment_name = "assets.build.zig";
 pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]const u8 {
     const manifest = opts.manifest;
 
-    // (1) beforeBuildCommand, if declared: spawn + wait. Never killed (not a dev child);
+    // (1) frontend.build, if declared: spawn + wait. Never killed (not a dev child);
     // any non-zero exit is fatal before_command_failed.
-    if (manifest.build.beforeBuildCommand) |cmd| {
+    if (manifest.frontend.build) |cmd| {
         var child = try opts.proc.spawn(io, gpa, .{
             .argv = &.{ "/bin/sh", "-c", cmd },
             .inherit_stdio = true,
@@ -58,9 +58,9 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]co
         }
     }
 
-    // (2) Walk frontendDist. walk maps a missing dir to frontend_dist_missing and any
+    // (2) Walk outDir. walk maps a missing dir to frontend_dist_missing and any
     // escaping entry to asset_outside_dist; both propagate as the CliError of the same name.
-    const dist_dir = manifest.build.frontendDist;
+    const dist_dir = manifest.frontend.outDir;
     var walked = try assets_embed.walk(io, gpa, dist_dir);
     defer walked.deinit();
 
@@ -118,7 +118,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]co
     // Stage EVERY frontend asset into the staged dir, colocated with the
     // asset_table.zig emitted below so its `@embedFile(import_name)` names resolve
     // by path. index.html is the CSP-injected copy; all other assets are copied
-    // from frontendDist verbatim.
+    // from outDir verbatim.
     for (walked.entries) |e| {
         const dest = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ staged_dir, e.import_name });
         defer gpa.free(dest);
@@ -261,7 +261,7 @@ const FakeBuilder = struct {
     }
 };
 
-/// Records every beforeBuildCommand spawn (argv joined) and the canned exit code each wait
+/// Records every frontend.build spawn (argv joined) and the canned exit code each wait
 /// returns. Never asked to kill.
 const FakeSpawner = struct {
     exit_code: u8 = 0,
@@ -294,7 +294,7 @@ fn testManifest() Manifest {
 }
 
 /// Write a `dist/index.html` fixture under `dir`. The tests pass ABSOLUTE paths for
-/// frontendDist/out_dir (run() opens them through Dir.cwd, which accepts absolute paths)
+/// outDir/out_dir (run() opens them through Dir.cwd, which accepts absolute paths)
 /// so no process-global chdir is needed and the tests stay parallel-safe.
 fn fixtureWithIndex(io: std.Io, dir: std.Io.Dir, index_html: []const u8) !void {
     try dir.createDirPath(io, "dist");
@@ -302,7 +302,7 @@ fn fixtureWithIndex(io: std.Io, dir: std.Io.Dir, index_html: []const u8) !void {
 }
 
 /// Absolute path `<tmp realpath>/<sub>` into `buf`. Used to hand run() absolute
-/// frontendDist/out_dir so it resolves them without a chdir.
+/// outDir/out_dir so it resolves them without a chdir.
 fn absUnder(io: std.Io, dir: std.Io.Dir, buf: []u8, sub: []const u8) ![]const u8 {
     var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const base = base_buf[0..try dir.realPath(io, &base_buf)];
@@ -331,7 +331,7 @@ test "build: asset_table embeds the CSP-injected index.html, hashes present, no 
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{};
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -390,7 +390,7 @@ test "build: hash count matches inline + external scripts (two hashes)" {
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{};
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -421,7 +421,7 @@ test "build: missing frontend dist errors frontend_dist_missing" {
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{};
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     try testing.expectError(error.frontend_dist_missing, run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -450,7 +450,7 @@ test "build: escaping symlink in dist errors asset_outside_dist" {
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{};
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     try testing.expectError(error.asset_outside_dist, run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -460,7 +460,7 @@ test "build: escaping symlink in dist errors asset_outside_dist" {
     }));
 }
 
-test "build: beforeBuildCommand non-zero exit is fatal before_command_failed" {
+test "build: frontend.build non-zero exit is fatal before_command_failed" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -476,8 +476,8 @@ test "build: beforeBuildCommand non-zero exit is fatal before_command_failed" {
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{ .exit_code = 1 };
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
-    manifest.build.beforeBuildCommand = "exit 1";
+    manifest.frontend.outDir = dist;
+    manifest.frontend.build = "exit 1";
 
     try testing.expectError(error.before_command_failed, run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -490,7 +490,7 @@ test "build: beforeBuildCommand non-zero exit is fatal before_command_failed" {
     try testing.expectEqual(@as(usize, 0), builder.builds); // fatal before the compile
 }
 
-test "build: beforeBuildCommand success then build proceeds" {
+test "build: frontend.build success then build proceeds" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -506,8 +506,8 @@ test "build: beforeBuildCommand success then build proceeds" {
     var builder = FakeBuilder{ .gpa = testing.allocator };
     var spawner = FakeSpawner{ .exit_code = 0 };
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
-    manifest.build.beforeBuildCommand = "true";
+    manifest.frontend.outDir = dist;
+    manifest.frontend.build = "true";
 
     const binary_path = try run(io, testing.allocator, .{
         .manifest = &manifest,
@@ -537,7 +537,7 @@ test "build: failed release compile errors zig_build_failed" {
     var builder = FakeBuilder{ .ok = false, .stderr_text = "compile error", .gpa = testing.allocator };
     var spawner = FakeSpawner{};
     var manifest = testManifest();
-    manifest.build.frontendDist = dist;
+    manifest.frontend.outDir = dist;
 
     try testing.expectError(error.zig_build_failed, run(io, testing.allocator, .{
         .manifest = &manifest,

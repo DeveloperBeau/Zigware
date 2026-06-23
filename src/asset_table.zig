@@ -1,4 +1,4 @@
-// Default asset table for the PoC frontend. `zigware build` regenerates this from frontendDist.
+// Default asset table for the PoC frontend. `zigware build` regenerates this from outDir.
 pub const Asset = struct { path: []const u8, body: []const u8, mime: [:0]const u8 };
 
 pub const index_html = @embedFile("frontend/index.html");
