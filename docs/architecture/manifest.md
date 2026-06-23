@@ -26,8 +26,8 @@ capability references are cross-checked, and CSP defaults to strict.
 `app`, `security`, `build`, `bundle`. Defaults that matter:
 
 - `Window.show = false` (hidden until first paint, which avoids the white flash),
-  `Window.url = null` (derive: `devUrl` in dev, `app://` in prod).
-- `Security.capabilities = &.{}` and all four `Fuses` `false` (deny by default).
+  `Window.url = null` (derive: `serveUrl` in dev, `app://` in prod).
+- `Security.grants = &.{}` and all four `Fuses` `false` (deny by default).
 - `Csp.*Src = &.{"'self'"}`: a strict baseline with no open hosts.
 
 ## The two manifest paths
