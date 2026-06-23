@@ -134,8 +134,6 @@ pub fn main(init: std.process.Init) !void {
 
     try writeSchema(&aw.writer);
 
-    // argv[1], when present, is the output path (the drift-check step routes a
-    // temp LazyPath here). Absent, write the committed repo file in place.
     const args = try init.minimal.args.toSlice(arena);
     const out_path: []const u8 = if (args.len >= 2) args[1] else "zigware-manifest.schema.json";
 
