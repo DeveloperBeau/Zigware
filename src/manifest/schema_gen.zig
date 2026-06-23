@@ -122,25 +122,25 @@ fn writeIndent(writer: *std.Io.Writer, comptime n: usize) std.Io.Writer.Error!vo
 }
 
 /// Build-runnable main: emits `zigware-manifest.schema.json` at the repo root.
-/// Mirrors `src/emit_dts.zig` exactly: DebugAllocator, Allocating writer,
-/// std.Io.Threaded for the io seam, std.Io.Dir.cwd().writeFile for the write.
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+/// argv[1], when present, is the output path (the drift-check step routes a
+/// temp LazyPath here). Absent, write the committed repo file in place.
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.gpa;
+    const io = init.io;
+    const arena = init.arena.allocator();
 
     var aw: std.Io.Writer.Allocating = .init(alloc);
     defer aw.deinit();
 
     try writeSchema(&aw.writer);
 
-    // 0.16 filesystem API: std.Io.Dir.cwd() + io-taking writeFile
-    // (std.fs.cwd() does not exist on this toolchain).
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    // argv[1], when present, is the output path (the drift-check step routes a
+    // temp LazyPath here). Absent, write the committed repo file in place.
+    const args = try init.minimal.args.toSlice(arena);
+    const out_path: []const u8 = if (args.len >= 2) args[1] else "zigware-manifest.schema.json";
+
     try std.Io.Dir.cwd().writeFile(io, .{
-        .sub_path = "zigware-manifest.schema.json",
+        .sub_path = out_path,
         .data = aw.writer.buffered(),
     });
 }

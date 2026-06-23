@@ -789,6 +789,17 @@ pub fn build(b: *std.Build) void {
     const schema_step = b.step("manifest-schema", "Generate zigware-manifest.schema.json");
     schema_step.dependOn(&schema_run.step);
 
+    // Drift guard: regenerate the schema to a temp file and diff it against the
+    // committed copy. `diff` exits non-zero on any difference, failing the step,
+    // so CI catches a stale checked-in zigware-manifest.schema.json.
+    const schema_check_run = b.addRunArtifact(schema_exe);
+    const fresh_schema = schema_check_run.addOutputFileArg("zigware-manifest.schema.json");
+    const schema_diff = b.addSystemCommand(&.{ "diff", "-u" });
+    schema_diff.addFileArg(b.path("zigware-manifest.schema.json"));
+    schema_diff.addFileArg(fresh_schema);
+    const schema_check_step = b.step("manifest-schema-check", "Fail if the committed manifest schema drifts from a fresh regenerate");
+    schema_check_step.dependOn(&schema_diff.step);
+
     // coverage-exe: the full headless logic surface. Rooted at app.zig, which
     // transitively imports bridge, null backend, assets, backend contract,
     // protocol, allowlist, jobs, and commands. The pure macOS helpers
