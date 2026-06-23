@@ -247,6 +247,30 @@ pub fn build(b: *std.Build) void {
     const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
     test_main_step.dependOn(&main_test_run.step);
 
+    // Isolated manifest-only test step: runs the manifest module tests
+    // (parse/validate/merge/capabilities/schema_gen/fuses via src/manifest_tests.zig,
+    // the embed-agreement test, the fuses comptime-lock test) without the
+    // App-based GUI suites that hang on this host. Task 3 appends the grant
+    // enforcement test to this step.
+    const test_manifest_step = b.step("test-manifest", "Run only the manifest module tests");
+
+    // Isolated CLI-verb test step: runs the cli/dev.zig and cli/build.zig manifest
+    // readers' tests in their own binaries so the dev/build assertions execute
+    // without the App suites. Mirrors the addLogicTestWithManifest wiring.
+    const test_cli_step = b.step("test-cli", "Run only the CLI dev/build verb tests");
+    {
+        const dm = b.createModule(.{ .root_source_file = b.path("src/cli/dev.zig"), .target = target, .optimize = optimize });
+        dm.addImport("zigware_manifest", manifest_mod);
+        dm.addImport("diag", diag_mod);
+        test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dm })).step);
+
+        const bm = b.createModule(.{ .root_source_file = b.path("src/cli/build.zig"), .target = target, .optimize = optimize });
+        bm.addImport("zigware_manifest", manifest_mod);
+        bm.addImport("package", package_mod);
+        bm.addImport("diag", diag_mod);
+        test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bm })).step);
+    }
+
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
         const m = b.createModule(.{
@@ -695,7 +719,9 @@ pub fn build(b: *std.Build) void {
     });
     wireManifest(mt_mod, effective_zon);
     const mt_tests = b.addTest(.{ .root_module = mt_mod });
-    test_step.dependOn(&b.addRunArtifact(mt_tests).step);
+    const mt_run = b.addRunArtifact(mt_tests);
+    test_step.dependOn(&mt_run.step);
+    test_manifest_step.dependOn(&mt_run.step);
 
     // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
     // source bytes produce identical Manifest values. The fixture lives at
@@ -713,7 +739,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/manifest/embed_fixture/zigware.zon"),
     });
     const embed_tests = b.addTest(.{ .root_module = embed_test_mod });
-    test_step.dependOn(&b.addRunArtifact(embed_tests).step);
+    const embed_run = b.addRunArtifact(embed_tests);
+    test_step.dependOn(&embed_run.step);
+    test_manifest_step.dependOn(&embed_run.step);
 
     // Fuse-constants module: thin re-export of the embedded fuses so the
     // bridge/command layer can prune disabled branches at comptime. Tested
@@ -727,7 +755,9 @@ pub fn build(b: *std.Build) void {
     });
     wireManifest(fuses_mod, effective_zon);
     const fuses_tests = b.addTest(.{ .root_module = fuses_mod });
-    test_step.dependOn(&b.addRunArtifact(fuses_tests).step);
+    const fuses_run = b.addRunArtifact(fuses_tests);
+    test_step.dependOn(&fuses_run.step);
+    test_manifest_step.dependOn(&fuses_run.step);
 
     // JSON Schema emitter: produces zigware-manifest.schema.json at the repo
     // root for editor autocomplete. Reflection-driven; a new Manifest field
