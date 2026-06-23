@@ -65,6 +65,10 @@ test "build-time grant loading authorizes a granted command and denies others" {
         &compile_diag,
     );
     defer table.deinit();
+    // compile() emits capability_window_unknown / fuse_requires_capability as
+    // diagnostics rather than errors; a clean compile must surface none, else the
+    // table below would be silently partial.
+    try std.testing.expect(!compile_diag.hasErrors());
 
     // 5. G2: the granted command is authorized; an ungranted one is denied
     //    (deny-by-default), and an unmatched window denies the granted command too.
