@@ -31,8 +31,8 @@ pub fn main(init: std.process.Init) !void {
     const tag = @import("builtin").target.os.tag;
 
     // Open the manifest's directory as the load root so per-OS overrides AND
-    // capabilities (src/capabilities/*.zon) are enumerated and the
-    // `security.capabilities` cross-check has the real present-set. Inputs are
+    // capabilities (src/grants/*.zon) are enumerated and the
+    // `security.grants` cross-check has the real present-set. Inputs are
     // pinned via addFileArg in build.zig, so the Run cache key stays stable.
     const root_path = std.fs.path.dirname(base_path) orelse ".";
     var root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch |e| {

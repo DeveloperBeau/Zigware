@@ -12,7 +12,7 @@
         },
     },
     .security = .{
-        .capabilities = .{"main"},
+        .grants = .{"main"},
         .fuses = .{
             .allowRemoteContent = false,
             .allowEval = false,

@@ -188,10 +188,13 @@ pub const Window = struct {
 pub const TitleBarStyle = enum { default, hidden, hidden_inset };
 
 pub const Security = struct {
-    /// Capability identifiers referenced from src/capabilities/*.zon.
-    /// Resolution and enforcement is sub-project C; D validates that each
-    /// referenced identifier resolves to a capability file.
-    capabilities: []const []const u8 = &.{},
+    /// Grant identifiers referenced from src/grants/*.zon. Resolution and
+    /// enforcement is sub-project C; D validates that each referenced
+    /// identifier resolves to a grant file. NOTE: the surface vocabulary is
+    /// "grant", but the internal capability-based-security code in src/security/*
+    /// and the diagnostic code names (e.g. unknown_capability_ref) deliberately
+    /// keep the generic "capability" term; do not rename them to match.
+    grants: []const []const u8 = &.{},
     /// Content-Security-Policy. F performs compile-time script-hash injection
     /// for own scripts; the author declares only trusted hosts here.
     csp: Csp = .{},
@@ -303,7 +306,7 @@ pub const OverrideCsp = struct {
 /// is optional so the merge can distinguish "field absent in override" from
 /// "field present and set to its default". Arrays replace wholesale.
 pub const OverrideSecurity = struct {
-    capabilities: ?[]const []const u8 = null,
+    grants: ?[]const []const u8 = null,
     csp: ?OverrideCsp = null,
     fuses: ?OverrideFuses = null,
 };

@@ -41,7 +41,7 @@ assets, and produces a ReleaseSafe binary.
 - `zigware.zon` — app manifest (windows, fuses, build commands).
 - `src/commands/greet.zig` — a sample backend command, callable from the
   frontend via `window.Zigware.invoke("greet", { name })`.
-- `src/capabilities/main.zon` — nav-origin trust for the `main` window.
+- `src/grants/main.zon` — nav-origin trust for the `main` window.
 - `frontend/` — the Svelte + Vite source; `npm run build` emits `dist/`.
 
 ## Regenerate frontend bindings

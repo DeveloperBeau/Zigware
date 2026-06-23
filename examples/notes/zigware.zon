@@ -13,7 +13,7 @@
         },
     },
     .security = .{
-        .capabilities = .{"main"},
+        .grants = .{"main"},
         // Strict baseline: own scripts only, no inline JS, no remote anything.
         .csp = .{
             .defaultSrc = .{"'self'"},

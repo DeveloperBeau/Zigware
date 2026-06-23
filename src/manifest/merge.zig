@@ -72,7 +72,7 @@ fn pickWindowDefaults(base: types.WindowDefaults, ov: types.OverrideWindowDefaul
 
 fn pickSecurity(base: types.Security, ov: types.OverrideSecurity) types.Security {
     var out = base;
-    if (ov.capabilities) |v| out.capabilities = v;
+    if (ov.grants) |v| out.grants = v;
     if (ov.csp) |c| out.csp = pickCsp(base.csp, c);
     if (ov.fuses) |f| out.fuses = pickFuses(base.fuses, f);
     return out;
@@ -354,8 +354,8 @@ fn freeCspDuped(gpa: std.mem.Allocator, c: types.Csp) void {
 
 fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Error!types.Security {
     var out = in;
-    out.capabilities = try dupStringList(gpa, types.Security, "capabilities", in.capabilities);
-    errdefer freeStringListDuped(gpa, types.Security, "capabilities", out.capabilities);
+    out.grants = try dupStringList(gpa, types.Security, "grants", in.grants);
+    errdefer freeStringListDuped(gpa, types.Security, "grants", out.grants);
     out.csp = try dupCsp(gpa, in.csp);
     errdefer freeCspDuped(gpa, out.csp);
     out.fuses = try dupFuses(gpa, in.fuses);
@@ -363,7 +363,7 @@ fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Err
 }
 
 fn freeSecurityDuped(gpa: std.mem.Allocator, s: types.Security) void {
-    freeStringListDuped(gpa, types.Security, "capabilities", s.capabilities);
+    freeStringListDuped(gpa, types.Security, "grants", s.grants);
     freeCspDuped(gpa, s.csp);
 }
 
@@ -585,7 +585,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     // Build a base + override that exercise every allocating helper:
     //   - identifier/productName/version (always dup)
     //   - app.windows (non-static list with three Windows, each with url Some)
-    //   - security.capabilities (non-static []const []const u8)
+    //   - security.grants (non-static []const []const u8)
     //   - security.csp.scriptSrc (non-static []const []const u8 via override)
     //   - frontend.dev (non-null optional)
     //   - bundle.icon (non-static []const []const u8)
@@ -608,7 +608,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .productName = "Deep",
         .version = "1.2.3",
         .app = .{ .windows = &base_windows },
-        .security = .{ .capabilities = &base_caps },
+        .security = .{ .grants = &base_caps },
         .frontend = .{ .dev = "bun run dev" },
         .bundle = .{
             .targets = &base_targets,

@@ -22,7 +22,7 @@ provides its own `zigware.zon`, `src/main.zig`, commands, and frontend. The
 ## System map
 
 ```
-                         zigware.zon (+ src/capabilities/*.zon)
+                         zigware.zon (+ src/grants/*.zon)
                                       │  build-time codegen
                                       ▼
    ┌─────────┐   zig build   ┌──────────────────┐   embeds   ┌──────────────┐

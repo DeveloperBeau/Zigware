@@ -13,7 +13,7 @@
         },
     },
     .security = .{
-        .capabilities = .{"main"},
+        .grants = .{"main"},
         // Own scripts only, no inline JS, no remote anything: a password never
         // leaves the process, so the window trusts nothing off-origin.
         .csp = .{

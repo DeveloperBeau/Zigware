@@ -79,7 +79,7 @@ Failure triage:
 - `bun test` runs the JS shim contract, hardening, and JS-eval round-trip over Zig-emitted escapes.
 
 ## Manifest is build-embedded
-The app manifest (`zigware.zon`, plus any per-OS overrides and the capability files under `src/capabilities/`) is build-embedded. `embedded()` is a comptime `@import` of the codegen's merged-and-validated `zigware.effective.zon` artifact, so a manifest change requires a rebuild. There is no runtime config read or parse path. To regenerate the effective manifest by hand, run `zig build emit-effective-manifest`.
+The app manifest (`zigware.zon`, plus any per-OS overrides and the grant files under `src/grants/`) is build-embedded. `embedded()` is a comptime `@import` of the codegen's merged-and-validated `zigware.effective.zon` artifact, so a manifest change requires a rebuild. There is no runtime config read or parse path. To regenerate the effective manifest by hand, run `zig build emit-effective-manifest`.
 
 ## Capability gate: v0.1.0 demo state
 

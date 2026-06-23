@@ -61,6 +61,6 @@ crypto-vanilla/
   src/main.zig             App(MacOSBackend) entry; registers cryptoDemo
   src/commands/crypto.zig  the cryptoDemo command + its unit tests
   src/integration_test.zig headless bridge + App round-trip + gate-denial tests
-  src/capabilities/        per-window origin grants
+  src/grants/              per-window origin grants
   frontend/                static HTML (inline CSS) + app.js, no bundler
 ```

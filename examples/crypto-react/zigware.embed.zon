@@ -1,5 +1,5 @@
 .{
-    // In-repo runnable exe manifest (no .security.capabilities; show=true). The
+    // In-repo runnable exe manifest (no .security.grants; show=true). The
     // shippable CLI manifest is zigware.zon. See crypto-vanilla for details.
     .identifier = "com.zigware.crypto-react",
     .productName = "Crypto Demo (React)",

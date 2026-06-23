@@ -397,19 +397,19 @@ pub fn build(b: *std.Build) void {
             emit_eff_run.addFileArg(b.path(name));
         } else |_| {}
     }
-    // Capability files (src/capabilities/*.zon) are read by parseAtBuild via
+    // Capability files (src/grants/*.zon) are read by parseAtBuild via
     // presence enumeration. Pin each one currently present so a change re-runs
     // the codegen. A missing dir means no files are added; the loader's
     // missing-dir branch yields an empty present-set.
     {
-        var cap_dir = root.openDir(bio, "src/capabilities", .{ .iterate = true }) catch null;
+        var cap_dir = root.openDir(bio, "src/grants", .{ .iterate = true }) catch null;
         if (cap_dir) |*dir| {
             defer dir.close(bio);
             var it = dir.iterate();
             while (it.next(bio) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.name, ".zon")) continue;
-                const sub = b.fmt("src/capabilities/{s}", .{entry.name});
+                const sub = b.fmt("src/grants/{s}", .{entry.name});
                 emit_eff_run.addFileArg(b.path(sub));
             }
         }

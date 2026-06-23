@@ -1,6 +1,6 @@
 //! Build-time capability-body loader. Where `parse.listCapabilityIds` records
 //! only the present SET of capability identifiers (the validator's cross-check
-//! input), this loader OPENS each `src/capabilities/*.zon` and parses its full
+//! input), this loader OPENS each `src/grants/*.zon` and parses its full
 //! `{ identifier, windows, origins, permissions }` body into a `Capability`.
 //!
 //! The result is consumed by the runtime `Catalog`/`GrantTable` assembly: a
@@ -29,14 +29,14 @@ pub const Capability = cap.Capability;
 const READ_LIMIT_BYTES: usize = 1 << 20; // 1 MiB upper bound on a capability file.
 
 pub const LoadError = error{
-    /// A `src/capabilities/*.zon` body failed to parse against `Capability`.
+    /// A `src/grants/*.zon` body failed to parse against `Capability`.
     /// Fail-closed: a malformed capability is a hard error, never skipped.
     ParseFailed,
 } || std.mem.Allocator.Error;
 
-/// Opens `src/capabilities/*.zon` under `root_dir`, parses each body into a
+/// Opens `src/grants/*.zon` under `root_dir`, parses each body into a
 /// `Capability`, and returns them in directory-iteration order. A missing
-/// directory yields an EMPTY slice (fail-closed: every `security.capabilities`
+/// directory yields an EMPTY slice (fail-closed: every `security.grants`
 /// reference then resolves to nothing), mirroring `listCapabilityIds`.
 ///
 /// `arena` owns every returned allocation; tear down the arena to free.
@@ -45,7 +45,7 @@ pub fn loadCapabilities(
     io: std.Io,
     root_dir: std.Io.Dir,
 ) LoadError![]const Capability {
-    var dir = root_dir.openDir(io, "src/capabilities", .{ .iterate = true }) catch {
+    var dir = root_dir.openDir(io, "src/grants", .{ .iterate = true }) catch {
         // Missing dir is the expected fail-closed path; any other open error
         // also degrades to "no capabilities present" rather than aborting.
         const empty: []const Capability = &.{};
@@ -112,7 +112,7 @@ test "loadCapabilities parses permission identifiers and defaulted bodies" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/capabilities_bodies", .{});
+    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grants_bodies", .{});
     defer fixture.close(io);
 
     const caps = try loadCapabilities(arena, io, fixture);
@@ -139,7 +139,7 @@ test "loadCapabilities fails closed on a malformed capability body" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/capabilities_malformed", .{});
+    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grants_malformed", .{});
     defer fixture.close(io);
 
     try std.testing.expectError(

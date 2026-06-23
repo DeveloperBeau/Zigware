@@ -1,8 +1,8 @@
 .{
     // Minimal manifest for the in-repo runnable exe (root build.zig wires this via
-    // emit_effective_manifest). It omits the `.security.capabilities` block — the
-    // build-time codegen validates against an empty capability set and would
-    // reject capability refs — and sets `.show = true` so the window appears at
+    // emit_effective_manifest). It omits the `.security.grants` block — the
+    // build-time codegen validates against an empty grant set and would
+    // reject grant refs — and sets `.show = true` so the window appears at
     // creation instead of waiting on a page-ready/fallback signal. The shippable
     // CLI manifest with the full security block is `zigware.zon`.
     .identifier = "com.zigware.crypto-vanilla",
