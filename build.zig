@@ -723,6 +723,21 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mt_run.step);
     test_manifest_step.dependOn(&mt_run.step);
 
+    // Build-time grant-loading enforcement test (src/grant_enforcement_test.zig).
+    // Rooted at src/ so manifest/* and security/* are reachable by path in one
+    // module; needs the zigware_manifest_zon wire because parse.zig's embedded()
+    // compiles even though this test never calls it. No frontend embeds, no Cocoa.
+    const grant_enf_mod = b.createModule(.{
+        .root_source_file = b.path("src/grant_enforcement_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireManifest(grant_enf_mod, effective_zon);
+    const grant_enf_tests = b.addTest(.{ .root_module = grant_enf_mod });
+    const grant_enf_run = b.addRunArtifact(grant_enf_tests);
+    test_step.dependOn(&grant_enf_run.step);
+    test_manifest_step.dependOn(&grant_enf_run.step);
+
     // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
     // source bytes produce identical Manifest values. The fixture lives at
     // tests/manifest/embed_fixture/zigware.zon and is wired here as this

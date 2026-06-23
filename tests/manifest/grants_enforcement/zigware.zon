@@ -1,0 +1,13 @@
+.{
+    .identifier = "com.zigware.grants-test",
+    .productName = "Grants Test",
+    .version = "0.1.0",
+    .app = .{
+        .windows = .{
+            .{ .label = "main", .title = "Grants Test" },
+        },
+    },
+    .security = .{
+        .grants = .{"main"},
+    },
+}
