@@ -59,7 +59,7 @@ compile time, with zero runtime I/O. `app.zig` calls it once at startup.
   refs fail (`unknown_capability_ref`), failing closed.
 - **Identifier** is reverse-DNS; **version** is SemVer; the macOS team id is
   alphanumeric (argv-injection guard); CSP defaults strict.
-- `devUrl` without `beforeDevCommand` is a warning, not an error.
+- `frontend.serveUrl` without `frontend.dev` is a warning, not an error.
 
 ## Dependencies & key decisions
 

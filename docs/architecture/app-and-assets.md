@@ -49,7 +49,7 @@ alias `/`→`/index.html`, linear-scan `asset_table.table` for an exact match, r
 custom scheme to this (see [window-and-platform.md](window-and-platform.md)); the
 `stream://` route is handled by the bridge for out-of-band binary
 (see [bridge-and-commands.md](bridge-and-commands.md)). `zigware build` regenerates
-the table from `frontendDist` and the app build wires it via `-Dasset_table`,
+the table from `frontend.outDir` and the app build wires it via `-Dasset_table`,
 shadowing the framework default.
 
 ## The barrel (`zigware.zig`)
