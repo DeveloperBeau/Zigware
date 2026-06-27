@@ -1,0 +1,10 @@
+.{
+    .identifier = "main",
+    .windows = .{"main"},
+    // Trust only the app:// production origin; the greet command surface alone
+    // makes it callable from the trusted window, so no explicit permission entry
+    // is needed.
+    .origins = .{
+        .app_scheme,
+    },
+}

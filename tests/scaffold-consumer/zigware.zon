@@ -1,0 +1,7 @@
+.{
+    .identifier = "com.example.scaffold",
+    .productName = "Scaffold Consumer",
+    .version = "0.1.0",
+    .app = .{ .windows = .{.{ .label = "main", .title = "Scaffold Consumer" }} },
+    .security = .{ .grants = .{"main"} },
+}

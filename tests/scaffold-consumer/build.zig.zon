@@ -1,0 +1,10 @@
+.{
+    .name = .scaffold_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0xaf12374d8979334f,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}

@@ -40,6 +40,9 @@ jobs:
       - name: Build
         run: zig build
 
+      - name: Scaffold consumer gate
+        run: ./tests/scaffold-consumer/gate.sh
+
       # Run every dedicated test step under a watchdog timeout (macOS runners have
       # no GNU `timeout`), so a runaway suite is bounded and reported rather than
       # running to the job-level timeout. Every step runs (one slow/failing suite
