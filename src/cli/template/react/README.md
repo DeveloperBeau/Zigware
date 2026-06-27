@@ -41,7 +41,7 @@ assets, and produces a ReleaseSafe binary.
 ```
 {{name}}/
   zigware.zon          app manifest (windows, fuses, build commands)
-  capabilities/        per-window navigation and permission grants
+  grants/              per-window navigation and permission grants
   src/commands/        Zig command handlers exposed to the frontend
   frontend/            React components (entry: frontend/main.jsx)
   index.html           Vite entry document

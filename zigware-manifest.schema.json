@@ -45,7 +45,7 @@
     "security": {
       "type": "object",
       "properties": {
-        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "grants": {"type": "array", "items": {"type": "string"}},
         "csp": {
           "type": "object",
           "properties": {
@@ -73,13 +73,13 @@
       "required": [],
       "additionalProperties": false
     },
-    "build": {
+    "frontend": {
       "type": "object",
       "properties": {
-        "beforeDevCommand": {"type": "string"},
-        "beforeBuildCommand": {"type": "string"},
-        "devUrl": {"type": "string"},
-        "frontendDist": {"type": "string"}
+        "dev": {"type": "string"},
+        "build": {"type": "string"},
+        "serveUrl": {"type": "string"},
+        "outDir": {"type": "string"}
       },
       "required": [],
       "additionalProperties": false
@@ -91,6 +91,8 @@
         "icon": {"type": "array", "items": {"type": "string"}},
         "category": {"type": "string"},
         "copyright": {"type": "string"},
+        "bundleVersion": {"type": "string"},
+        "displayName": {"type": "string"},
         "macos": {
           "type": "object",
           "properties": {
@@ -98,6 +100,8 @@
             "hardenedRuntime": {"type": "boolean"},
             "entitlements": {"type": "string"},
             "providerShortName": {"type": "string"},
+            "teamId": {"type": "string"},
+            "notarize": {"type": "boolean"},
             "minimumSystemVersion": {"type": "string"}
           },
           "required": [],

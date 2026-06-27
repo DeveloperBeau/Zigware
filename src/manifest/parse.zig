@@ -120,7 +120,7 @@ pub fn parseAtBuild(
 /// per-OS override paths are supplied explicitly so the build graph can pin
 /// every input via `addFileArg` (Task 9's codegen uses this entry point).
 /// The override selection scans basenames in `override_paths`. `capability_ids`
-/// is the present-set the validator cross-checks `security.capabilities`
+/// is the present-set the validator cross-checks `security.grants`
 /// against; the caller pins capability files via `addFileArg` and extracts
 /// their basenames before calling.
 pub fn parseAtBuildFromPaths(
@@ -250,9 +250,9 @@ pub fn embedded() Manifest {
     return @import("zigware_manifest_zon");
 }
 
-/// Lists capability identifiers by presence under `src/capabilities/*.zon` in
+/// Lists capability identifiers by presence under `src/grants/*.zon` in
 /// `root_dir`. A missing directory yields an EMPTY slice (fail-closed: every
-/// `security.capabilities` reference then fails as `unknown_capability_ref`),
+/// `security.grants` reference then fails as `unknown_capability_ref`),
 /// never an error.
 ///
 /// Ownership: every element is `gpa.dupe`-d. Caller frees with:
@@ -263,7 +263,7 @@ fn listCapabilityIds(
     io: std.Io,
     root_dir: std.Io.Dir,
 ) std.mem.Allocator.Error![]const []const u8 {
-    var dir = root_dir.openDir(io, "src/capabilities", .{ .iterate = true }) catch {
+    var dir = root_dir.openDir(io, "src/grants", .{ .iterate = true }) catch {
         // Missing dir is the expected fail-closed path; any other open error
         // also degrades to "no capabilities present" rather than aborting.
         const empty: []const []const u8 = &.{};

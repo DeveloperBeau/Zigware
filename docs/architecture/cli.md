@@ -46,7 +46,7 @@ absolute path deps). See [manifest.md](manifest.md) for the generated `zigware.z
 
 **`dev`**: read manifest (Debug; the debug-inspector fuse is allowed here),
 install SIGINT onto an atomic shutdown flag, start the polling watcher, then run
-the dev loop: spawn `beforeDevCommand` (own process group), wait for `devUrl`
+the dev loop: spawn `frontend.dev` (own process group), wait for `frontend.serveUrl`
 (vanilla skips), initial Debug build, spawn the app, loop on watcher batches
 rebuilding+respawning. Ordered teardown on every exit path: kill app → kill
 beforeDev → close watcher.
@@ -84,8 +84,8 @@ injects fakes).
 
 ## Process / threading model
 
-Children are spawned through the `Spawner` seam: the app and `beforeDevCommand`
-run in their own process groups with inherited stdio; `beforeBuildCommand` runs
+Children are spawned through the `Spawner` seam: the app and `frontend.dev`
+run in their own process groups with inherited stdio; `frontend.build` runs
 to completion (failure is fatal). The watcher rechecks the shutdown flag in small
 sleep slices so SIGINT is observed promptly. A failed dev rebuild leaves the
 running app alive so the next good build can replace it.

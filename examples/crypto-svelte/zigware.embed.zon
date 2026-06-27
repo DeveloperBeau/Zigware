@@ -1,5 +1,5 @@
 .{
-    // In-repo runnable exe manifest (no .security.capabilities; show=true).
+    // In-repo runnable exe manifest (no .security.grants; show=true).
     .identifier = "com.zigware.crypto-svelte",
     .productName = "Crypto Demo (Svelte)",
     .version = "0.1.0",

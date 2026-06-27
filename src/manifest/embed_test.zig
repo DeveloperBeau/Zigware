@@ -51,11 +51,11 @@ test "embedded() equals parseAtBuild over the same source fixture" {
         try std.testing.expectEqualStrings(e.security.csp.scriptSrc[0], parsed.security.csp.scriptSrc[0]);
     }
 
-    // --- build ---
-    try std.testing.expectEqualStrings(e.build.frontendDist, parsed.build.frontendDist);
+    // --- frontend ---
+    try std.testing.expectEqualStrings(e.frontend.outDir, parsed.frontend.outDir);
     // Optional left at its default-null: both sides must agree it is absent.
-    try std.testing.expectEqual(@as(?[]const u8, null), e.build.devUrl);
-    try std.testing.expectEqual(@as(?[]const u8, null), parsed.build.devUrl);
+    try std.testing.expectEqual(@as(?[]const u8, null), e.frontend.serveUrl);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.frontend.serveUrl);
 
     // --- bundle ---
     try std.testing.expectEqual(e.bundle.targets.len, parsed.bundle.targets.len);

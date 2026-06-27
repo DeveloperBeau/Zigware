@@ -51,7 +51,7 @@ const Harness = struct {
         // D's loader validates the example manifest (and cross-checks its
         // capability files) and yields its windows. This proves the in-repo
         // example loads end to end through the real parser; the test never parses
-        // zon itself. The loader reads zigware.zon + src/capabilities/*.zon
+        // zon itself. The loader reads zigware.zon + src/grants/*.zon
         // relative to the passed root, so open the example dir explicitly (the
         // test binary's CWD is the build root, not examples/notes/).
         var example_dir = try std.Io.Dir.cwd().openDir(io, "examples/notes", .{ .iterate = true });

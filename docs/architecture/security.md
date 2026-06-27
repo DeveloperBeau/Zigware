@@ -84,8 +84,8 @@ origin, window label, command, optional scope input, is_debug
 ```
 
 Manifest validation runs first: parse `zigware.zon`, merge per-OS overrides,
-require a `main` window, cross-check every `security.capabilities` ref against a
-`src/capabilities/<id>.zon` file (missing dir ⇒ all refs fail), reject
+require a `main` window, cross-check every `security.grants` ref against a
+`src/grants/<id>.zon` file (missing dir ⇒ all refs fail), reject
 `debugInspector` in release. Errors fail the build; warnings don't.
 
 ## Invariants & known limits

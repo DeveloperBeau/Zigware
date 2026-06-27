@@ -247,6 +247,30 @@ pub fn build(b: *std.Build) void {
     const test_main_step = b.step("test-main", "Run only the CLI main-wiring tests");
     test_main_step.dependOn(&main_test_run.step);
 
+    // Isolated manifest-only test step: runs the manifest module tests
+    // (parse/validate/merge/capabilities/schema_gen/fuses via src/manifest_tests.zig,
+    // the embed-agreement test, the fuses comptime-lock test) without the
+    // App-based GUI suites that hang on this host. Task 3 appends the grant
+    // enforcement test to this step.
+    const test_manifest_step = b.step("test-manifest", "Run only the manifest module tests");
+
+    // Isolated CLI-verb test step: runs the cli/dev.zig and cli/build.zig manifest
+    // readers' tests in their own binaries so the dev/build assertions execute
+    // without the App suites. Mirrors the addLogicTestWithManifest wiring.
+    const test_cli_step = b.step("test-cli", "Run only the CLI dev/build verb tests");
+    {
+        const dm = b.createModule(.{ .root_source_file = b.path("src/cli/dev.zig"), .target = target, .optimize = optimize });
+        dm.addImport("zigware_manifest", manifest_mod);
+        dm.addImport("diag", diag_mod);
+        test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dm })).step);
+
+        const bm = b.createModule(.{ .root_source_file = b.path("src/cli/build.zig"), .target = target, .optimize = optimize });
+        bm.addImport("zigware_manifest", manifest_mod);
+        bm.addImport("package", package_mod);
+        bm.addImport("diag", diag_mod);
+        test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bm })).step);
+    }
+
     // origin.zig imports the `objc` module; wire it on the standalone test.
     {
         const m = b.createModule(.{
@@ -373,19 +397,19 @@ pub fn build(b: *std.Build) void {
             emit_eff_run.addFileArg(b.path(name));
         } else |_| {}
     }
-    // Capability files (src/capabilities/*.zon) are read by parseAtBuild via
+    // Capability files (src/grants/*.zon) are read by parseAtBuild via
     // presence enumeration. Pin each one currently present so a change re-runs
     // the codegen. A missing dir means no files are added; the loader's
     // missing-dir branch yields an empty present-set.
     {
-        var cap_dir = root.openDir(bio, "src/capabilities", .{ .iterate = true }) catch null;
+        var cap_dir = root.openDir(bio, "src/grants", .{ .iterate = true }) catch null;
         if (cap_dir) |*dir| {
             defer dir.close(bio);
             var it = dir.iterate();
             while (it.next(bio) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.name, ".zon")) continue;
-                const sub = b.fmt("src/capabilities/{s}", .{entry.name});
+                const sub = b.fmt("src/grants/{s}", .{entry.name});
                 emit_eff_run.addFileArg(b.path(sub));
             }
         }
@@ -695,7 +719,24 @@ pub fn build(b: *std.Build) void {
     });
     wireManifest(mt_mod, effective_zon);
     const mt_tests = b.addTest(.{ .root_module = mt_mod });
-    test_step.dependOn(&b.addRunArtifact(mt_tests).step);
+    const mt_run = b.addRunArtifact(mt_tests);
+    test_step.dependOn(&mt_run.step);
+    test_manifest_step.dependOn(&mt_run.step);
+
+    // Build-time grant-loading enforcement test (src/grant_enforcement_test.zig).
+    // Rooted at src/ so manifest/* and security/* are reachable by path in one
+    // module; needs the zigware_manifest_zon wire because parse.zig's embedded()
+    // compiles even though this test never calls it. No frontend embeds, no Cocoa.
+    const grant_enf_mod = b.createModule(.{
+        .root_source_file = b.path("src/grant_enforcement_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireManifest(grant_enf_mod, effective_zon);
+    const grant_enf_tests = b.addTest(.{ .root_module = grant_enf_mod });
+    const grant_enf_run = b.addRunArtifact(grant_enf_tests);
+    test_step.dependOn(&grant_enf_run.step);
+    test_manifest_step.dependOn(&grant_enf_run.step);
 
     // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
     // source bytes produce identical Manifest values. The fixture lives at
@@ -713,7 +754,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/manifest/embed_fixture/zigware.zon"),
     });
     const embed_tests = b.addTest(.{ .root_module = embed_test_mod });
-    test_step.dependOn(&b.addRunArtifact(embed_tests).step);
+    const embed_run = b.addRunArtifact(embed_tests);
+    test_step.dependOn(&embed_run.step);
+    test_manifest_step.dependOn(&embed_run.step);
 
     // Fuse-constants module: thin re-export of the embedded fuses so the
     // bridge/command layer can prune disabled branches at comptime. Tested
@@ -727,7 +770,9 @@ pub fn build(b: *std.Build) void {
     });
     wireManifest(fuses_mod, effective_zon);
     const fuses_tests = b.addTest(.{ .root_module = fuses_mod });
-    test_step.dependOn(&b.addRunArtifact(fuses_tests).step);
+    const fuses_run = b.addRunArtifact(fuses_tests);
+    test_step.dependOn(&fuses_run.step);
+    test_manifest_step.dependOn(&fuses_run.step);
 
     // JSON Schema emitter: produces zigware-manifest.schema.json at the repo
     // root for editor autocomplete. Reflection-driven; a new Manifest field
@@ -743,6 +788,17 @@ pub fn build(b: *std.Build) void {
     const schema_run = b.addRunArtifact(schema_exe);
     const schema_step = b.step("manifest-schema", "Generate zigware-manifest.schema.json");
     schema_step.dependOn(&schema_run.step);
+
+    // Drift guard: regenerate the schema to a temp file and diff it against the
+    // committed copy. `diff` exits non-zero on any difference, failing the step,
+    // so CI catches a stale checked-in zigware-manifest.schema.json.
+    const schema_check_run = b.addRunArtifact(schema_exe);
+    const fresh_schema = schema_check_run.addOutputFileArg("zigware-manifest.schema.json");
+    const schema_diff = b.addSystemCommand(&.{ "diff", "-u" });
+    schema_diff.addFileArg(b.path("zigware-manifest.schema.json"));
+    schema_diff.addFileArg(fresh_schema);
+    const schema_check_step = b.step("manifest-schema-check", "Fail if the committed manifest schema drifts from a fresh regenerate");
+    schema_check_step.dependOn(&schema_diff.step);
 
     // coverage-exe: the full headless logic surface. Rooted at app.zig, which
     // transitively imports bridge, null backend, assets, backend contract,

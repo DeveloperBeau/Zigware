@@ -10,7 +10,7 @@ pub const BuildSpec = struct {
     optimize: std.builtin.OptimizeMode,
     dev: bool,
     /// When set (prod packaging), the path to a staged `asset_table.zig` the
-    /// scaffold build wires via `-Dasset_table`. Null for dev (loads from devUrl).
+    /// scaffold build wires via `-Dasset_table`. Null for dev (loads from serveUrl).
     asset_table: ?[]const u8 = null,
 };
 pub const BuildResult = struct { ok: bool, stderr: []u8 }; // stderr owned by caller (gpa)
@@ -65,7 +65,7 @@ fn batchNeedsRebuild(changed: []const watch.ChangedPath) bool {
 /// (run) and every reload spawn (rebuildAndReload) are byte-identical: same dev env,
 /// same own-process-group so an interactive Ctrl-C reaches the CLI alone.
 fn appSpec(ctx: *DevContext) proc.ChildSpec {
-    const dev_url = ctx.manifest.build.devUrl orelse "app://";
+    const dev_url = ctx.manifest.frontend.serveUrl orelse "app://";
     return .{
         .argv = &.{ "zig", "build", "run" },
         .env = &.{
@@ -127,9 +127,9 @@ pub fn run(ctx: *DevContext) anyerror!void {
     const io = ctx.io;
     const gpa = ctx.gpa;
 
-    // beforeDevCommand (if any), in its own process group so Ctrl-C reaches the CLI only.
+    // dev command (if any), in its own process group so Ctrl-C reaches the CLI only.
     var before_dev: ?proc.Child = null;
-    if (ctx.manifest.build.beforeDevCommand) |cmd| {
+    if (ctx.manifest.frontend.dev) |cmd| {
         before_dev = try ctx.proc.spawn(io, gpa, .{
             .argv = &.{ "/bin/sh", "-c", cmd },
             .inherit_stdio = true,
@@ -149,10 +149,10 @@ pub fn run(ctx: *DevContext) anyerror!void {
     // SIGINT mid-startup goes straight to teardown rather than stranding the loop.
     if (ctx.shutdown.load(.seq_cst)) return;
 
-    // Wait for the dev server (framework templates). Vanilla carries no devUrl and skips
+    // Wait for the dev server (framework templates). Vanilla carries no serveUrl and skips
     // this. A shutdown or timeout during the wait routes to the same ordered teardown,
     // reaping the already-spawned beforeDev child (no leak).
-    if (ctx.manifest.build.devUrl) |url| {
+    if (ctx.manifest.frontend.serveUrl) |url| {
         ctx.wait_for_url(io, gpa, url, ctx.shutdown) catch return;
     }
 
@@ -410,10 +410,10 @@ test "run: shutdown set while watcher is parked runs ordered teardown" {
     var builder = FakeBuilder{ .ok = true, .gpa = testing.allocator };
     var shutdown = std.atomic.Value(bool).init(false);
     var sw = ShutdownWatcher{ .shutdown = &shutdown };
-    // beforeDevCommand + devUrl so both children exist and the probe runs.
+    // frontend.dev + serveUrl so both children exist and the probe runs.
     var manifest = testManifest();
-    manifest.build.beforeDevCommand = "true";
-    manifest.build.devUrl = "http://localhost:5173";
+    manifest.frontend.dev = "true";
+    manifest.frontend.serveUrl = "http://localhost:5173";
 
     var ctx = DevContext{
         .io = nul_io,
@@ -448,7 +448,7 @@ test "run: scripted batch reload then close runs full loop and ordered teardown"
     const b0 = [_]watch.ChangedPath{.{ .path = "src/x.zig", .kind = .zig_src }};
     const batches = [_][]const watch.ChangedPath{&b0};
     var fw = FakeWatcher{ .batches = &batches };
-    var manifest = testManifest(); // no beforeDev, no devUrl (vanilla)
+    var manifest = testManifest(); // no dev command, no serveUrl (vanilla)
 
     var ctx = DevContext{
         .io = nul_io,
@@ -482,8 +482,8 @@ test "run: initial waitForUrl timeout reaps the beforeDev child (no leak)" {
     var shutdown = std.atomic.Value(bool).init(false);
     var fw = FakeWatcher{ .batches = &.{} };
     var manifest = testManifest();
-    manifest.build.beforeDevCommand = "true";
-    manifest.build.devUrl = "http://localhost:5173";
+    manifest.frontend.dev = "true";
+    manifest.frontend.serveUrl = "http://localhost:5173";
 
     var ctx = DevContext{
         .io = nul_io,
@@ -514,8 +514,8 @@ test "run: initial build failure during startup reaps the beforeDev child" {
     var shutdown = std.atomic.Value(bool).init(false);
     var fw = FakeWatcher{ .batches = &.{} };
     var manifest = testManifest();
-    manifest.build.beforeDevCommand = "true";
-    manifest.build.devUrl = "http://localhost:5173";
+    manifest.frontend.dev = "true";
+    manifest.frontend.serveUrl = "http://localhost:5173";
 
     var ctx = DevContext{
         .io = nul_io,

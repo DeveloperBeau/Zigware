@@ -17,7 +17,7 @@ capability references are cross-checked, and CSP defaults to strict.
 | `merge.zig` | Base + per-OS override merge: borrow-or-pick, then deep-copy into gpa-owned state. |
 | `fuses.zig` | Comptime fuse accessors from the embedded manifest; a comptime block locks them as compile-time-known. |
 | `emit_effective.zig` | Build-time codegen **exe**: argv-driven, merges + validates + re-serializes the effective manifest to a `.zon` artifact. |
-| `capabilities.zig` | Loads full `Capability` bodies from `src/capabilities/*.zon` (kept separate so the codegen module needn't import `src/security/`). |
+| `capabilities.zig` | Loads full `Capability` bodies from `src/grants/*.zon` (kept separate so the codegen module needn't import `src/security/`). |
 | `schema_gen.zig` | Reflection-driven JSON-Schema emitter (Draft 2020-12). |
 
 ## Core types & notable defaults
@@ -26,8 +26,8 @@ capability references are cross-checked, and CSP defaults to strict.
 `app`, `security`, `build`, `bundle`. Defaults that matter:
 
 - `Window.show = false` (hidden until first paint, which avoids the white flash),
-  `Window.url = null` (derive: `devUrl` in dev, `app://` in prod).
-- `Security.capabilities = &.{}` and all four `Fuses` `false` (deny by default).
+  `Window.url = null` (derive: `serveUrl` in dev, `app://` in prod).
+- `Security.grants = &.{}` and all four `Fuses` `false` (deny by default).
 - `Csp.*Src = &.{"'self'"}`: a strict baseline with no open hosts.
 
 ## The two manifest paths
@@ -54,12 +54,12 @@ compile time, with zero runtime I/O. `app.zig` calls it once at startup.
 - **debugInspector only in Debug** (`validate.zig:179` region): set in any release
   mode → `inspector_in_release` error.
 - **A `main` window is required**; window labels must be non-empty and unique.
-- **Capability cross-check**: every `security.capabilities[i]` must correspond to a
-  `src/capabilities/<id>.zon` file; a missing directory yields an empty set so all
+- **Grant cross-check**: every `security.grants[i]` must correspond to a
+  `src/grants/<id>.zon` file; a missing directory yields an empty set so all
   refs fail (`unknown_capability_ref`), failing closed.
 - **Identifier** is reverse-DNS; **version** is SemVer; the macOS team id is
   alphanumeric (argv-injection guard); CSP defaults strict.
-- `devUrl` without `beforeDevCommand` is a warning, not an error.
+- `frontend.serveUrl` without `frontend.dev` is a warning, not an error.
 
 ## Dependencies & key decisions
 

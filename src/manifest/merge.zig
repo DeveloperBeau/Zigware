@@ -43,7 +43,7 @@ pub fn merge(
         if (o.version) |v| picked.version = v;
         if (o.app) |oa| picked.app = pickApp(base.app, oa);
         if (o.security) |os| picked.security = pickSecurity(base.security, os);
-        if (o.build) |ob| picked.build = pickBuild(base.build, ob);
+        if (o.frontend) |of| picked.frontend = pickFrontend(base.frontend, of);
         if (o.bundle) |obu| picked.bundle = pickBundle(base.bundle, obu);
     }
     return try dupAll(gpa, picked);
@@ -72,7 +72,7 @@ fn pickWindowDefaults(base: types.WindowDefaults, ov: types.OverrideWindowDefaul
 
 fn pickSecurity(base: types.Security, ov: types.OverrideSecurity) types.Security {
     var out = base;
-    if (ov.capabilities) |v| out.capabilities = v;
+    if (ov.grants) |v| out.grants = v;
     if (ov.csp) |c| out.csp = pickCsp(base.csp, c);
     if (ov.fuses) |f| out.fuses = pickFuses(base.fuses, f);
     return out;
@@ -97,12 +97,12 @@ fn pickFuses(base: types.Fuses, ov: types.OverrideFuses) types.Fuses {
     return out;
 }
 
-fn pickBuild(base: types.Build, ov: types.OverrideBuild) types.Build {
+fn pickFrontend(base: types.Frontend, ov: types.OverrideFrontend) types.Frontend {
     var out = base;
-    if (ov.beforeDevCommand) |v| out.beforeDevCommand = v;
-    if (ov.beforeBuildCommand) |v| out.beforeBuildCommand = v;
-    if (ov.devUrl) |v| out.devUrl = v;
-    if (ov.frontendDist) |v| out.frontendDist = v;
+    if (ov.dev) |v| out.dev = v;
+    if (ov.build) |v| out.build = v;
+    if (ov.serveUrl) |v| out.serveUrl = v;
+    if (ov.outDir) |v| out.outDir = v;
     return out;
 }
 
@@ -354,8 +354,8 @@ fn freeCspDuped(gpa: std.mem.Allocator, c: types.Csp) void {
 
 fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Error!types.Security {
     var out = in;
-    out.capabilities = try dupStringList(gpa, types.Security, "capabilities", in.capabilities);
-    errdefer freeStringListDuped(gpa, types.Security, "capabilities", out.capabilities);
+    out.grants = try dupStringList(gpa, types.Security, "grants", in.grants);
+    errdefer freeStringListDuped(gpa, types.Security, "grants", out.grants);
     out.csp = try dupCsp(gpa, in.csp);
     errdefer freeCspDuped(gpa, out.csp);
     out.fuses = try dupFuses(gpa, in.fuses);
@@ -363,28 +363,28 @@ fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Err
 }
 
 fn freeSecurityDuped(gpa: std.mem.Allocator, s: types.Security) void {
-    freeStringListDuped(gpa, types.Security, "capabilities", s.capabilities);
+    freeStringListDuped(gpa, types.Security, "grants", s.grants);
     freeCspDuped(gpa, s.csp);
 }
 
-fn dupBuild(gpa: std.mem.Allocator, in: types.Build) std.mem.Allocator.Error!types.Build {
+fn dupFrontend(gpa: std.mem.Allocator, in: types.Frontend) std.mem.Allocator.Error!types.Frontend {
     var out = in;
-    out.beforeDevCommand = try dupOptString(gpa, in.beforeDevCommand);
-    errdefer if (out.beforeDevCommand) |s| gpa.free(s);
-    out.beforeBuildCommand = try dupOptString(gpa, in.beforeBuildCommand);
-    errdefer if (out.beforeBuildCommand) |s| gpa.free(s);
-    out.devUrl = try dupOptString(gpa, in.devUrl);
-    errdefer if (out.devUrl) |s| gpa.free(s);
-    // frontendDist has a static-literal default "dist".
-    out.frontendDist = try dupString(gpa, types.Build, "frontendDist", in.frontendDist);
+    out.dev = try dupOptString(gpa, in.dev);
+    errdefer if (out.dev) |s| gpa.free(s);
+    out.build = try dupOptString(gpa, in.build);
+    errdefer if (out.build) |s| gpa.free(s);
+    out.serveUrl = try dupOptString(gpa, in.serveUrl);
+    errdefer if (out.serveUrl) |s| gpa.free(s);
+    // outDir has a static-literal default "dist".
+    out.outDir = try dupString(gpa, types.Frontend, "outDir", in.outDir);
     return out;
 }
 
-fn freeBuildDuped(gpa: std.mem.Allocator, b: types.Build) void {
-    if (b.beforeDevCommand) |s| gpa.free(s);
-    if (b.beforeBuildCommand) |s| gpa.free(s);
-    if (b.devUrl) |s| gpa.free(s);
-    freeStringDuped(gpa, types.Build, "frontendDist", b.frontendDist);
+fn freeFrontendDuped(gpa: std.mem.Allocator, b: types.Frontend) void {
+    if (b.dev) |s| gpa.free(s);
+    if (b.build) |s| gpa.free(s);
+    if (b.serveUrl) |s| gpa.free(s);
+    freeStringDuped(gpa, types.Frontend, "outDir", b.outDir);
 }
 
 fn dupMacOsBundle(gpa: std.mem.Allocator, in: types.MacOsBundle) std.mem.Allocator.Error!types.MacOsBundle {
@@ -454,8 +454,8 @@ fn dupAll(gpa: std.mem.Allocator, in: Manifest) std.mem.Allocator.Error!Manifest
     out.security = try dupSecurity(gpa, in.security);
     errdefer freeSecurityDuped(gpa, out.security);
 
-    out.build = try dupBuild(gpa, in.build);
-    errdefer freeBuildDuped(gpa, out.build);
+    out.frontend = try dupFrontend(gpa, in.frontend);
+    errdefer freeFrontendDuped(gpa, out.frontend);
 
     out.bundle = try dupBundle(gpa, in.bundle);
 
@@ -585,9 +585,9 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     // Build a base + override that exercise every allocating helper:
     //   - identifier/productName/version (always dup)
     //   - app.windows (non-static list with three Windows, each with url Some)
-    //   - security.capabilities (non-static []const []const u8)
+    //   - security.grants (non-static []const []const u8)
     //   - security.csp.scriptSrc (non-static []const []const u8 via override)
-    //   - build.beforeDevCommand (non-null optional)
+    //   - frontend.dev (non-null optional)
     //   - bundle.icon (non-static []const []const u8)
     //   - bundle.targets (non-static []const Target)
     //   - bundle.category / copyright (non-null optionals)
@@ -608,8 +608,8 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .productName = "Deep",
         .version = "1.2.3",
         .app = .{ .windows = &base_windows },
-        .security = .{ .capabilities = &base_caps },
-        .build = .{ .beforeDevCommand = "bun run dev" },
+        .security = .{ .grants = &base_caps },
+        .frontend = .{ .dev = "bun run dev" },
         .bundle = .{
             .targets = &base_targets,
             .icon = &base_icons,

@@ -130,7 +130,7 @@ pub const Manifest = struct {
 
     app: App = .{},
     security: Security = .{},
-    build: Build = .{},
+    frontend: Frontend = .{},
     bundle: Bundle = .{},
 };
 
@@ -174,7 +174,7 @@ pub const Window = struct {
     /// Stable identifier capabilities bind to. NOT the title (titles are
     /// JS-mutable and spoofable; security model section 6). Required, unique.
     label: []const u8,
-    /// Initial URL. null means derive: devUrl in dev, app:// in prod.
+    /// Initial URL. null means derive: serveUrl in dev, app:// in prod.
     url: ?[]const u8 = null,
     title: []const u8,
     width: u32 = 800,
@@ -188,10 +188,13 @@ pub const Window = struct {
 pub const TitleBarStyle = enum { default, hidden, hidden_inset };
 
 pub const Security = struct {
-    /// Capability identifiers referenced from src/capabilities/*.zon.
-    /// Resolution and enforcement is sub-project C; D validates that each
-    /// referenced identifier resolves to a capability file.
-    capabilities: []const []const u8 = &.{},
+    /// Grant identifiers referenced from src/grants/*.zon. Resolution and
+    /// enforcement is sub-project C; D validates that each referenced
+    /// identifier resolves to a grant file. NOTE: the surface vocabulary is
+    /// "grant", but the internal capability-based-security code in src/security/*
+    /// and the diagnostic code names (e.g. unknown_capability_ref) deliberately
+    /// keep the generic "capability" term; do not rename them to match.
+    grants: []const []const u8 = &.{},
     /// Content-Security-Policy. F performs compile-time script-hash injection
     /// for own scripts; the author declares only trusted hosts here.
     csp: Csp = .{},
@@ -211,17 +214,17 @@ pub const Csp = struct {
     imgSrc: []const []const u8 = &.{"'self'"},
 };
 
-pub const Build = struct {
+pub const Frontend = struct {
     /// Command run before `dev` (e.g. "bun run dev"). Frontend-toolchain
     /// agnostic; keeps the npm/Vite ecosystem unchanged.
-    beforeDevCommand: ?[]const u8 = null,
+    dev: ?[]const u8 = null,
     /// Command run before `build` (e.g. "bun run build").
-    beforeBuildCommand: ?[]const u8 = null,
+    build: ?[]const u8 = null,
     /// Dev server URL. A trusted origin ONLY in dev builds (security model
     /// section 12, F). e.g. "http://localhost:5173".
-    devUrl: ?[]const u8 = null,
+    serveUrl: ?[]const u8 = null,
     /// Directory of built frontend assets embedded for release (app://).
-    frontendDist: []const u8 = "dist",
+    outDir: []const u8 = "dist",
 };
 
 pub const Bundle = struct {
@@ -303,19 +306,19 @@ pub const OverrideCsp = struct {
 /// is optional so the merge can distinguish "field absent in override" from
 /// "field present and set to its default". Arrays replace wholesale.
 pub const OverrideSecurity = struct {
-    capabilities: ?[]const []const u8 = null,
+    grants: ?[]const []const u8 = null,
     csp: ?OverrideCsp = null,
     fuses: ?OverrideFuses = null,
 };
 
-/// All-optional mirror of `Build` for the platform-override merge. Each leaf is
+/// All-optional mirror of `Frontend` for the platform-override merge. Each leaf is
 /// optional so the merge can distinguish "field absent in override" from "field
 /// present and set to its default". Arrays replace wholesale.
-pub const OverrideBuild = struct {
-    beforeDevCommand: ?[]const u8 = null,
-    beforeBuildCommand: ?[]const u8 = null,
-    devUrl: ?[]const u8 = null,
-    frontendDist: ?[]const u8 = null,
+pub const OverrideFrontend = struct {
+    dev: ?[]const u8 = null,
+    build: ?[]const u8 = null,
+    serveUrl: ?[]const u8 = null,
+    outDir: ?[]const u8 = null,
 };
 
 /// All-optional mirror of `MacOsBundle` for the platform-override merge. Each
@@ -353,7 +356,7 @@ pub const OverrideManifest = struct {
     version: ?[]const u8 = null,
     app: ?OverrideApp = null,
     security: ?OverrideSecurity = null,
-    build: ?OverrideBuild = null,
+    frontend: ?OverrideFrontend = null,
     bundle: ?OverrideBundle = null,
 };
 
@@ -362,7 +365,7 @@ test "Manifest defaults fill a minimal manifest" {
     try std.testing.expectEqual(@as(u32, 800), m.app.windowDefaults.width);
     try std.testing.expectEqual(QuitPolicy.keep_running_on_last_close, m.app.quitOnLastWindowClosed);
     try std.testing.expect(!m.security.fuses.allowShell);
-    try std.testing.expectEqualStrings("dist", m.build.frontendDist);
+    try std.testing.expectEqualStrings("dist", m.frontend.outDir);
     try std.testing.expectEqual(@as(usize, 2), m.bundle.targets.len);
     try std.testing.expect(m.bundle.macos.hardenedRuntime);
     try std.testing.expectEqualStrings("'self'", m.security.csp.scriptSrc[0]);

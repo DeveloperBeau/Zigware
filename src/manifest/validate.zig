@@ -22,8 +22,8 @@ const Code = types.Code;
 
 /// Validates an already-parsed+merged `Manifest`. See file docstring for the
 /// returned flag and allocation contract. `capability_ids_present` is the list
-/// of capability identifiers discovered under `src/capabilities/` at build
-/// time (an empty list makes every `security.capabilities` reference fail as
+/// of capability identifiers discovered under `src/grants/` at build
+/// time (an empty list makes every `security.grants` reference fail as
 /// `unknown_capability_ref`, which is the desired fail-closed posture when the
 /// directory is absent).
 pub fn validate(
@@ -154,7 +154,7 @@ pub fn validate(
     // Capability references: every entry must resolve to a present capability
     // identifier. Emit at every offending index so the loop iteration is
     // testable.
-    for (m.security.capabilities, 0..) |cap, i| {
+    for (m.security.grants, 0..) |cap, i| {
         var found = false;
         for (capability_ids_present) |present| {
             if (std.mem.eql(u8, cap, present)) {
@@ -163,11 +163,11 @@ pub fn validate(
             }
         }
         if (!found) {
-            const path = try std.fmt.allocPrint(gpa, "security.capabilities[{d}]", .{i});
+            const path = try std.fmt.allocPrint(gpa, "security.grants[{d}]", .{i});
             errdefer gpa.free(path);
             try diag.add(gpa, .{
                 .code = .unknown_capability_ref,
-                .message = "capability identifier has no matching file under src/capabilities/",
+                .message = "grant identifier has no matching file under src/grants/",
                 .path = path,
             });
             ok = false;
@@ -184,14 +184,14 @@ pub fn validate(
         ok = false;
     }
 
-    // devUrl without beforeDevCommand: WARNING (does not flip `ok`).
-    if (m.build.devUrl != null and m.build.beforeDevCommand == null) {
-        const path = try gpa.dupe(u8, "build.devUrl");
+    // serveUrl without a dev command: WARNING (does not flip `ok`).
+    if (m.frontend.serveUrl != null and m.frontend.dev == null) {
+        const path = try gpa.dupe(u8, "frontend.serveUrl");
         errdefer gpa.free(path);
         try diag.add(gpa, .{
             .code = .dev_url_without_command,
             .is_error = false,
-            .message = "devUrl is set but no beforeDevCommand was provided; dev server may not start",
+            .message = "serveUrl is set but no dev command was provided; dev server may not start",
             .path = path,
         });
     }
@@ -462,7 +462,7 @@ test "validate flags unknown capability references at every offending index" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.security = .{
-        .capabilities = &.{ "missing.one", "missing.two" },
+        .grants = &.{ "missing.one", "missing.two" },
     };
     try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 2), countCode(diag, .unknown_capability_ref));
@@ -470,8 +470,8 @@ test "validate flags unknown capability references at every offending index" {
     var saw_1 = false;
     for (diag.items.items) |d| {
         if (d.code != .unknown_capability_ref) continue;
-        if (std.mem.eql(u8, d.path.?, "security.capabilities[0]")) saw_0 = true;
-        if (std.mem.eql(u8, d.path.?, "security.capabilities[1]")) saw_1 = true;
+        if (std.mem.eql(u8, d.path.?, "security.grants[0]")) saw_0 = true;
+        if (std.mem.eql(u8, d.path.?, "security.grants[1]")) saw_1 = true;
     }
     try std.testing.expect(saw_0);
     try std.testing.expect(saw_1);
@@ -482,7 +482,7 @@ test "validate accepts known capability references" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.security = .{ .capabilities = &.{ "fs.read", "shell.exec" } };
+    m.security = .{ .grants = &.{ "fs.read", "shell.exec" } };
     const present: []const []const u8 = &.{ "fs.read", "shell.exec", "net.http" };
     try std.testing.expect(try validate(gpa, m, .Debug, present, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .unknown_capability_ref));
@@ -514,13 +514,13 @@ test "validate emits dev_url_without_command as a warning that does not fail" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.build = .{ .devUrl = "http://localhost:5173" };
+    m.frontend = .{ .serveUrl = "http://localhost:5173" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .dev_url_without_command));
     try std.testing.expect(!diag.hasErrors());
     const d = findOne(diag, .dev_url_without_command).?;
     try std.testing.expect(!d.is_error);
-    try std.testing.expectEqualStrings("build.devUrl", d.path.?);
+    try std.testing.expectEqualStrings("frontend.serveUrl", d.path.?);
 }
 
 test "validate does not emit dev_url_without_command when both fields are set" {
@@ -528,7 +528,7 @@ test "validate does not emit dev_url_without_command when both fields are set" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.build = .{ .devUrl = "http://localhost:5173", .beforeDevCommand = "bun run dev" };
+    m.frontend = .{ .serveUrl = "http://localhost:5173", .dev = "bun run dev" };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .dev_url_without_command));
 }
@@ -623,8 +623,8 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .{ .label = "dup", .title = "A" },
         .{ .label = "dup", .title = "B" },
     } };
-    m.security = .{ .capabilities = &.{ "missing.one", "missing.two" } };
-    m.build = .{ .devUrl = "http://localhost:5173" };
+    m.security = .{ .grants = &.{ "missing.one", "missing.two" } };
+    m.frontend = .{ .serveUrl = "http://localhost:5173" };
 
     _ = try validate(gpa, m, .Debug, &.{}, &diag);
 }

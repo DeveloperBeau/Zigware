@@ -34,7 +34,7 @@ This computes a strict Content-Security-Policy with per-script hashes, embeds th
 ```
 {{name}}/
   zigware.zon          app manifest (windows, fuses, build commands)
-  src/capabilities/    per-window navigation and permission grants
+  src/grants/          per-window navigation and permission grants
   src/commands/        Zig command handlers exposed to the frontend
   frontend/            plain HTML/CSS/JS served directly (entry: index.html)
 ```

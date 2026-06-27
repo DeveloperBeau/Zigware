@@ -17,7 +17,7 @@ place:
 
 ```zig
 .security = .{
-    .capabilities = .{"main"},
+    .grants = .{"main"},
     .csp = .{
         .defaultSrc = .{"'self'"},
         .scriptSrc = .{"'self'"},

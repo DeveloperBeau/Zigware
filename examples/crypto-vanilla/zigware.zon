@@ -13,7 +13,7 @@
         },
     },
     .security = .{
-        .capabilities = .{"main"},
+        .grants = .{"main"},
         // Own scripts only, no inline JS, no remote anything: a password never
         // leaves the process, so the window trusts nothing off-origin.
         .csp = .{
@@ -27,10 +27,10 @@
             .debugInspector = false,
         },
     },
-    .build = .{
+    .frontend = .{
         // Vanilla ships no dev server; the frontend is served as static files.
-        .beforeDevCommand = null,
-        .devUrl = null,
-        .frontendDist = "frontend",
+        .dev = null,
+        .serveUrl = null,
+        .outDir = "frontend",
     },
 }

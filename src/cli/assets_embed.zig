@@ -3,7 +3,7 @@ const std = @import("std");
 pub const Entry = struct {
     /// served path, always begins with "/", forward-slash normalized
     serve_path: []const u8,
-    /// path relative to frontendDist, used as the addAnonymousImport name
+    /// path relative to outDir, used as the addAnonymousImport name
     import_name: []const u8,
     /// sentinel-terminated MIME for seam.Response.mime
     mime: [:0]const u8,
@@ -44,7 +44,7 @@ fn isStructurallyRejected(rel: []const u8) bool {
     return false;
 }
 
-/// Enumerate frontendDist; canonicalize each path and reject anything resolving outside it
+/// Enumerate outDir; canonicalize each path and reject anything resolving outside it
 /// (.., out-pointing symlinks, absolute paths, embedded NUL) with error.asset_outside_dist.
 pub fn walk(io: std.Io, gpa: std.mem.Allocator, dist_dir: []const u8) anyerror!WalkResult {
     var arena = std.heap.ArenaAllocator.init(gpa);
