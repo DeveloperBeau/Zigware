@@ -1,8 +1,17 @@
 const std = @import("std");
 
+const helpers = @import("build_helpers.zig");
+pub const AppOptions = helpers.AppOptions;
+pub const FrontendEmbeds = helpers.FrontendEmbeds;
+pub const addApp = helpers.addApp;
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    // Consumers that call b.dependency("zigware", .{ .optimize = optimize }) pass
+    // -Doptimize=<mode>. Accept it here alongside -Drelease so addApp-based
+    // consumers can forward their own optimize mode to the dependency.
+    const optimize_override = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (forwarded from consumer via .optimize =)");
+    const optimize = optimize_override orelse b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     if (target.result.os.tag != .macos) {
         std.debug.print("zigware PoC targets macOS only\n", .{});
