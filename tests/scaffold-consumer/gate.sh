@@ -1,6 +1,7 @@
 #!/bin/sh
 # Scaffold consumer gates. Run from the repo root.
 set -eu
+set -o pipefail 2>/dev/null || true
 
 cd "$(dirname "$0")"
 
@@ -8,6 +9,9 @@ echo "gate: zig build dts (headless codegen against the package)"
 zig build dts
 
 echo "gate: dts exe links no Cocoa/WebKit"
+if [ ! -f zig-out/bin/scaffold-consumer-dts ]; then
+  echo "FAIL: dts binary not found at zig-out/bin/scaffold-consumer-dts"; exit 1
+fi
 cocoa=$(otool -L zig-out/bin/scaffold-consumer-dts | grep -c -E 'Cocoa|WebKit' || true)
 if [ "$cocoa" -ne 0 ]; then
   echo "FAIL: dts exe links Cocoa/WebKit ($cocoa references)"; exit 1
