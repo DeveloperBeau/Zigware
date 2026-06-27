@@ -218,6 +218,7 @@ pub fn build(b: *std.Build) void {
     // diag.zig is std-only; its tests run in BOTH modes (the build-gating path
     // diverges only under -Drelease=true).
     addLogicTest(b, test_step, target, optimize, "src/diag_tests.zig");
+    addLogicTest(b, test_step, target, optimize, "src/zigware_codegen.zig");
 
     // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
     addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
@@ -489,6 +490,14 @@ pub fn build(b: *std.Build) void {
             return m;
         }
     }.make;
+
+    // Cocoa-free codegen module a consumer's dts/test builds root against
+    // (command value types + emit). No link settings, no manifest, no objc.
+    _ = b.addModule("zigware-headless", .{
+        .root_source_file = b.path("src/zigware_codegen.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Public package surface for EXTERNAL consumers (a scaffolded app declares
     // `zigware` as a dependency and consumes this module). Same wiring as
