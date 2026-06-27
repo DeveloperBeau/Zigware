@@ -33,6 +33,10 @@ pub const AppOptions = struct {
 /// run exe so the caller can customize it. addApp OWNS the exe and sets all link
 /// settings on the barrel; linkFramework propagates across the import edge
 /// (spiked 2026-06-28), so the consumer never calls linkFramework.
+///
+/// Registers the `run`, `dts`, and `test` steps, so call addApp ONCE per consumer
+/// build invocation (v0.1.0 single-app scope). A second call would collide on
+/// those step names.
 pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.Build.Step.Compile {
     const target = opts.target;
     const optimize = opts.optimize;
@@ -134,8 +138,12 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
 
     // dts-main: synthesized source that calls zc.emit and writes the output.
     // Writes to frontend/bindings.d.ts relative to the Run step cwd, which Zig
-    // Build sets to b.build_root (the consumer project root). This mirrors the
-    // pattern used by the framework's own emit_dts.zig / dts step.
+    // Build sets to b.build_root (the consumer project root). This is deliberate,
+    // NOT an addOutputFileArg build artifact: bindings.d.ts is a frontend dev
+    // artifact the TS toolchain imports, so it must land in the consumer's
+    // frontend/ source tree (gitignored). frontend/ is guaranteed to exist because
+    // addApp requires opts.frontend.{index_html,app_js}, so the parent dir is never
+    // missing. Mirrors the framework's own emit_dts.zig / dts step.
     const dts_main_src =
         \\const std = @import("std");
         \\const zc = @import("zigware-headless");
