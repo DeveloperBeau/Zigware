@@ -26,6 +26,43 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // ─── Consumer package surface (runs for the root build AND for any
+    // dependent that resolves b.dependency("zigware", ...)) ─────────────────────
+    //
+    // A dependent build executes this and then returns at the pkg_hash gate below,
+    // so it never triggers the CLI, the in-repo examples, the npm bundles, the
+    // grants walker, or the test-step registrations. The published tarball's
+    // .paths excludes examples/ and tests/, so any stray self reference fails when
+    // fetched. Gate on pkg_hash (root => "", dependency => non-empty) rather than a
+    // -Dself option: an option defaults off, which would silently skip the
+    // framework's own examples/tests unless every CI call passed -Dself=true.
+
+    // Cocoa-free codegen module a consumer's dts/test builds root against.
+    _ = b.addModule("zigware-headless", .{
+        .root_source_file = b.path("src/zigware_codegen.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // The merge+validate codegen exe. addApp runs it per consumer over the
+    // consumer's zigware.zon. Rooted at emit_effective.zig; parse.zig/validate.zig/
+    // merge.zig/types.zig join by file-path import. parse.zig declares embedded()
+    // with @import("zigware_manifest_zon"), so the anonymous import must be wired
+    // even though the codegen never CALLS embedded().
+    const emit_eff_mod = b.createModule(.{
+        .root_source_file = b.path("src/manifest/emit_effective.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
+    emit_eff_mod.addImport("diag", diag_mod);
+    const emit_eff_exe = b.addExecutable(.{ .name = "emit_effective_manifest", .root_module = emit_eff_mod });
+    // REQUIRED: dep.artifact(name) resolves only INSTALLED artifacts.
+    b.installArtifact(emit_eff_exe);
+
+    // Everything past here is the framework's own self build.
+    if (b.pkg_hash.len != 0) return;
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -354,35 +391,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
     // ─── Manifest module wiring ──────────────────────────────────────────────
-    //
-    // The build-time codegen reads zigware.zon (and any per-OS overrides), runs
-    // the merge+validate pipeline, and emits a single .zon literal that every
-    // CONSUMING module imports via @import("zigware_manifest_zon"). Production
-    // embedded() therefore returns the merged+validated manifest, not the raw
-    // source. The codegen exe itself is the one exception: it consumes the RAW
-    // source because parse.zig declares embedded() and that @import resolves at
-    // parse.zig COMPILATION time, which would otherwise be a chicken-and-egg.
-    //
-    // The codegen module is rooted directly at emit_effective.zig; parse.zig,
-    // validate.zig, merge.zig, and types.zig are reached via file-path imports
-    // and so become members of the same module. The plan's separate manifest_mod
-    // / types_mod structure is incompatible with how those files cross-import
-    // each other (e.g. parse.zig does `@import("types.zig")` by path), because
-    // a file can only belong to one module per compilation.
-    const emit_eff_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest/emit_effective.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    // parse.zig (a file member of emit_eff_mod via the codegen's relative
-    // import) declares embedded() with @import("zigware_manifest_zon"), so the
-    // anonymous import must be wired here. The codegen never CALLS embedded();
-    // the wire only satisfies the compile-time @import resolution.
-    emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
-    // emit_effective.zig routes its manifest-diagnostic prints through diag.
-    emit_eff_mod.addImport("diag", diag_mod);
-
-    const emit_eff_exe = b.addExecutable(.{ .name = "emit_effective_manifest", .root_module = emit_eff_mod });
     const emit_eff_run = b.addRunArtifact(emit_eff_exe);
     // argv[1] = output path (materialised as a LazyPath downstream consumers can wire).
     const effective_zon: std.Build.LazyPath = emit_eff_run.addOutputFileArg("zigware.effective.zon");
@@ -490,39 +498,6 @@ pub fn build(b: *std.Build) void {
             return m;
         }
     }.make;
-
-    // Cocoa-free codegen module a consumer's dts/test builds root against
-    // (command value types + emit). No link settings, no manifest, no objc.
-    _ = b.addModule("zigware-headless", .{
-        .root_source_file = b.path("src/zigware_codegen.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Public package surface for EXTERNAL consumers (a scaffolded app declares
-    // `zigware` as a dependency and consumes this module). Same wiring as
-    // makeZigwareModule, but the per-app manifest is left to the consumer: after
-    // running the emit_effective_manifest exe over their own zigware.zon they add
-    // the `zigware_manifest_zon` anonymous import onto this module (that is what
-    // parse.embedded() resolves). The framework's own self-build never consumes
-    // this instance (it uses makeZigwareModule), so its missing manifest is inert.
-    const public_zigware = b.addModule("zigware", .{
-        .root_source_file = b.path("src/zigware.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    public_zigware.addImport("objc", objc_mod);
-    public_zigware.linkFramework("Cocoa", .{});
-    public_zigware.linkFramework("WebKit", .{});
-    public_zigware.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
-    public_zigware.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
-    public_zigware.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = b.path("frontend/zigware.js") });
-    public_zigware.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
-
-    // Expose the manifest codegen exe so consumers run it via
-    // dep.artifact("emit_effective_manifest") to merge+validate their zigware.zon.
-    b.installArtifact(emit_eff_exe);
 
     // The example executable. Rooted at examples/notes/src/main.zig, it builds an
     // App(MacOSBackend) from the manifest and runs the platform loop. The notes
