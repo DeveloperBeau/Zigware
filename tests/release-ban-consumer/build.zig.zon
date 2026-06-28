@@ -1,0 +1,10 @@
+.{
+    .name = .release_ban_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0xa7a5ede1a23cdd34,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}

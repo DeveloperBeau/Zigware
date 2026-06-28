@@ -1,0 +1,7 @@
+.{
+    .identifier = "com.example.releaseban",
+    .productName = "Release Ban Consumer",
+    .version = "0.1.0",
+    .app = .{ .windows = .{.{ .label = "main", .title = "Release Ban Consumer" }} },
+    .security = .{ .grants = .{"main"} },
+}
