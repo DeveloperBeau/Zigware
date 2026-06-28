@@ -73,8 +73,9 @@ published mode and do not require a tag or network fetch.
 
 ## The `tests/release-ban-consumer` fixture
 
-`tests/release-ban-consumer` is a throwaway gate fixture that proves the
-comptime ban fires for an external consumer. Its `build.zig` forces
+`tests/release-ban-consumer` is a dedicated ReleaseFast-ban fixture, committed
+and wired as the gate's fourth check, that proves the comptime ban fires for an
+external consumer. Its `build.zig` forces
 `.optimize = .ReleaseFast` at the module level. When `zig build` runs inside
 that directory, the framework barrel (`src/zigware.zig`) triggers:
 
