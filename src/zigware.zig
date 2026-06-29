@@ -13,6 +13,30 @@
 
 const command_ctx = @import("command_ctx.zig");
 const compute_mod = @import("compute.zig");
+const builtin = @import("builtin");
+
+// ReleaseSafe enforcement: Zigware never ships with bounds checks stripped.
+// Lives here so ANY consumer compiling against the framework barrel inherits
+// the ban; a scaffolded main.zig keeps a documentation-only mirror.
+comptime {
+    if (builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall) {
+        @compileError("Zigware ships ReleaseSafe or Debug only");
+    }
+}
+
+/// PER-OS BACKEND SEAM. Selects a backend by target OS. The primary per-OS
+/// seams are this switch and `addApp`'s link guard (build_helpers.zig, Task 4):
+/// add a branch here plus a new backend module, and a link branch there. A port
+/// also conditionalizes the `objc` import (src/objc.zig, wired into the barrel)
+/// and the `platform/macos/*` reachability, which are macOS-coupled touchpoints.
+/// No Linux/Windows code now (YAGNI).
+/// A scaffolded main.zig calls `z.Backend()` instead of duplicating this switch.
+pub fn Backend() type {
+    return switch (builtin.os.tag) {
+        .macos => MacOSBackend,
+        else => @compileError("zigware v0.1.0 targets macOS only"),
+    };
+}
 
 // ── Backend + orchestrator ──────────────────────────────────────────────────
 pub const App = @import("app.zig").App;

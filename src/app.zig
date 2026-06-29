@@ -3,6 +3,17 @@ const backend_mod = @import("platform/backend.zig");
 const assets = @import("assets.zig");
 const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
+const builtin_target = @import("builtin");
+
+// ReleaseSafe enforcement, duplicated here so a consumer that pulls app.zig
+// without the barrel (e.g. a future headless app harness) still inherits the
+// ban. The barrel carries the authoritative copy.
+comptime {
+    if (builtin_target.mode == .ReleaseFast or builtin_target.mode == .ReleaseSmall) {
+        @compileError("Zigware ships ReleaseSafe or Debug only");
+    }
+}
+
 const security_cap = @import("security/capability.zig");
 const security_grant = @import("security/grant_table.zig");
 const security_gates = @import("security/gates.zig");
@@ -425,9 +436,12 @@ pub fn App(comptime B: type) type {
             return self;
         }
 
-        /// Deinit order is documented in main.zig: app.deinit() runs before
-        /// backend.deinit() (LIFO). deinit does NOT touch the backend after
-        /// shutdown; it only frees the App allocation, so the order is safe.
+        /// Deinit order rationale (authoritative copy; main.zig keeps a
+        /// distilled one-line note). Defers run LIFO, so app.deinit() runs
+        /// BEFORE backend.deinit(). App.deinit's shutdown drains and re-points
+        /// callbacks at the sentinel; it does NOT call back into the backend
+        /// afterward, so the order is safe even after the macOS drain lands.
+        /// deinit itself only runs shutdown() and frees the App allocation.
         pub fn deinit(self: *Self) void {
             self.shutdown();
             self.alloc.destroy(self);
