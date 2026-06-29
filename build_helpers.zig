@@ -111,6 +111,16 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     // parse.embedded() in the barrel resolves the merged manifest.
     barrel.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = eff_zon });
 
+    // Production asset table override. `zigware build` stages a CSP-injected
+    // asset_table.zig (colocated with the built assets) and passes its path via
+    // -Dasset_table; this anonymous import shadows the framework default
+    // src/asset_table.zig (resolved relatively by src/assets.zig), so the
+    // release binary serves the transformed production assets. Unset in dev (the
+    // app loads from serveUrl), so the relative default is used.
+    if (b.option([]const u8, "asset_table", "Path to a staged asset_table.zig (set by `zigware build`)")) |asset_table| {
+        barrel.addAnonymousImport("asset_table.zig", .{ .root_source_file = .{ .cwd_relative = asset_table } });
+    }
+
     // -- run exe (owns the barrel link settings) --
     const exe_mod = b.createModule(.{
         .root_source_file = opts.main_root,

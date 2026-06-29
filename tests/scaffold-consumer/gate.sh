@@ -33,4 +33,30 @@ fi
 rm -f ../release-ban-consumer/build.err
 echo "ReleaseFast ban gate passed"
 
+echo "gate: -Dasset_table override shadows the framework default table"
+stage=$(mktemp -d)
+cat > "$stage/index.html" <<'HTML'
+<!doctype html><html><head><meta charset="utf-8"></head>
+<body><!-- ZWSENTINEL_STAGED_ASSET_TABLE --><script src="app.js"></script></body></html>
+HTML
+printf 'console.log("staged");\n' > "$stage/app.js"
+cat > "$stage/asset_table.zig" <<'ZIG'
+pub const Asset = struct {
+    path: []const u8,
+    body: []const u8,
+    mime: [:0]const u8,
+};
+
+pub const table = [_]Asset{
+    .{ .path = "/index.html", .body = @embedFile("index.html"), .mime = "text/html" },
+    .{ .path = "/app.js", .body = @embedFile("app.js"), .mime = "text/javascript" },
+};
+ZIG
+zig build -Dasset_table="$stage/asset_table.zig"
+if ! strings zig-out/bin/scaffold-consumer | grep -q 'ZWSENTINEL_STAGED_ASSET_TABLE'; then
+  echo "FAIL: staged asset_table override not embedded in the run exe"; exit 1
+fi
+rm -rf "$stage"
+echo "asset_table override gate passed"
+
 echo "all scaffold-consumer gates passed"
