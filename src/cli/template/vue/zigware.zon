@@ -8,7 +8,13 @@
         },
     },
     .security = .{
-        .fuses = .{},
+        .grants = .{"main"},
+        .fuses = .{
+            .allowRemoteContent = false,
+            .allowEval = false,
+            .allowShell = false,
+            .debugInspector = false,
+        },
     },
     .frontend = .{
         .dev = "npm run dev",
