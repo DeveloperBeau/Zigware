@@ -230,7 +230,7 @@ test "destPath strips the subtree segment and renames gitignore" {
     try testing.expectEqualStrings("zigware.zon", destPath("vanilla/zigware.zon"));
     try testing.expectEqualStrings("src/commands/greet.zig", destPath("react/src/commands/greet.zig"));
     try testing.expectEqualStrings(".gitignore", destPath("_shared/gitignore"));
-    try testing.expectEqualStrings("build.zig", destPath("_shared/build.zig"));
+    try testing.expectEqualStrings("src/main.zig", destPath("_shared/src/main.zig"));
 }
 
 test "substituteAll replaces every template token" {
@@ -281,8 +281,11 @@ test "init scaffolds a normal Zig project (no vendored framework files), manifes
         try expectedExists(io, tmp.dir, &template_index.shared);
         try expectedExists(io, tmp.dir, template_index.filesFor(@tagName(tmpl)));
 
-        // The user-owned normal-project tree.
-        for ([_][]const u8{ "build.zig", "build.zig.zon", ".gitignore", "README.md", "zigware.zon", "src/main.zig", "src/commands/greet.zig" }) |p| {
+        // The user-owned normal-project tree. src/commands.zig is the stable
+        // barrel addApp reads as command_root; src/grants/main.zon must exist
+        // for every template (vanilla/react/vue/svelte), which a comptime blob
+        // iteration would not otherwise diagnose.
+        for ([_][]const u8{ "build.zig", "build.zig.zon", ".gitignore", "README.md", "zigware.zon", "src/main.zig", "src/commands.zig", "src/commands/greet.zig", "src/grants/main.zon" }) |p| {
             try tmp.dir.access(io, p, .{});
         }
 
