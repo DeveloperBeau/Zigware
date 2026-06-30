@@ -44,7 +44,7 @@ jobs:
         run: ./tests/scaffold-consumer/gate.sh
 
       - name: Scaffold init gate
-        run: sh tests/scaffold-init/gate.sh
+        run: ./tests/scaffold-init/gate.sh
 
       # Run every dedicated test step under a watchdog timeout (macOS runners have
       # no GNU `timeout`), so a runaway suite is bounded and reported rather than
