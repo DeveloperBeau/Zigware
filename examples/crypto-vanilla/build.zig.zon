@@ -1,0 +1,10 @@
+.{
+    .name = .crypto_vanilla,
+    .version = "0.1.0",
+    .fingerprint = 0xd21c76fba0fd5ce9,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}

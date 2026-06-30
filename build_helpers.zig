@@ -22,6 +22,13 @@ pub const AppOptions = struct {
     command_root: std.Build.LazyPath,
     /// The consumer's entry point (src/main.zig).
     main_root: std.Build.LazyPath,
+    /// Optional headless bridge integration test. When set, addApp wires an
+    /// `integration-test` step that roots a test at this path against the FULL
+    /// barrel (so z.Bridge / z.NullBackend / z.App resolve; the headless barrel
+    /// has none of them). NullBackend opens no window, so it runs on CI without a
+    /// GUI. Defaults to null, so the scaffold templates and the scaffold-consumer
+    /// fixture are unaffected.
+    integration_root: ?std.Build.LazyPath = null,
     frontend: FrontendEmbeds,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -200,6 +207,23 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     test_mod.addImport("zigware", headless);
     const test_step = b.step("test", "Run the app's command tests (headless)");
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = test_mod })).step);
+
+    // -- integration test (optional; full-barrel headless bridge round-trip) --
+    // Rooted against the SAME per-consumer `barrel` the run exe uses (so the
+    // embedded manifest, frontend embeds, and Cocoa/WebKit link settings are the
+    // example's own). NullBackend opens no window; the Cocoa link the barrel
+    // pulls across the import edge is harmless on the macOS runner.
+    if (opts.integration_root) |it_root| {
+        const it_mod = b.createModule(.{
+            .root_source_file = it_root,
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        it_mod.addImport("zigware", barrel);
+        const it_step = b.step("integration-test", "Run the app's headless bridge integration test");
+        it_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = it_mod })).step);
+    }
 
     return exe;
 }

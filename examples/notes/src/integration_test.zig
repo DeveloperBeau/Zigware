@@ -53,8 +53,8 @@ const Harness = struct {
         // example loads end to end through the real parser; the test never parses
         // zon itself. The loader reads zigware.zon + src/grants/*.zon
         // relative to the passed root, so open the example dir explicitly (the
-        // test binary's CWD is the build root, not examples/notes/).
-        var example_dir = try std.Io.Dir.cwd().openDir(io, "examples/notes", .{ .iterate = true });
+        // test binary's CWD is this example's build root (examples/notes/).
+        var example_dir = try std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
         defer example_dir.close(io);
         var diag: z.manifest.Diagnostics = .{};
         defer diag.deinit(a);

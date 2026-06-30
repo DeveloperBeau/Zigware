@@ -1,0 +1,10 @@
+.{
+    .name = .crypto_react,
+    .version = "0.1.0",
+    .fingerprint = 0xfd37faedb35ac5b,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}

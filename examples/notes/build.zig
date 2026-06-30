@@ -7,17 +7,15 @@ pub fn build(b: *std.Build) void {
 
     const dep = b.dependency("zigware", .{ .target = target });
 
-    // The frontend embeds are the app:// fallback (see crypto-react). index.html
-    // is the vite root entry; src/main.js is the JS entry.
     _ = zigware.addApp(b, dep, .{
-        .name = "crypto-vue",
+        .name = "notes",
         .manifest = b.path("zigware.zon"),
-        .command_root = b.path("../_shared/commands.zig"),
-        .main_root = b.path("../_shared/main.zig"),
-        .integration_root = b.path("../_shared/integration_test.zig"),
+        .command_root = b.path("src/commands.zig"),
+        .main_root = b.path("src/main.zig"),
+        .integration_root = b.path("src/integration_test.zig"),
         .frontend = .{
-            .index_html = b.path("index.html"),
-            .app_js = b.path("frontend/src/main.js"),
+            .index_html = b.path("frontend/index.html"),
+            .app_js = b.path("frontend/app.js"),
         },
         .target = target,
         .optimize = optimize,

@@ -35,8 +35,9 @@ jobs:
       - name: Format check
         run: zig fmt --check --exclude src/cli/template build.zig src
 
-      # Compiles the framework app, the CLI (zigware + zw), the manifest codegen,
-      # and the in-repo examples. The primary, reliable regression signal.
+      # Compiles the framework app, the CLI (zigware + zw), and the manifest
+      # codegen. The primary, reliable regression signal. (The examples are
+      # standalone package consumers, built by the scaffold gates below.)
       - name: Build
         run: zig build
 
@@ -45,6 +46,9 @@ jobs:
 
       - name: Scaffold init gate
         run: ./tests/scaffold-init/gate.sh
+
+      - name: Examples gate
+        run: ./tests/examples/gate.sh
 
       # Run every dedicated test step under a watchdog timeout (macOS runners have
       # no GNU `timeout`), so a runaway suite is bounded and reported rather than
@@ -67,7 +71,7 @@ jobs:
             return "$rc"
           }
 
-          STEPS="test-init test-main test-app test-sec test-notes test-crypto test-build"
+          STEPS="test-init test-main test-app test-sec test-build"
           PER_STEP_TIMEOUT=600
           failed=""
 
