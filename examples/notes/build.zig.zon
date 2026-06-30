@@ -1,0 +1,10 @@
+.{
+    .name = .notes,
+    .version = "0.1.0",
+    .fingerprint = 0x11ba68cbd23a8c1,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}
