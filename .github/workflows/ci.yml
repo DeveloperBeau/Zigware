@@ -35,8 +35,9 @@ jobs:
       - name: Format check
         run: zig fmt --check --exclude src/cli/template build.zig src
 
-      # Compiles the framework app, the CLI (zigware + zw), the manifest codegen,
-      # and the in-repo examples. The primary, reliable regression signal.
+      # Compiles the framework app, the CLI (zigware + zw), and the manifest
+      # codegen. The primary, reliable regression signal. (The examples are
+      # standalone package consumers, built by the scaffold gates below.)
       - name: Build
         run: zig build
 
