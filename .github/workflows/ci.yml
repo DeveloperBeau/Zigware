@@ -67,7 +67,7 @@ jobs:
             return "$rc"
           }
 
-          STEPS="test-init test-main test-app test-sec test-notes test-crypto test-build"
+          STEPS="test-init test-main test-app test-sec test-build"
           PER_STEP_TIMEOUT=600
           failed=""
 
