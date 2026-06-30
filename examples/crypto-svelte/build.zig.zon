@@ -1,0 +1,10 @@
+.{
+    .name = .crypto_svelte,
+    .version = "0.1.0",
+    .fingerprint = 0xb699c957f63c4b32,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigware = .{ .path = "../.." },
+    },
+    .paths = .{""},
+}
