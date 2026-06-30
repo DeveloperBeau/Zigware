@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const z = @import("zigware");
-const crypto = @import("commands/crypto.zig");
+const crypto = @import("crypto.zig");
 
 const NullBackend = z.NullBackend;
 const Bridge = z.Bridge;
