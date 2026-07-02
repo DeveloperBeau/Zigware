@@ -273,6 +273,14 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/diag_tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/zigware_codegen.zig");
 
+    // Isolated headless-barrel step: confirms the Cocoa-free codegen surface
+    // (Sink export, emitter) compiles and tests without the App suites.
+    const test_codegen_step = b.step("test-codegen", "Run only the headless codegen barrel tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/zigware_codegen.zig"), .target = target, .optimize = optimize });
+        test_codegen_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
+
     // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
     addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");

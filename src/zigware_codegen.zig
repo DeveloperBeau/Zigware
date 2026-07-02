@@ -9,6 +9,7 @@
 
 const command_ctx = @import("command_ctx.zig");
 const builtin_cmds = @import("commands/builtin.zig");
+const compute = @import("compute.zig");
 
 // Command-handler value types. The dts and test builds wire THIS module under
 // the name "zigware" so a consumer's command files compile Cocoa-free against
@@ -20,6 +21,11 @@ pub const done = command_ctx.done;
 pub const Bytes = command_ctx.Bytes;
 pub const Channel = command_ctx.Channel;
 pub const CommandError = command_ctx.CommandError;
+/// The progress sink a streaming handler declares as its third parameter
+/// (`fn (..., sink: z.Sink(P))`). Re-exported here so a consumer's command file
+/// compiles Cocoa-free against the headless barrel during `zig build dts`; the
+/// emitter then reads P off this type to render the command's `stream` payload.
+pub const Sink = compute.Sink;
 
 /// The framework built-in command State, re-exported so a consumer barrel can
 /// default its own `pub const State = ...` to it.
@@ -34,4 +40,9 @@ pub const emit = @import("emit_dts.zig").emit;
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+test "headless barrel exposes Sink for streaming handler signatures" {
+    const P = struct { pct: u8 };
+    try @import("std").testing.expect(Sink(P) == @import("compute.zig").Sink(P));
 }
