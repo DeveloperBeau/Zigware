@@ -76,3 +76,10 @@ test "build-time grant loading authorizes a granted command and denies others" {
     try std.testing.expect(!table.commandGranted("main", "deleteEverything"));
     try std.testing.expect(!table.commandGranted("other", "hashFile"));
 }
+
+test "security data types live in the manifest layer and re-export from capability" {
+    const cap = @import("security/capability.zig");
+    try std.testing.expect(types.Permission == cap.Permission);
+    try std.testing.expect(types.Scope == cap.Scope);
+    try std.testing.expect(types.HostRule == cap.HostRule);
+}

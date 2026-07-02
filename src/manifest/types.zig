@@ -16,6 +16,25 @@ pub const Fuses = struct {
     debugInspector: bool = false,
 };
 
+pub const HostRule = struct { host: []const u8, port: ?u16 = null };
+
+/// Per-resource scope. The union tag IS the scope kind (no separate enum).
+pub const Scope = union(enum) {
+    path: []const u8, // glob with $APPDATA/$HOME/$APPCONFIG/** tokens
+    host: HostRule, // host glob plus optional exact port
+    argv: []const u8, // exact argv token (no globbing)
+    label: []const u8, // window-label glob
+};
+
+/// A single permission grants commands and carries scope. Deny beats allow.
+pub const Permission = struct {
+    identifier: []const u8, // "<plugin>:<action>", lower-ascii
+    commands_allow: []const []const u8 = &.{},
+    commands_deny: []const []const u8 = &.{},
+    scope_allow: []const Scope = &.{},
+    scope_deny: []const Scope = &.{},
+};
+
 /// Stable diagnostic codes for the build-time config + capability cross-check
 /// stream. D emits the config codes; C emits `fuse_requires_capability` and
 /// `capability_window_unknown` (it has the capability-file contents D does not

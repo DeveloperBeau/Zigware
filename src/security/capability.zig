@@ -10,24 +10,13 @@ pub const OriginPattern = union(enum) {
     https_exact: []const u8, // explicit https origin, requires allowRemoteContent fuse
 };
 
-pub const HostRule = struct { host: []const u8, port: ?u16 = null };
-
-/// Per-resource scope. The union tag IS the scope kind (no separate enum).
-pub const Scope = union(enum) {
-    path: []const u8, // glob with $APPDATA/$HOME/$APPCONFIG/** tokens
-    host: HostRule, // host glob plus optional exact port
-    argv: []const u8, // exact argv token (no globbing)
-    label: []const u8, // window-label glob (E's window.* value-set scope)
-};
-
-/// A single permission grants commands and carries scope. Deny beats allow.
-pub const Permission = struct {
-    identifier: []const u8, // "<plugin>:<action>", lower-ascii
-    commands_allow: []const []const u8 = &.{},
-    commands_deny: []const []const u8 = &.{},
-    scope_allow: []const Scope = &.{},
-    scope_deny: []const Scope = &.{},
-};
+// HostRule/Scope/Permission are canonical in the manifest layer (types.zig)
+// so the manifest can carry app-declared permissions without a dependency
+// cycle. Re-exported here so the security engine and every `cap.*` caller name
+// the SAME type; OriginPattern/PermissionSet/Capability/Catalog stay local.
+pub const HostRule = manifest.HostRule;
+pub const Scope = manifest.Scope;
+pub const Permission = manifest.Permission;
 
 /// A named bundle of permissions/nested sets so the common case is one line.
 pub const PermissionSet = struct {
