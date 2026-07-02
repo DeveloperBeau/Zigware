@@ -179,7 +179,11 @@ fn validate(comptime State: type, comptime UserCommands: anytype) void {
             const P0 = fn_info.params[0].type.?;
             if (P0 != *Ctx(State))
                 @compileError("command '" ++ d.name ++ "' first param must be *Ctx(State)");
-            if (fn_info.params.len == 2) {
+            // Param 1 is ALWAYS the args struct when present (for both the 2-param
+            // and 3-param forms), so validate it for len >= 2 to surface the clean
+            // "must be a struct" message rather than a deeper JSON-decode error. A
+            // stream-only command with no args must still declare an empty `struct {}`.
+            if (fn_info.params.len >= 2) {
                 const ArgsT = fn_info.params[1].type.?;
                 if (@typeInfo(ArgsT) != .@"struct")
                     @compileError("command '" ++ d.name ++ "' second param must be a struct of JSON-decodable fields");
