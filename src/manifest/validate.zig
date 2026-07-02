@@ -174,6 +174,46 @@ pub fn validate(
         }
     }
 
+    // App-declared permissions: namespacing + scope confinement. An app may
+    // only scope a declared permission to its OWN $APPDATA; everything else
+    // (other tokens, tokenless verbatim globs, absolute paths, non-path
+    // scopes) is rejected. The `app:` prefix requirement also forbids
+    // shadowing a builtin id (all builtins use a non-app: namespace).
+    // `commands_allow` is intentionally not constrained here: the app's
+    // command names are Zig (not in the manifest), so they are unvalidatable
+    // at manifest-build-time, and `synthAppGrants` only reuses a declared
+    // permission for the app's own registered commands.
+    const APPDATA = "$APPDATA";
+    for (m.security.permissions, 0..) |perm, i| {
+        if (!std.mem.startsWith(u8, perm.identifier, "app:")) {
+            const path = try std.fmt.allocPrint(gpa, "security.permissions[{d}].identifier", .{i});
+            errdefer gpa.free(path);
+            try diag.add(gpa, .{
+                .code = .permission_not_app_namespaced,
+                .message = "app-declared permission identifier must be 'app:'-prefixed",
+                .path = path,
+            });
+            ok = false;
+        }
+        for (perm.scope_allow, 0..) |sc, j| {
+            const confined = switch (sc) {
+                .path => |p| std.mem.startsWith(u8, p, APPDATA) and
+                    (p.len == APPDATA.len or p[APPDATA.len] == '/'),
+                else => false,
+            };
+            if (!confined) {
+                const path = try std.fmt.allocPrint(gpa, "security.permissions[{d}].scope_allow[{d}]", .{ i, j });
+                errdefer gpa.free(path);
+                try diag.add(gpa, .{
+                    .code = .permission_scope_unconfined,
+                    .message = "app-declared scope must be a $APPDATA-confined path",
+                    .path = path,
+                });
+                ok = false;
+            }
+        }
+    }
+
     // Debug inspector is forbidden in any release mode. .Debug allows it (the
     // intended use case is local debugging).
     if (m.security.fuses.debugInspector and isReleaseMode(optimize)) {
@@ -623,7 +663,10 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .{ .label = "dup", .title = "A" },
         .{ .label = "dup", .title = "B" },
     } };
-    m.security = .{ .grants = &.{ "missing.one", "missing.two" } };
+    m.security = .{
+        .grants = &.{ "missing.one", "missing.two" },
+        .permissions = &.{.{ .identifier = "nope", .scope_allow = &.{.{ .path = "$HOME/x" }} }},
+    };
     m.frontend = .{ .serveUrl = "http://localhost:5173" };
 
     _ = try validate(gpa, m, .Debug, &.{}, &diag);
@@ -631,4 +674,60 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
 
 test "validate under checkAllAllocationFailures has zero leaks" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, oomTestImpl, .{});
+}
+
+test "validate accepts an app permission confined to $APPDATA" {
+    const gpa = std.testing.allocator;
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+    var m = baseValid();
+    m.security = .{ .permissions = &.{.{
+        .identifier = "app:hashFile",
+        .commands_allow = &.{"hashFile"},
+        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+    }} };
+    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_scope_unconfined));
+    try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_not_app_namespaced));
+}
+
+test "validate rejects an app permission scoped outside $APPDATA" {
+    const gpa = std.testing.allocator;
+    const bad = [_]types.Scope{
+        .{ .path = "$HOME/notes/**" }, // wrong token
+        .{ .path = "$APPCONFIG/x/**" }, // wrong token
+        .{ .path = "notes/**" }, // tokenless verbatim passthrough
+        .{ .path = "/etc/**" }, // absolute
+        .{ .host = .{ .host = "example.com" } }, // non-path scope
+        .{ .path = "$APPDATALOLOL/x" }, // boundary: p[8]='L', not '/'
+    };
+    for (bad) |sc| {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.security = .{ .permissions = &.{.{ .identifier = "app:hashFile", .scope_allow = &.{sc} }} };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .permission_scope_unconfined));
+        try std.testing.expectEqualStrings(
+            "security.permissions[0].scope_allow[0]",
+            findOne(diag, .permission_scope_unconfined).?.path.?,
+        );
+    }
+}
+
+test "validate rejects an app permission whose id is not app: namespaced" {
+    const gpa = std.testing.allocator;
+    const bad_ids = [_][]const u8{ "fs:read", "hashFile", "core:default" };
+    for (bad_ids) |id| {
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+        var m = baseValid();
+        m.security = .{ .permissions = &.{.{ .identifier = id }} };
+        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expectEqual(@as(usize, 1), countCode(diag, .permission_not_app_namespaced));
+        try std.testing.expectEqualStrings(
+            "security.permissions[0].identifier",
+            findOne(diag, .permission_not_app_namespaced).?.path.?,
+        );
+    }
 }

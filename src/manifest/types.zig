@@ -53,6 +53,8 @@ pub const Code = enum {
     duplicate_window_label,
     empty_window_label,
     unknown_capability_ref,
+    permission_not_app_namespaced,
+    permission_scope_unconfined,
     inspector_in_release,
     dev_url_without_command, // WARNING (is_error=false)
     override_for_target_dropped, // WARNING: a per-OS override file exists but target_os has no mapping
