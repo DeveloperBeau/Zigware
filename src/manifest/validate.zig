@@ -197,8 +197,19 @@ pub fn validate(
         }
         for (perm.scope_allow, 0..) |sc, j| {
             const confined = switch (sc) {
-                .path => |p| std.mem.startsWith(u8, p, APPDATA) and
-                    (p.len == APPDATA.len or p[APPDATA.len] == '/'),
+                .path => |p| blk: {
+                    if (!std.mem.startsWith(u8, p, APPDATA)) break :blk false;
+                    if (!(p.len == APPDATA.len or p[APPDATA.len] == '/')) break :blk false;
+                    // A lexical $APPDATA prefix does NOT confine if the pattern can
+                    // traverse out of app-data: the runtime matcher realpaths the
+                    // literal prefix, so `$APPDATA/../etc/**` resolves to /etc and
+                    // would be ALLOWED. Reject any `..`/`.` path segment.
+                    var it = std.mem.splitScalar(u8, p, '/');
+                    while (it.next()) |seg| {
+                        if (std.mem.eql(u8, seg, "..") or std.mem.eql(u8, seg, ".")) break :blk false;
+                    }
+                    break :blk true;
+                },
                 else => false,
             };
             if (!confined) {
@@ -702,6 +713,8 @@ test "validate rejects an app permission scoped outside $APPDATA" {
         .{ .path = "/etc/**" }, // absolute
         .{ .host = .{ .host = "example.com" } }, // non-path scope
         .{ .path = "$APPDATALOLOL/x" }, // boundary: p[8]='L', not '/'
+        .{ .path = "$APPDATA/../etc/**" }, // .. traversal escapes app-data at realpath
+        .{ .path = "$APPDATA/./x/**" }, // . segment
     };
     for (bad) |sc| {
         var diag: Diagnostics = .{};

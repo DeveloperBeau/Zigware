@@ -405,7 +405,7 @@ fn assertParallel(comptime Base: type, comptime Override: type) void {
     const bf = @typeInfo(Base).@"struct".fields;
     const of = @typeInfo(Override).@"struct".fields;
     if (bf.len != of.len) @compileError(
-        "Override mirror field count differs from base — a field was added on one side without the other.",
+        "Override mirror field count differs from base; a field was added on one side without the other.",
     );
     inline for (bf) |b| {
         comptime var found_idx: ?usize = null;

@@ -23,7 +23,6 @@ const State = @import("app_state.zig").State;
 const NullBackend = z.NullBackend;
 const Bridge = z.Bridge;
 
-
 /// The example command surface the bridge registers: the one app command.
 /// compute.cancel/window.* are framework builtins not exercised here.
 const NotesCommands = struct {
