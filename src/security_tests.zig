@@ -33,7 +33,18 @@ const std = @import("std");
 const cap = @import("security/capability.zig");
 const grant = @import("security/grant_table.zig");
 const gates = @import("security/gates.zig");
-const app_catalog = @import("app_catalog.zig");
+const defaults = @import("security/defaults.zig");
+
+// The app permission the live-scope fixture references, built locally now that
+// the framework catalog no longer carries it.
+const notes_app_catalog = cap.Catalog{
+    .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{.{
+        .identifier = "app:hashFile",
+        .commands_allow = &.{"hashFile"},
+        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+    }}),
+    .sets = &defaults.builtin_sets,
+};
 const manifest = @import("manifest/types.zig");
 
 // ─── Live scope (Task 5): the app-command path scope gates at G4 ──────────────
@@ -73,7 +84,7 @@ test "live scope: hashFile allows an in-scope path and denies an out-of-scope on
     }};
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(std.testing.allocator);
-    var table = try grant.GrantTable.compile(std.testing.allocator, &caps, &app_catalog.runtime_catalog, .{}, &.{"main"}, &diags);
+    var table = try grant.GrantTable.compile(std.testing.allocator, &caps, &notes_app_catalog, .{}, &.{"main"}, &diags);
     defer table.deinit();
 
     // G2: the command is granted; G4: the path scope discriminates.

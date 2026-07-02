@@ -24,7 +24,6 @@ const window_manager = @import("window/manager.zig");
 const window_lifecycle = @import("window/lifecycle.zig");
 const window_commands = @import("window/commands.zig");
 const compute_commands = @import("commands/compute.zig");
-const app_catalog = @import("app_catalog.zig");
 const defaults = @import("security/defaults.zig");
 const registry = @import("registry.zig");
 const D = manifest_types;
@@ -239,14 +238,10 @@ pub fn App(comptime B: type) type {
             defer diags.deinit(alloc);
             const grants = try alloc.create(security_grant.GrantTable);
             errdefer alloc.destroy(grants);
-            // Compile against the runtime catalog (built-in permissions + the
-            // app-declared permission). Additive and behavior-neutral: the
-            // app-declared permission is resolved ONLY when a capability
-            // references its identifier, and the synthesized `core:default` cap
-            // does not, so this compiles the same table the builtin catalog did.
-            // It admits the app permission into the catalog so a capability that
-            // grants the scoped `hashFile` command resolves (Task 7's example).
-            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &app_catalog.runtime_catalog, .{}, labels, &diags);
+            // Compile against the built-in catalog: core:default resolves, and
+            // deny-by-default holds for everything else. The single cap references
+            // only core:default, so the built-in catalog is sufficient.
+            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &defaults.builtin_catalog, .{}, labels, &diags);
             errdefer grants.deinit();
             const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
             return initWithConfig(

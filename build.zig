@@ -473,6 +473,12 @@ pub fn build(b: *std.Build) void {
     const test_sec_step = b.step("test-sec", "Run only the src/sec_regression.zig tests");
     addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, "src/sec_regression.zig");
 
+    // Isolated security-suite step: src/security_tests.zig builds a standalone
+    // logic-test module (no embedded manifest, no Cocoa), so it runs without
+    // the App suites that hang on this host.
+    const test_security_step = b.step("test-security", "Run only the src/security_tests.zig tests");
+    addLogicTest(b, test_security_step, target, optimize, "src/security_tests.zig");
+
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");

@@ -10,8 +10,20 @@ const std = @import("std");
 const parse = @import("manifest/parse.zig");
 const caps_loader = @import("manifest/capabilities.zig");
 const grant = @import("security/grant_table.zig");
-const app_catalog = @import("app_catalog.zig");
+const cap = @import("security/capability.zig");
+const defaults = @import("security/defaults.zig");
 const types = @import("manifest/types.zig");
+
+// The notes-style app permission the "main" grant references, built locally so
+// the framework catalog no longer ships it.
+const notes_app_catalog = cap.Catalog{
+    .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{.{
+        .identifier = "app:hashFile",
+        .commands_allow = &.{"hashFile"},
+        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+    }}),
+    .sets = &defaults.builtin_sets,
+};
 
 const Capability = caps_loader.Capability;
 
@@ -59,7 +71,7 @@ test "build-time grant loading authorizes a granted command and denies others" {
     var table = try grant.GrantTable.compile(
         gpa,
         referenced.items,
-        &app_catalog.runtime_catalog,
+        &notes_app_catalog,
         m.security.fuses,
         &labels,
         &compile_diag,
@@ -78,7 +90,6 @@ test "build-time grant loading authorizes a granted command and denies others" {
 }
 
 test "security data types live in the manifest layer and re-export from capability" {
-    const cap = @import("security/capability.zig");
     try std.testing.expect(types.Permission == cap.Permission);
     try std.testing.expect(types.Scope == cap.Scope);
     try std.testing.expect(types.HostRule == cap.HostRule);
