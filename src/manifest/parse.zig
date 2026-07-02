@@ -321,7 +321,7 @@ fn freeField(comptime f: std.builtin.Type.StructField, gpa: std.mem.Allocator, v
             if (v.len == 0) return;
             const Child = ptr.child;
             const cinfo = @typeInfo(Child);
-            if (cinfo == .pointer or cinfo == .@"struct") {
+            if (cinfo == .pointer or cinfo == .@"struct" or cinfo == .@"union") {
                 for (v) |elem| freeValue(Child, gpa, elem);
             }
             gpa.free(v);
@@ -343,13 +343,16 @@ fn freeValue(comptime T: type, gpa: std.mem.Allocator, value: T) void {
             if (ptr.size == .slice and value.len > 0) {
                 const Child = ptr.child;
                 const cinfo = @typeInfo(Child);
-                if (cinfo == .pointer or cinfo == .@"struct") {
+                if (cinfo == .pointer or cinfo == .@"struct" or cinfo == .@"union") {
                     for (value) |elem| freeValue(Child, gpa, elem);
                 }
                 gpa.free(value);
             }
         },
         .@"struct" => freeStruct(T, gpa, value),
+        .@"union" => switch (value) {
+            inline else => |payload| freeValue(@TypeOf(payload), gpa, payload),
+        },
         else => {},
     }
 }
@@ -721,6 +724,22 @@ test "parseAtBuildFromPaths returns ParseFailed with one mirrored zon Diagnostic
         ),
     );
     try std.testing.expectEqual(@as(usize, 1), diag.items.items.len);
+}
+
+test "manifest round-trips an app-declared scoped permission through zon" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 =
+        ".{ .identifier = \"com.example.app\", .productName = \"A\", .version = \"0.1.0\", " ++
+        ".app = .{ .windows = .{ .{ .label = \"main\", .title = \"M\" } } }, " ++
+        ".security = .{ .permissions = .{ .{ .identifier = \"app:hashFile\", " ++
+        ".commands_allow = .{ \"hashFile\" }, .scope_allow = .{ .{ .path = \"$APPDATA/notes/**\" } } } } } }";
+    var zd: std.zon.parse.Diagnostics = .{};
+    defer zd.deinit(gpa);
+    const m = try std.zon.parse.fromSliceAlloc(types.Manifest, gpa, src, &zd, .{});
+    defer freeManifest(gpa, m); // also asserts the union free arm under the testing allocator
+    try std.testing.expectEqual(@as(usize, 1), m.security.permissions.len);
+    try std.testing.expectEqualStrings("app:hashFile", m.security.permissions[0].identifier);
+    try std.testing.expectEqualStrings("$APPDATA/notes/**", m.security.permissions[0].scope_allow[0].path);
 }
 
 test "std.zon.parse.free is safe on a parsed OverrideManifest" {

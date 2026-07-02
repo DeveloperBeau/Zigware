@@ -10,8 +10,21 @@ const std = @import("std");
 const parse = @import("manifest/parse.zig");
 const caps_loader = @import("manifest/capabilities.zig");
 const grant = @import("security/grant_table.zig");
-const app_catalog = @import("app_catalog.zig");
+const cap = @import("security/capability.zig");
+const defaults = @import("security/defaults.zig");
 const types = @import("manifest/types.zig");
+
+// Test catalog: built-in permissions plus a scoped hashFile entry used by the
+// grant-enforcement fixture. The notes app now declares the equivalent via its
+// manifest; this local copy keeps the framework test self-contained.
+const hashfile_test_catalog = cap.Catalog{
+    .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{.{
+        .identifier = "app:hashFile",
+        .commands_allow = &.{"hashFile"},
+        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+    }}),
+    .sets = &defaults.builtin_sets,
+};
 
 const Capability = caps_loader.Capability;
 
@@ -59,7 +72,7 @@ test "build-time grant loading authorizes a granted command and denies others" {
     var table = try grant.GrantTable.compile(
         gpa,
         referenced.items,
-        &app_catalog.runtime_catalog,
+        &hashfile_test_catalog,
         m.security.fuses,
         &labels,
         &compile_diag,
@@ -75,4 +88,10 @@ test "build-time grant loading authorizes a granted command and denies others" {
     try std.testing.expect(table.commandGranted("main", "hashFile"));
     try std.testing.expect(!table.commandGranted("main", "deleteEverything"));
     try std.testing.expect(!table.commandGranted("other", "hashFile"));
+}
+
+test "security data types live in the manifest layer and re-export from capability" {
+    try std.testing.expect(types.Permission == cap.Permission);
+    try std.testing.expect(types.Scope == cap.Scope);
+    try std.testing.expect(types.HostRule == cap.HostRule);
 }
