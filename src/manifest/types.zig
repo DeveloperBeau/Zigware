@@ -16,6 +16,25 @@ pub const Fuses = struct {
     debugInspector: bool = false,
 };
 
+pub const HostRule = struct { host: []const u8, port: ?u16 = null };
+
+/// Per-resource scope. The union tag IS the scope kind (no separate enum).
+pub const Scope = union(enum) {
+    path: []const u8, // glob with $APPDATA/$HOME/$APPCONFIG/** tokens
+    host: HostRule, // host glob plus optional exact port
+    argv: []const u8, // exact argv token (no globbing)
+    label: []const u8, // window-label glob
+};
+
+/// A single permission grants commands and carries scope. Deny beats allow.
+pub const Permission = struct {
+    identifier: []const u8, // "<plugin>:<action>", lower-ascii
+    commands_allow: []const []const u8 = &.{},
+    commands_deny: []const []const u8 = &.{},
+    scope_allow: []const Scope = &.{},
+    scope_deny: []const Scope = &.{},
+};
+
 /// Stable diagnostic codes for the build-time config + capability cross-check
 /// stream. D emits the config codes; C emits `fuse_requires_capability` and
 /// `capability_window_unknown` (it has the capability-file contents D does not
@@ -34,6 +53,8 @@ pub const Code = enum {
     duplicate_window_label,
     empty_window_label,
     unknown_capability_ref,
+    permission_not_app_namespaced,
+    permission_scope_unconfined,
     inspector_in_release,
     dev_url_without_command, // WARNING (is_error=false)
     override_for_target_dropped, // WARNING: a per-OS override file exists but target_os has no mapping
@@ -195,6 +216,10 @@ pub const Security = struct {
     /// and the diagnostic code names (e.g. unknown_capability_ref) deliberately
     /// keep the generic "capability" term; do not rename them to match.
     grants: []const []const u8 = &.{},
+    /// App-declared scoped permissions. Each id MUST be `app:`-prefixed and
+    /// each scope_allow path MUST be confined to `$APPDATA` (validate.zig).
+    /// Threaded into the live grant catalog by synthAppGrants/App.init.
+    permissions: []const Permission = &.{},
     /// Content-Security-Policy. F performs compile-time script-hash injection
     /// for own scripts; the author declares only trusted hosts here.
     csp: Csp = .{},
@@ -307,6 +332,7 @@ pub const OverrideCsp = struct {
 /// "field present and set to its default". Arrays replace wholesale.
 pub const OverrideSecurity = struct {
     grants: ?[]const []const u8 = null,
+    permissions: ?[]const Permission = null,
     csp: ?OverrideCsp = null,
     fuses: ?OverrideFuses = null,
 };
@@ -379,7 +405,7 @@ fn assertParallel(comptime Base: type, comptime Override: type) void {
     const bf = @typeInfo(Base).@"struct".fields;
     const of = @typeInfo(Override).@"struct".fields;
     if (bf.len != of.len) @compileError(
-        "Override mirror field count differs from base — a field was added on one side without the other.",
+        "Override mirror field count differs from base; a field was added on one side without the other.",
     );
     inline for (bf) |b| {
         comptime var found_idx: ?usize = null;
@@ -410,4 +436,13 @@ fn assertParallel(comptime Base: type, comptime Override: type) void {
 
 test "OverrideManifest mirrors every Manifest field recursively" {
     comptime assertParallel(Manifest, OverrideManifest);
+}
+
+test "stringify renders a Scope union as a tagged literal" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    const p = Permission{ .identifier = "app:hashFile", .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} };
+    try std.zon.stringify.serialize(p, .{}, &aw.writer);
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), ".path") != null);
 }

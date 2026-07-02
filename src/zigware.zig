@@ -67,7 +67,7 @@ pub const Worker = compute_mod.Worker;
 pub const capability = @import("security/capability.zig");
 pub const gates = @import("security/gates.zig");
 pub const GrantTable = @import("security/grant_table.zig").GrantTable;
-pub const app_catalog = @import("app_catalog.zig");
+pub const defaults = @import("security/defaults.zig");
 
 // ── Manifest loader (D) ─────────────────────────────────────────────────────
 pub const manifest = @import("manifest/types.zig");
