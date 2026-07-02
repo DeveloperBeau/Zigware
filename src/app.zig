@@ -280,7 +280,7 @@ pub fn App(comptime B: type) type {
             for (windows) |w| try labels_list.append(alloc, w.label);
             const labels = labels_list.items;
 
-            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime parse.embedded().security.permissions);
+            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime manifest.security.permissions);
             errdefer {
                 grants.deinit();
                 alloc.destroy(grants);
@@ -733,9 +733,10 @@ test "synthesized app grants authorize the app's own commands" {
     try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":2"));
 }
 
-/// A namespace whose command name (`hashFile`) collides with the catalog's
-/// scoped `app:hashFile` permission ($APPDATA/notes/**). Used to prove the
-/// synthesis REUSES that scoped permission rather than minting an unscoped one.
+/// A namespace whose command name (`hashFile`) matches an app-declared scoped
+/// `app:hashFile` permission ($APPDATA/notes/**) passed to synthAppGrants. Used to
+/// prove the synthesis REUSES that declared scoped permission rather than minting
+/// an unscoped one.
 const TestScopedCommands = struct {
     pub fn hashFile(_: *ctxmod.Ctx(builtin.State), args: struct { path: []const u8 }) ctxmod.Result(struct { ok: bool }) {
         _ = args;
