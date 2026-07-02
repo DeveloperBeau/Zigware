@@ -14,6 +14,15 @@
     },
     .security = .{
         .grants = .{"main"},
+        // The notes app declares its own scoped command permission: hashFile,
+        // confined to the app's own data directory.
+        .permissions = .{
+            .{
+                .identifier = "app:hashFile",
+                .commands_allow = .{"hashFile"},
+                .scope_allow = .{ .{ .path = "$APPDATA/notes/**" } },
+            },
+        },
         // Strict baseline: own scripts only, no inline JS, no remote anything.
         .csp = .{
             .defaultSrc = .{"'self'"},

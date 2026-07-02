@@ -23,17 +23,6 @@ const State = @import("app_state.zig").State;
 const NullBackend = z.NullBackend;
 const Bridge = z.Bridge;
 
-// Local catalog built from z.defaults plus the notes app permission, in lieu of
-// the removed app_catalog.runtime_catalog. Task 6 replaces this when notes
-// declares the permission via its manifest.
-const notes_local_catalog = z.capability.Catalog{
-    .permissions = &(z.defaults.builtin_permissions ++ [_]z.capability.Permission{.{
-        .identifier = "app:hashFile",
-        .commands_allow = &.{"hashFile"},
-        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
-    }}),
-    .sets = &z.defaults.builtin_sets,
-};
 
 /// The example command surface the bridge registers: the one app command.
 /// compute.cancel/window.* are framework builtins not exercised here.
@@ -101,9 +90,17 @@ const Harness = struct {
         errdefer a.destroy(state);
         state.* = .{};
 
-        // Grant `hashFile` to "main" via the runtime catalog's app:hashFile
-        // permission (scope $APPDATA/notes/**), plus core:default. One cap per
-        // window keeps scopeFor's inert n<=1 guard satisfied.
+        // Grant `hashFile` to "main" via the app's OWN declared permission
+        // (scope $APPDATA/notes/**), read from the embedded manifest, plus
+        // core:default. One cap per window keeps scopeFor's inert n<=1 guard
+        // satisfied. The catalog = built-in permissions + the manifest's
+        // declared permissions, proving the declaration flows end to end.
+        const notes_catalog = comptime blk: {
+            var perms: []const z.capability.Permission = z.defaults.builtin_catalog.permissions;
+            for (z.parse.embedded().security.permissions) |p|
+                perms = perms ++ &[_]z.capability.Permission{p};
+            break :blk z.capability.Catalog{ .permissions = perms, .sets = z.defaults.builtin_catalog.sets };
+        };
         const grants = try a.create(z.GrantTable);
         errdefer a.destroy(grants);
         var gdiag: z.manifest.Diagnostics = .{};
@@ -114,7 +111,7 @@ const Harness = struct {
             .origins = &.{.app_scheme},
             .permissions = &.{ "core:default", "app:hashFile" },
         }};
-        grants.* = try z.GrantTable.compile(a, &caps, &notes_local_catalog, .{}, &.{"main"}, &gdiag);
+        grants.* = try z.GrantTable.compile(a, &caps, &notes_catalog, .{}, &.{"main"}, &gdiag);
         errdefer grants.deinit();
 
         const bases = z.gates.Bases{ .appdata = base_path, .home = base_path, .appconfig = base_path };

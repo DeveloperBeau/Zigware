@@ -91,7 +91,7 @@ fn AppCommands(comptime B: type) type {
 
 /// Compile a GrantTable that authorizes every command in `AppCmds` for `labels`,
 /// alongside `core:default`. Each command `c` is granted through the permission
-/// `app:c`: if the runtime catalog already declares it (e.g. the notes example's
+/// `app:c`: if the app declares it via .security.permissions (e.g. the notes example's
 /// scoped `app:hashFile`), that declaration is reused so its scope is PRESERVED;
 /// otherwise an unscoped `app:c` permission is synthesized. Deny-by-default holds.
 /// Only the app's declared commands (plus core:default) are granted, and only to
@@ -275,7 +275,7 @@ pub fn App(comptime B: type) type {
             for (windows) |w| try labels_list.append(alloc, w.label);
             const labels = labels_list.items;
 
-            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime manifest.security.permissions);
+            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime parse.embedded().security.permissions);
             errdefer {
                 grants.deinit();
                 alloc.destroy(grants);

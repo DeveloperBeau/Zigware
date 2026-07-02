@@ -14,9 +14,10 @@ const cap = @import("security/capability.zig");
 const defaults = @import("security/defaults.zig");
 const types = @import("manifest/types.zig");
 
-// The notes-style app permission the "main" grant references, built locally so
-// the framework catalog no longer ships it.
-const notes_app_catalog = cap.Catalog{
+// Test catalog: built-in permissions plus a scoped hashFile entry used by the
+// grant-enforcement fixture. The notes app now declares the equivalent via its
+// manifest; this local copy keeps the framework test self-contained.
+const hashfile_test_catalog = cap.Catalog{
     .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{.{
         .identifier = "app:hashFile",
         .commands_allow = &.{"hashFile"},
@@ -71,7 +72,7 @@ test "build-time grant loading authorizes a granted command and denies others" {
     var table = try grant.GrantTable.compile(
         gpa,
         referenced.items,
-        &notes_app_catalog,
+        &hashfile_test_catalog,
         m.security.fuses,
         &labels,
         &compile_diag,
