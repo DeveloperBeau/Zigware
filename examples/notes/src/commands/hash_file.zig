@@ -5,9 +5,9 @@
 //! arg from the same args_json this handler decodes and checks it against the
 //! capability's `$APPDATA/notes/**` scope. A denied request never reaches here.
 //!
-//! The handler builds its `Sink` from its own `*Ctx` via the comptime projector
-//! `z.Sink(Pct).from(ctx)` (Pct is the PROGRESS frame, distinct from the success
-//! payload `Out`), reads the file in 64 KiB chunks, streams integer-percent
+//! The framework builds the handler's `Sink` from the per-call `*Ctx` and passes
+//! it as the third parameter `sink: z.Sink(Pct)` (Pct is the PROGRESS frame,
+//! distinct from the success payload `Out`), reads the file in 64 KiB chunks, streams integer-percent
 //! progress, and returns the hex SHA-256 digest. Between chunks it polls
 //! `sink.isCancelled()` and bails with a `cancelled` reject when the per-id flag
 //! or the process shutdown flag is set.
@@ -28,8 +28,7 @@ const Pct = struct { pct: u8 };
 /// cancel poll a tight cadence on large files.
 const CHUNK: usize = 64 * 1024;
 
-pub fn hashFile(ctx: *z.Ctx(State), args: struct { path: []const u8 }) z.Async(z.Result(Out)) {
-    const sink = z.Sink(Pct).from(ctx);
+pub fn hashFile(ctx: *z.Ctx(State), args: struct { path: []const u8 }, sink: z.Sink(Pct)) z.Async(z.Result(Out)) {
 
     // The handler runs on a worker thread with no Ctx-threaded io, so it owns a
     // blocking io for the file read. No async is used (plain reads), so a failing
