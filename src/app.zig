@@ -25,6 +25,7 @@ const window_lifecycle = @import("window/lifecycle.zig");
 const window_commands = @import("window/commands.zig");
 const compute_commands = @import("commands/compute.zig");
 const app_catalog = @import("app_catalog.zig");
+const defaults = @import("security/defaults.zig");
 const registry = @import("registry.zig");
 const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
@@ -110,10 +111,16 @@ fn synthAppGrants(
     alloc: std.mem.Allocator,
     labels: []const []const u8,
     comptime AppCmds: type,
+    comptime declared: []const security_cap.Permission,
 ) !*security_grant.GrantTable {
     // Command names are independent of the backend B and the builtins, so a dummy
     // namespace pairing is enough to enumerate them (registry ignores B).
     const names = comptime registry.Commands(struct {}, builtin.State, AppCmds).command_names;
+
+    // The catalog the capability resolves against: the built-in permissions
+    // (so core:default's members resolve) plus the app-declared permissions
+    // (so a declared command's scope is reused, not re-minted unscoped).
+    const declared_perms = defaults.builtin_catalog.permissions ++ declared;
 
     // Comptime-build the permission-id list the capability grants, plus any
     // permissions the catalog does not already define (unscoped).
@@ -123,22 +130,22 @@ fn synthAppGrants(
         for (names) |name| {
             const id = "app:" ++ name;
             perm_ids = perm_ids ++ &[_][]const u8{id};
-            var declared = false;
-            for (app_catalog.runtime_catalog.permissions) |p| {
+            var is_declared = false;
+            for (declared_perms) |p| {
                 if (std.mem.eql(u8, p.identifier, id)) {
-                    declared = true;
+                    is_declared = true;
                     break;
                 }
             }
-            if (!declared)
+            if (!is_declared)
                 extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commands_allow = &[_][]const u8{name} }};
         }
         break :blk .{ .perm_ids = perm_ids, .extra = extra };
     };
 
     const catalog = security_cap.Catalog{
-        .permissions = app_catalog.runtime_catalog.permissions ++ synth.extra,
-        .sets = app_catalog.runtime_catalog.sets,
+        .permissions = declared_perms ++ synth.extra,
+        .sets = defaults.builtin_catalog.sets,
     };
     const caps = [_]security_cap.Capability{.{
         .identifier = "app",
@@ -273,7 +280,7 @@ pub fn App(comptime B: type) type {
             for (windows) |w| try labels_list.append(alloc, w.label);
             const labels = labels_list.items;
 
-            const grants = try synthAppGrants(alloc, labels, AppCmds);
+            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime parse.embedded().security.permissions);
             errdefer {
                 grants.deinit();
                 alloc.destroy(grants);
@@ -711,7 +718,7 @@ test "synthesized app grants authorize the app's own commands" {
     // No hand-built permission here: synthAppGrants must derive the grant for
     // every command in the namespace, the way init() does for a real app.
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands);
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands, &.{});
     const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
@@ -737,13 +744,19 @@ const TestScopedCommands = struct {
 };
 
 test "synthesized grants preserve a declared command scope" {
-    // synthAppGrants must reuse the catalog's scoped `app:hashFile`, so an
+    // synthAppGrants must reuse the app's declared scoped `app:hashFile`, so an
     // out-of-scope path is denied at the path gate. Were the synthesis to mint an
-    // unscoped `app:hashFile`, the gate would dispatch /etc/passwd and resolve.
-    // This would be a real privilege escalation. dummy_bases anchors $APPDATA at /tmp, so
-    // /etc/passwd is outside $APPDATA/notes/** and must be rejected.
+    // unscoped `app:hashFile` (ignoring the declaration), the gate would dispatch
+    // /etc/passwd and resolve. This would be a real privilege escalation.
+    // dummy_bases anchors $APPDATA at /tmp, so /etc/passwd is outside
+    // $APPDATA/notes/** and must be rejected.
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestScopedCommands);
+    const notes_hashfile = security_cap.Permission{
+        .identifier = "app:hashFile",
+        .commands_allow = &.{"hashFile"},
+        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+    };
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestScopedCommands, &.{notes_hashfile});
     const app = App(NullBackend).initWithConfig(TestScopedCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
@@ -761,7 +774,7 @@ test "synthesized grants preserve a declared command scope" {
 test "synthesized app grants still deny an undeclared command" {
     // A command the app never declared must NOT be authorized by the synthesis.
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands);
+    const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestAppCommands, &.{});
     const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
