@@ -256,6 +256,13 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/sha256_tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/registry.zig");
+    // Isolated registry-only step: the aggregate `test` step hangs on the App
+    // suites, so the registry's dispatch/threading tests get their own binary.
+    const test_registry_step = b.step("test-registry", "Run only the registry tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/registry.zig"), .target = target, .optimize = optimize });
+        test_registry_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
