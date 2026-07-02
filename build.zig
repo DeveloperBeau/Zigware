@@ -399,6 +399,15 @@ pub fn build(b: *std.Build) void {
     const dts_step = b.step("dts", "Generate frontend/bindings.d.ts");
     dts_step.dependOn(&dts_run.step);
 
+    // The emitter was previously untested; register its tests and give them an
+    // isolated step (the aggregate test step hangs on the App suites).
+    addLogicTest(b, test_step, target, optimize, "src/emit_dts.zig");
+    const test_emit_dts_step = b.step("test-emit-dts", "Run only the .d.ts emitter tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/emit_dts.zig"), .target = target, .optimize = optimize });
+        test_emit_dts_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
+
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
