@@ -20,7 +20,7 @@
             .{
                 .identifier = "app:hashFile",
                 .commands_allow = .{"hashFile"},
-                .scope_allow = .{ .{ .path = "$APPDATA/notes/**" } },
+                .scope_allow = .{.{ .path = "$APPDATA/notes/**" }},
             },
         },
         // Strict baseline: own scripts only, no inline JS, no remote anything.

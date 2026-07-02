@@ -692,13 +692,15 @@ test "validate accepts an app permission confined to $APPDATA" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
     var m = baseValid();
-    m.security = .{ .permissions = &.{.{
-        .identifier = "app:hashFile",
-        .commands_allow = &.{"hashFile"},
-        // Two entries exercise BOTH accept branches of the boundary condition:
-        // `$APPDATA` alone (len == 8) and `$APPDATA/...` (p[8] == '/').
-        .scope_allow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
-    }} };
+    m.security = .{
+        .permissions = &.{.{
+            .identifier = "app:hashFile",
+            .commands_allow = &.{"hashFile"},
+            // Two entries exercise BOTH accept branches of the boundary condition:
+            // `$APPDATA` alone (len == 8) and `$APPDATA/...` (p[8] == '/').
+            .scope_allow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
+        }},
+    };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_scope_unconfined));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_not_app_namespaced));
