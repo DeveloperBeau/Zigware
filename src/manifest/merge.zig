@@ -73,6 +73,7 @@ fn pickWindowDefaults(base: types.WindowDefaults, ov: types.OverrideWindowDefaul
 fn pickSecurity(base: types.Security, ov: types.OverrideSecurity) types.Security {
     var out = base;
     if (ov.grants) |v| out.grants = v;
+    if (ov.permissions) |v| out.permissions = v;
     if (ov.csp) |c| out.csp = pickCsp(base.csp, c);
     if (ov.fuses) |f| out.fuses = pickFuses(base.fuses, f);
     return out;
@@ -298,6 +299,88 @@ fn freeTargetListDuped(
     gpa.free(runtime);
 }
 
+fn dupScope(gpa: std.mem.Allocator, s: types.Scope) std.mem.Allocator.Error!types.Scope {
+    return switch (s) {
+        .path => |p| .{ .path = try gpa.dupe(u8, p) },
+        .argv => |a| .{ .argv = try gpa.dupe(u8, a) },
+        .label => |l| .{ .label = try gpa.dupe(u8, l) },
+        .host => |h| .{ .host = .{ .host = try gpa.dupe(u8, h.host), .port = h.port } },
+    };
+}
+
+fn freeScope(gpa: std.mem.Allocator, s: types.Scope) void {
+    switch (s) {
+        .path => |p| gpa.free(p),
+        .argv => |a| gpa.free(a),
+        .label => |l| gpa.free(l),
+        .host => |h| gpa.free(h.host),
+    }
+}
+
+fn dupScopeList(gpa: std.mem.Allocator, runtime: []const types.Scope) std.mem.Allocator.Error![]const types.Scope {
+    if (runtime.len == 0) return runtime; // static &.{} default: no allocation.
+    const outer = try gpa.alloc(types.Scope, runtime.len);
+    errdefer gpa.free(outer);
+    var done: usize = 0;
+    errdefer for (outer[0..done]) |sc| freeScope(gpa, sc);
+    while (done < runtime.len) : (done += 1) outer[done] = try dupScope(gpa, runtime[done]);
+    return outer;
+}
+
+fn freeScopeListDuped(gpa: std.mem.Allocator, runtime: []const types.Scope) void {
+    if (runtime.len == 0) return;
+    for (runtime) |sc| freeScope(gpa, sc);
+    gpa.free(runtime);
+}
+
+fn dupPermission(gpa: std.mem.Allocator, in: types.Permission) std.mem.Allocator.Error!types.Permission {
+    var out = in;
+    out.identifier = try gpa.dupe(u8, in.identifier);
+    errdefer gpa.free(out.identifier);
+    out.commands_allow = try dupStringList(gpa, types.Permission, "commands_allow", in.commands_allow);
+    errdefer freeStringListDuped(gpa, types.Permission, "commands_allow", out.commands_allow);
+    out.commands_deny = try dupStringList(gpa, types.Permission, "commands_deny", in.commands_deny);
+    errdefer freeStringListDuped(gpa, types.Permission, "commands_deny", out.commands_deny);
+    out.scope_allow = try dupScopeList(gpa, in.scope_allow);
+    errdefer freeScopeListDuped(gpa, out.scope_allow);
+    out.scope_deny = try dupScopeList(gpa, in.scope_deny);
+    return out;
+}
+
+fn freePermission(gpa: std.mem.Allocator, p: types.Permission) void {
+    gpa.free(p.identifier);
+    freeStringListDuped(gpa, types.Permission, "commands_allow", p.commands_allow);
+    freeStringListDuped(gpa, types.Permission, "commands_deny", p.commands_deny);
+    freeScopeListDuped(gpa, p.scope_allow);
+    freeScopeListDuped(gpa, p.scope_deny);
+}
+
+fn dupPermissionList(
+    gpa: std.mem.Allocator,
+    comptime T: type,
+    comptime field_name: []const u8,
+    runtime: []const types.Permission,
+) std.mem.Allocator.Error![]const types.Permission {
+    if (isStaticDefault(T, field_name, runtime)) return runtime;
+    const outer = try gpa.alloc(types.Permission, runtime.len);
+    errdefer gpa.free(outer);
+    var done: usize = 0;
+    errdefer for (outer[0..done]) |p| freePermission(gpa, p);
+    while (done < runtime.len) : (done += 1) outer[done] = try dupPermission(gpa, runtime[done]);
+    return outer;
+}
+
+fn freePermissionListDuped(
+    gpa: std.mem.Allocator,
+    comptime T: type,
+    comptime field_name: []const u8,
+    runtime: []const types.Permission,
+) void {
+    if (isStaticDefault(T, field_name, runtime)) return;
+    for (runtime) |p| freePermission(gpa, p);
+    gpa.free(runtime);
+}
+
 fn freeStringDuped(
     gpa: std.mem.Allocator,
     comptime T: type,
@@ -356,6 +439,8 @@ fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Err
     var out = in;
     out.grants = try dupStringList(gpa, types.Security, "grants", in.grants);
     errdefer freeStringListDuped(gpa, types.Security, "grants", out.grants);
+    out.permissions = try dupPermissionList(gpa, types.Security, "permissions", in.permissions);
+    errdefer freePermissionListDuped(gpa, types.Security, "permissions", out.permissions);
     out.csp = try dupCsp(gpa, in.csp);
     errdefer freeCspDuped(gpa, out.csp);
     out.fuses = try dupFuses(gpa, in.fuses);
@@ -364,6 +449,7 @@ fn dupSecurity(gpa: std.mem.Allocator, in: types.Security) std.mem.Allocator.Err
 
 fn freeSecurityDuped(gpa: std.mem.Allocator, s: types.Security) void {
     freeStringListDuped(gpa, types.Security, "grants", s.grants);
+    freePermissionListDuped(gpa, types.Security, "permissions", s.permissions);
     freeCspDuped(gpa, s.csp);
 }
 
@@ -599,6 +685,9 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .{ .label = "third", .title = "Third" },
     };
     const base_caps = [_][]const u8{ "fs.read", "net.fetch" };
+    const base_perms = [_]types.Permission{
+        .{ .identifier = "app:hashFile", .commands_allow = &.{"hashFile"}, .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} },
+    };
     const ov_script_src = [_][]const u8{ "'self'", "'unsafe-inline'" };
     const base_icons = [_][]const u8{ "icon-256.png", "icon-512.png" };
     const base_targets = [_]types.Target{ .app, .dmg, .app };
@@ -608,7 +697,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
         .productName = "Deep",
         .version = "1.2.3",
         .app = .{ .windows = &base_windows },
-        .security = .{ .grants = &base_caps },
+        .security = .{ .grants = &base_caps, .permissions = &base_perms },
         .frontend = .{ .dev = "bun run dev" },
         .bundle = .{
             .targets = &base_targets,

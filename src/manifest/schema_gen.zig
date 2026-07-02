@@ -112,6 +112,19 @@ fn writeType(writer: *std.Io.Writer, comptime T: type, comptime indent: usize) s
             try writeIndent(writer, indent);
             try writer.writeAll("}");
         },
+        .@"union" => |u| {
+            // A zon tagged union serializes as `.{ .<tag> = <payload> }`, so
+            // each variant is an object with exactly that one property.
+            try writer.writeAll("{\"oneOf\": [");
+            inline for (u.fields, 0..) |uf, i| {
+                if (i != 0) try writer.writeAll(", ");
+                try writer.writeAll("{\"type\": \"object\", \"properties\": {");
+                try writer.print("\"{s}\": ", .{uf.name});
+                try writeType(writer, uf.type, indent + 1);
+                try writer.print("}}, \"required\": [\"{s}\"], \"additionalProperties\": false}}", .{uf.name});
+            }
+            try writer.writeAll("]}");
+        },
         else => @compileError("schema_gen: unsupported type " ++ @typeName(T)),
     }
 }
@@ -201,4 +214,14 @@ test "schema declares Draft 2020-12 and renders an enum for QuitPolicy" {
     // variants under app.quitOnLastWindowClosed; asserting one variant proves
     // the enum walker fired.
     try std.testing.expect(std.mem.indexOf(u8, out, "\"keep_running_on_last_close\"") != null);
+}
+
+test "schema renders a oneOf for the Scope union with a path variant" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try writeSchema(&aw.writer);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"oneOf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"path\"") != null);
 }

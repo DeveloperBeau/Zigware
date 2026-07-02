@@ -46,6 +46,34 @@
       "type": "object",
       "properties": {
         "grants": {"type": "array", "items": {"type": "string"}},
+        "permissions": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "identifier": {"type": "string"},
+            "commands_allow": {"type": "array", "items": {"type": "string"}},
+            "commands_deny": {"type": "array", "items": {"type": "string"}},
+            "scope_allow": {"type": "array", "items": {"oneOf": [{"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": false}, {"type": "object", "properties": {"host": {
+                "type": "object",
+                "properties": {
+                  "host": {"type": "string"},
+                  "port": {"type": "integer"}
+                },
+                "required": ["host"],
+                "additionalProperties": false
+              }}, "required": ["host"], "additionalProperties": false}, {"type": "object", "properties": {"argv": {"type": "string"}}, "required": ["argv"], "additionalProperties": false}, {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": false}]}},
+            "scope_deny": {"type": "array", "items": {"oneOf": [{"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": false}, {"type": "object", "properties": {"host": {
+                "type": "object",
+                "properties": {
+                  "host": {"type": "string"},
+                  "port": {"type": "integer"}
+                },
+                "required": ["host"],
+                "additionalProperties": false
+              }}, "required": ["host"], "additionalProperties": false}, {"type": "object", "properties": {"argv": {"type": "string"}}, "required": ["argv"], "additionalProperties": false}, {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": false}]}}
+          },
+          "required": ["identifier"],
+          "additionalProperties": false
+        }},
         "csp": {
           "type": "object",
           "properties": {

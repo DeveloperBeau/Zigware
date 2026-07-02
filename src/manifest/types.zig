@@ -214,6 +214,10 @@ pub const Security = struct {
     /// and the diagnostic code names (e.g. unknown_capability_ref) deliberately
     /// keep the generic "capability" term; do not rename them to match.
     grants: []const []const u8 = &.{},
+    /// App-declared scoped permissions. Each id MUST be `app:`-prefixed and
+    /// each scope_allow path MUST be confined to `$APPDATA` (validate.zig).
+    /// Threaded into the live grant catalog by synthAppGrants/App.init.
+    permissions: []const Permission = &.{},
     /// Content-Security-Policy. F performs compile-time script-hash injection
     /// for own scripts; the author declares only trusted hosts here.
     csp: Csp = .{},
@@ -326,6 +330,7 @@ pub const OverrideCsp = struct {
 /// "field present and set to its default". Arrays replace wholesale.
 pub const OverrideSecurity = struct {
     grants: ?[]const []const u8 = null,
+    permissions: ?[]const Permission = null,
     csp: ?OverrideCsp = null,
     fuses: ?OverrideFuses = null,
 };
@@ -429,4 +434,13 @@ fn assertParallel(comptime Base: type, comptime Override: type) void {
 
 test "OverrideManifest mirrors every Manifest field recursively" {
     comptime assertParallel(Manifest, OverrideManifest);
+}
+
+test "stringify renders a Scope union as a tagged literal" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    const p = Permission{ .identifier = "app:hashFile", .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} };
+    try std.zon.stringify.serialize(p, .{}, &aw.writer);
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), ".path") != null);
 }
