@@ -684,7 +684,9 @@ test "validate accepts an app permission confined to $APPDATA" {
     m.security = .{ .permissions = &.{.{
         .identifier = "app:hashFile",
         .commands_allow = &.{"hashFile"},
-        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+        // Two entries exercise BOTH accept branches of the boundary condition:
+        // `$APPDATA` alone (len == 8) and `$APPDATA/...` (p[8] == '/').
+        .scope_allow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
     }} };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_scope_unconfined));
