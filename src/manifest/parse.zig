@@ -343,7 +343,7 @@ fn freeValue(comptime T: type, gpa: std.mem.Allocator, value: T) void {
             if (ptr.size == .slice and value.len > 0) {
                 const Child = ptr.child;
                 const cinfo = @typeInfo(Child);
-                if (cinfo == .pointer or cinfo == .@"struct") {
+                if (cinfo == .pointer or cinfo == .@"struct" or cinfo == .@"union") {
                     for (value) |elem| freeValue(Child, gpa, elem);
                 }
                 gpa.free(value);
