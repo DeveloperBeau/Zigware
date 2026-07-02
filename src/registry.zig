@@ -31,6 +31,25 @@ fn asyncInner(comptime T: type) ?type {
     return s.fields[0].type;
 }
 
+/// True if `T` is `compute.Sink(P)` for some progress payload P. `Sink(P)` stores
+/// no P-typed field, so P is read off its `progress(self, v: P)` method, then the
+/// nominal `compute.Sink(P)` is confirmed. Structural guards run first so a
+/// non-Sink third param returns false rather than comptime-faulting on `.progress`.
+fn isSink(comptime T: type) bool {
+    comptime {
+        if (@typeInfo(T) != .@"struct") return false;
+        if (!@hasDecl(T, "from") or !@hasDecl(T, "progress")) return false;
+        // Arity guard BEFORE indexing params[1]: a non-Sink struct that happens
+        // to declare `from`+`progress` but whose `progress` is not a >=2-arg fn
+        // would otherwise fault with an internal comptime error instead of the
+        // clean "third param must be z.Sink(P)" message the caller emits.
+        const prog = @typeInfo(@TypeOf(T.progress));
+        if (prog != .@"fn" or prog.@"fn".params.len < 2) return false;
+        const P = prog.@"fn".params[1].type.?;
+        return T == compute.Sink(P);
+    }
+}
+
 /// fn Commands(comptime B: type, comptime State: type) type.
 /// `UserCommands` is the app author's struct of pub fns. `B` is unused inside
 /// the registry (jobs.Pool is non-generic, EmitSink is concrete); it stays in
@@ -155,15 +174,24 @@ fn validate(comptime State: type, comptime UserCommands: anytype) void {
         for (declFns(UserCommands)) |d| {
             const FT = @TypeOf(@field(d.ns, d.name));
             const fn_info = @typeInfo(FT).@"fn";
-            if (fn_info.params.len < 1 or fn_info.params.len > 2)
-                @compileError("command '" ++ d.name ++ "' must take *Ctx(State) and at most one args struct");
+            if (fn_info.params.len < 1 or fn_info.params.len > 3)
+                @compileError("command '" ++ d.name ++ "' must take *Ctx(State), an optional args struct, and an optional sink: z.Sink(P)");
             const P0 = fn_info.params[0].type.?;
             if (P0 != *Ctx(State))
                 @compileError("command '" ++ d.name ++ "' first param must be *Ctx(State)");
-            if (fn_info.params.len == 2) {
+            // Param 1 is ALWAYS the args struct when present (for both the 2-param
+            // and 3-param forms), so validate it for len >= 2 to surface the clean
+            // "must be a struct" message rather than a deeper JSON-decode error. A
+            // stream-only command with no args must still declare an empty `struct {}`.
+            if (fn_info.params.len >= 2) {
                 const ArgsT = fn_info.params[1].type.?;
                 if (@typeInfo(ArgsT) != .@"struct")
                     @compileError("command '" ++ d.name ++ "' second param must be a struct of JSON-decodable fields");
+            }
+            if (fn_info.params.len == 3) {
+                const SinkT = fn_info.params[2].type.?;
+                if (!isSink(SinkT))
+                    @compileError("command '" ++ d.name ++ "' third param must be z.Sink(P)");
             }
             if (fn_info.return_type == null)
                 @compileError("command '" ++ d.name ++ "' must declare a return type");
@@ -305,7 +333,7 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 
     // Decode args if the handler declares an args struct.
     const result: Inner = blk: {
-        if (fn_info.params.len == 2) {
+        if (fn_info.params.len >= 2) {
             const ArgsT = fn_info.params[1].type.?;
             const parsed_args = std.json.parseFromSliceLeaky(ArgsT, a, args_json, protocol.JSON_PARSE_OPTIONS) catch {
                 bridge.emitErrorReject(route, id, "bad_args", "could not decode arguments", null);
@@ -322,8 +350,20 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 
 /// Call handler with or without args; unwrap Async if present. Returns Inner.
 fn callMaybeAsync(comptime handler: anytype, comptime Inner: type, ctx: anytype, args: anytype) Inner {
-    const Ret = @typeInfo(@TypeOf(handler)).@"fn".return_type.?;
-    const raw = if (@TypeOf(args) == @TypeOf(null)) handler(ctx) else handler(ctx, args);
+    const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
+    const Ret = fn_info.return_type.?;
+    const raw = switch (fn_info.params.len) {
+        1 => handler(ctx),
+        2 => handler(ctx, args),
+        // The framework owns sink construction: project Sink(P) off the live
+        // *Ctx (exactly what handlers used to do via `z.Sink(P).from(ctx)`) and
+        // pass it third. `ctx` is already a `*Ctx`, which `from` duck-types.
+        3 => blk: {
+            const SinkT = fn_info.params[2].type.?;
+            break :blk handler(ctx, args, SinkT.from(ctx));
+        },
+        else => unreachable, // validate caps params at 3
+    };
     if (asyncInner(Ret) != null) return raw.inner;
     return raw;
 }
@@ -416,6 +456,7 @@ const StubBridge = struct {
     io: std.Io,
     pool: *jobs.Pool,
     last: std.ArrayList(u8) = .empty,
+    streamed: std.ArrayList(u8) = .empty,
     backend_label: []const u8 = "main",
     stub_flag: std.atomic.Value(bool) = .{ .raw = false },
 
@@ -443,14 +484,22 @@ const StubBridge = struct {
     fn cancelId(self: *StubBridge, _: u64) void {
         self.stub_flag.store(true, .release);
     }
-    /// Stub SinkCtx, mirroring the real bridge's BY-VALUE SinkCtx shape (B1):
-    /// `sink` is the first field so runHandler can take `&sink_ctx.sink`.
-    const StubSinkCtx = struct { sink: ctxmod.EmitSink };
+    // The sink ctx carries a pointer back to the bridge's stream buffer so a
+    // streamed frame is observable. `sink` stays the FIRST field so runHandler's
+    // `&sink_ctx.sink` and sinkEval's @fieldParentPtr both resolve (B1 shape).
+    const StubSinkCtx = struct { sink: ctxmod.EmitSink, streamed: *std.ArrayList(u8), alloc: std.mem.Allocator };
     fn makeSink(self: *StubBridge, id: u64) StubSinkCtx {
         _ = id;
-        return .{ .sink = .{ .label = self.backend_label, .evalJS = sinkEval, .parkBinary = sinkPark } };
+        return .{
+            .sink = .{ .label = self.backend_label, .evalJS = sinkEval, .parkBinary = sinkPark },
+            .streamed = &self.streamed,
+            .alloc = self.alloc,
+        };
     }
-    fn sinkEval(_: *ctxmod.EmitSink, _: []const u8) void {}
+    fn sinkEval(sink: *ctxmod.EmitSink, js: []const u8) void {
+        const sc: *StubSinkCtx = @fieldParentPtr("sink", sink);
+        sc.streamed.appendSlice(sc.alloc, js) catch {};
+    }
     fn sinkPark(_: *ctxmod.EmitSink, _: u64, _: u32, _: []const u8) bool {
         return true;
     }
@@ -473,6 +522,36 @@ const Fixture2 = struct {
 /// The registry over a TUPLE of namespaces. Every command from each namespace is
 /// registered under its decl name, sharing the one State.
 const RegMulti = Commands(@import("platform/null.zig").NullBackend, TestState, .{ Fixture, Fixture2 });
+
+/// A streaming fixture: it declares the progress payload as an explicit third
+/// `Sink(P)` parameter. The registry must build that sink off the per-call Ctx
+/// and pass it, so `tick` streams a frame before it resolves.
+const StreamFixture = struct {
+    const Frame = struct { pct: u8 };
+    const TickResult = struct { done: bool };
+    pub fn tick(_: *Ctx(TestState), args: struct { n: u8 }, sink: compute.Sink(Frame)) Async(ctxmod.Result(TickResult)) {
+        sink.progress(.{ .pct = args.n });
+        return ctxmod.done(ctxmod.Result(TickResult){ .ok = .{ .done = true } });
+    }
+};
+const RegStream = Commands(@import("platform/null.zig").NullBackend, TestState, StreamFixture);
+
+test "streaming handler gets a framework-built sink and streams through it" {
+    const alloc = std.testing.allocator;
+    var pool = try jobs.Pool.init(alloc, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var b = stubBridge(alloc, pool);
+    defer b.last.deinit(alloc);
+    defer b.streamed.deinit(alloc);
+    var st = TestState{};
+    RegStream.dispatch(&b, &st, "main", "tick", 11, "{\"n\":42}");
+    pool.waitIdle();
+    // The framework built Sink(Frame) and the handler streamed a frame through it.
+    try std.testing.expect(std.mem.indexOf(u8, b.streamed.items, "window.Zigware._stream(11, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.streamed.items, "\"pct\":42") != null);
+    // The terminal resolve still settled.
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"done\":true") != null);
+}
 
 test "command surface spans multiple namespaces" {
     // 4 from Fixture (add, addState, readNote, slowAdd) + 1 from Fixture2 (mul).

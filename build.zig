@@ -256,6 +256,13 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/sha256_tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/registry.zig");
+    // Isolated registry-only step: the aggregate `test` step hangs on the App
+    // suites, so the registry's dispatch/threading tests get their own binary.
+    const test_registry_step = b.step("test-registry", "Run only the registry tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/registry.zig"), .target = target, .optimize = optimize });
+        test_registry_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
@@ -265,6 +272,14 @@ pub fn build(b: *std.Build) void {
     // diverges only under -Drelease=true).
     addLogicTest(b, test_step, target, optimize, "src/diag_tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/zigware_codegen.zig");
+
+    // Isolated headless-barrel step: confirms the Cocoa-free codegen surface
+    // (Sink export, emitter) compiles and tests without the App suites.
+    const test_codegen_step = b.step("test-codegen", "Run only the headless codegen barrel tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/zigware_codegen.zig"), .target = target, .optimize = optimize });
+        test_codegen_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
 
     // CLI leaf stubs (std-only leaves via the plain registrar; csp via the manifest-aware one).
     addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
@@ -383,6 +398,15 @@ pub fn build(b: *std.Build) void {
     const dts_run = b.addRunArtifact(dts_exe);
     const dts_step = b.step("dts", "Generate frontend/bindings.d.ts");
     dts_step.dependOn(&dts_run.step);
+
+    // The emitter was previously untested; register its tests and give them an
+    // isolated step (the aggregate test step hangs on the App suites).
+    addLogicTest(b, test_step, target, optimize, "src/emit_dts.zig");
+    const test_emit_dts_step = b.step("test-emit-dts", "Run only the .d.ts emitter tests");
+    {
+        const m = b.createModule(.{ .root_source_file = b.path("src/emit_dts.zig"), .target = target, .optimize = optimize });
+        test_emit_dts_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
 
     const scaffold_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

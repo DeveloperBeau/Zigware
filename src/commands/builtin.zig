@@ -2,6 +2,7 @@ const std = @import("std");
 const z = @import("../command_ctx.zig");
 const demo = @import("demo.zig");
 const sha = @import("sha256.zig");
+const compute = @import("../compute.zig");
 
 /// The v0.1.0 app State for the built-in demo is empty; real apps supply their own.
 pub const State = struct {};
@@ -12,18 +13,23 @@ pub const State = struct {};
 const Out = struct { hash: []const u8 };
 const Pct = struct { pct: u8 };
 
+/// echo's streamed frame. Shares a shape with echo's success payload but is a
+/// distinct nominal type; naming it lets `Sink(EchoFrame)` and the progress call
+/// agree on one type.
+const EchoFrame = struct { s: []const u8 };
+
 pub const Commands = struct {
     /// Hash `megabytes` MiB of generated data on the worker pool, streaming
     /// integer-percent progress, resolving with the hex digest.
-    pub fn sha256(ctx: *z.Ctx(State), args: struct { megabytes: u32 = 256 }) z.Async(z.Result(Out)) {
+    pub fn sha256(ctx: *z.Ctx(State), args: struct { megabytes: u32 = 256 }, sink: compute.Sink(Pct)) z.Async(z.Result(Out)) {
         const Prog = struct {
-            ch: z.Channel(Pct),
+            sink: compute.Sink(Pct),
             fn report(c: *anyopaque, pct: u8) void {
                 const self: *@This() = @ptrCast(@alignCast(c));
-                self.ch.send(.{ .pct = pct });
+                self.sink.progress(.{ .pct = pct });
             }
         };
-        var p = Prog{ .ch = ctx.channel(Pct) };
+        var p = Prog{ .sink = sink };
         const prog = sha.Progress{ .ctx = &p, .func = Prog.report };
 
         const mb: usize = @min(args.megabytes, 512);
@@ -52,8 +58,8 @@ pub const Commands = struct {
 
     /// Echo the caller's string back as the result (G6 stress: attacker bytes on the
     /// resolve channel). Also streams it once and, if `fail` is set, rejects with it.
-    pub fn echo(ctx: *z.Ctx(State), args: struct { s: []const u8, fail: bool = false }) z.Result(struct { s: []const u8 }) {
-        ctx.channel(struct { s: []const u8 }).send(.{ .s = args.s });
+    pub fn echo(ctx: *z.Ctx(State), args: struct { s: []const u8, fail: bool = false }, sink: compute.Sink(EchoFrame)) z.Result(struct { s: []const u8 }) {
+        sink.progress(.{ .s = args.s });
         if (args.fail) return .{ .err = .{ .code = "boom", .message = args.s } };
         const copy = ctx.arena.dupe(u8, args.s) catch return .{ .err = .{ .code = "internal", .message = "oom" } };
         return .{ .ok = .{ .s = copy } };
