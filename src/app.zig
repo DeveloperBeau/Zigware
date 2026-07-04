@@ -333,10 +333,10 @@ pub fn App(comptime B: type) type {
             const windows = manifest.app.windows;
 
             // Collect the full label set so the GrantTable knows every window
-            // label, and compile ONE capability covering all of them with
-            // core:default (deny-by-default for cross-window manage; mirrors the
-            // PoC's per-"main" grant generalized to N labels). One cap per label
-            // set keeps scopeFor/originsFor at n<=1 matched cap per label.
+            // label, then build the table from the app's declared capabilities via
+            // buildGrantsFromCaps. init registers no app commands (struct {}), so
+            // the augmentation adds only core:default; with no declared caps the
+            // builder falls back to synthAppGrants (deny-by-default preserved).
             var labels_list: std.ArrayList([]const u8) = .empty;
             defer labels_list.deinit(alloc);
             for (windows) |w| try labels_list.append(alloc, w.label);
@@ -371,8 +371,9 @@ pub fn App(comptime B: type) type {
         /// Production entry for an app that ships its own commands. Identical to
         /// `init` except the bridge also registers `AppCmds` (composed with the
         /// builtins over the shared State), and the grant table authorizes those
-        /// commands for the app's windows via `synthAppGrants` (deny-by-default
-        /// preserved; declared scopes preserved). main.zig calls this with its
+        /// commands for the app's windows via `buildGrantsFromCaps` (per-window and
+        /// per-origin scoping from the declared capabilities; deny-by-default and
+        /// declared scopes preserved). main.zig calls this with its
         /// `pub const Commands` to make web-UI → Zig command calls work live.
         pub fn initWithCommands(comptime AppCmds: type, alloc: std.mem.Allocator, io: std.Io, backend: *B) !*Self {
             const manifest = parse.embedded();
@@ -1175,6 +1176,10 @@ test "buildGrantsFromCaps honors a declared cap's window and trusts app_scheme" 
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"core:default"} }};
     const grants = try buildGrantsFromCaps(std.testing.allocator, TestAppCommands, &.{}, &decl, &.{"main"});
+    // The declared cap scopes ping to "main": granted there, denied on any window
+    // label the cap does not cover (per-window enforcement, not all-windows).
+    try std.testing.expect(grants.commandGranted("main", "ping"));
+    try std.testing.expect(!grants.commandGranted("other", "ping"));
     const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
         grants.deinit();
         std.testing.allocator.destroy(grants);
