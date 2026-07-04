@@ -91,6 +91,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     // installs emit_effective_manifest.
     const eff_run = b.addRunArtifact(dep.artifact("emit_effective_manifest"));
     const eff_zon: std.Build.LazyPath = eff_run.addOutputFileArg("zigware.effective.zon");
+    const grants_zon: std.Build.LazyPath = eff_run.addOutputFileArg("zigware.effective.grants.zon");
     eff_run.addFileArg(opts.manifest);
 
     // Per-OS overrides + grants, pinned from the CONSUMER build root so a change
@@ -117,6 +118,13 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     }
     // parse.embedded() in the barrel resolves the merged manifest.
     barrel.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = eff_zon });
+
+    // The app's declared capability bodies, embedded the same way the manifest is.
+    // app.zig @imports this to build the live grant table from real per-window /
+    // per-origin declarations. app.zig is compiled AS PART of the barrel module,
+    // so wiring the import on the barrel resolves it for the run exe and the
+    // full-barrel integration test alike.
+    barrel.addAnonymousImport("zigware_grants_zon", .{ .root_source_file = grants_zon });
 
     // Production asset table override. `zigware build` stages a CSP-injected
     // asset_table.zig (colocated with the built assets) and passes its path via

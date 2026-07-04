@@ -26,6 +26,43 @@ const window_commands = @import("window/commands.zig");
 const compute_commands = @import("commands/compute.zig");
 const defaults = @import("security/defaults.zig");
 const registry = @import("registry.zig");
+
+/// The app's declared capabilities, embedded at build time (build_helpers /
+/// build.zig wire the anonymous import). Empty (`.{}`) when the app declares no
+/// src/grants/*.zon, which drives the synthAppGrants fallback in the grant-build
+/// path (Task 3).
+const embedded_caps: []const security_cap.Capability = @import("zigware_grants_zon");
+
+/// Comptime-strip any `.dev_url` origin outside Debug so a shipped (ReleaseSafe)
+/// binary carries no dev-server origin STRING at all (a pure comptime rebuild
+/// keeps the string out of the binary; the compile-time drop in
+/// GrantTable.compile and the runtime is_debug gate in gates.originTrusted are
+/// the further belts). In Debug the input is returned unchanged.
+fn dropDevUrlInRelease(comptime caps: []const security_cap.Capability) []const security_cap.Capability {
+    if (builtin_target.mode == .Debug) return caps;
+    comptime {
+        var out: []const security_cap.Capability = &.{};
+        for (caps) |c| {
+            var origins: []const security_cap.OriginPattern = &.{};
+            for (c.origins) |o| switch (o) {
+                .dev_url => {}, // dropped in release
+                else => origins = origins ++ &[_]security_cap.OriginPattern{o},
+            };
+            out = out ++ &[_]security_cap.Capability{.{
+                .identifier = c.identifier,
+                .windows = c.windows,
+                .origins = origins,
+                .permissions = c.permissions,
+            }};
+        }
+        return out;
+    }
+}
+
+/// The live capabilities: the embedded declarations with release dev origins
+/// stripped. A comptime constant so ReleaseSafe never materializes a dev_url.
+const live_caps: []const security_cap.Capability = dropDevUrlInRelease(embedded_caps);
+
 const D = manifest_types;
 const WindowManager = window_manager.WindowManager;
 const Lifecycle = window_lifecycle.Lifecycle;
@@ -1035,5 +1072,28 @@ test "E: each configured label routes its own invoke reply" {
     for (h.backend.eval_log.items) |e| {
         if (std.mem.indexOf(u8, e.js, "_resolve(3, ") != null)
             try std.testing.expectEqual(viewer_id, e.window_id);
+    }
+}
+
+test "dropDevUrlInRelease strips dev_url origins outside Debug, keeps them in Debug" {
+    const in = [_]security_cap.Capability{.{
+        .identifier = "c",
+        .windows = &.{"main"},
+        .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:5173" } },
+        .permissions = &.{},
+    }};
+    const out = comptime dropDevUrlInRelease(&in);
+    var has_dev = false;
+    var has_app = false;
+    inline for (out[0].origins) |o| switch (o) {
+        .dev_url => has_dev = true,
+        .app_scheme => has_app = true,
+        else => {},
+    };
+    try std.testing.expect(has_app); // app_scheme always survives
+    if (builtin_target.mode == .Debug) {
+        try std.testing.expect(has_dev);
+    } else {
+        try std.testing.expect(!has_dev); // release binary carries no dev origin
     }
 }
