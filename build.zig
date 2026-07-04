@@ -431,7 +431,7 @@ pub fn build(b: *std.Build) void {
     const grants_zon: std.Build.LazyPath = emit_eff_run.addOutputFileArg("zigware.effective.grants.zon");
     // argv[3] = base manifest path; pinned via addFileArg so an edit invalidates the cache.
     emit_eff_run.addFileArg(b.path("zigware.zon"));
-    // argv[3..] = per-OS override paths; pin every existing one. build.zig's
+    // argv[4..] = per-OS override paths; pin every existing one. build.zig's
     // configure-phase filesystem reads use b.build_root.handle + b.graph.io;
     // std.fs.cwd() is not in 0.16.
     const root = b.build_root.handle;

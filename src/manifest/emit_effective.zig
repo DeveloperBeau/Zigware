@@ -1,7 +1,8 @@
 //! Build-time codegen: parses zigware.zon + per-OS override, validates, and
 //! re-serializes the MERGED+VALIDATED manifest as a .zon literal at the path
-//! given as argv[1]. argv[2] is the base manifest path; argv[3..] are per-OS
-//! override paths. The codegen NEVER opens std.Io.Dir.cwd() for source input;
+//! given as argv[1]. argv[2] is the grant-capability bodies output; argv[3] is
+//! the base manifest path; argv[4..] are per-OS override paths. The codegen
+//! NEVER opens std.Io.Dir.cwd() for source input;
 //! build.zig passes every input path explicitly so the Run step's cache key is
 //! stable. Production embedded() reads this artifact, NOT the raw zigware.zon.
 const std = @import("std");
