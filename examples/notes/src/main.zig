@@ -1,17 +1,13 @@
 //! The notes example app entry point.
 //!
-//! The window runs on the framework command surface via `App(B).init`; the app's
-//! `hashFile` handler is proven end to end by the headless integration test
-//! (`integration_test.zig`), which drives it through the path-scoped grant. The
-//! command is referenced below so the compiler type-checks it against the
-//! `*Ctx(State)` + scope contract even though init wires the framework surface.
+//! The window runs the app's own command surface (hashFile) live through
+//! initWithCommands and the notes capability (examples/notes/src/grants/main.zon):
+//! the main window trusts app:// (and, in Debug, the dev-server origin) and is
+//! granted hashFile scoped to $APPDATA/notes/**. The headless integration test
+//! (integration_test.zig) still drives the handler end to end over the bridge.
 const std = @import("std");
 const z = @import("zigware");
 const commands = @import("commands.zig");
-
-comptime {
-    _ = commands.Commands;
-}
 
 pub fn main() !void {
     var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
@@ -28,7 +24,7 @@ pub fn main() !void {
     // App.deinit does not call back into the backend, so the order is safe.
     defer backend.deinit();
 
-    const app = try z.App(B).init(alloc, io, backend);
+    const app = try z.App(B).initWithCommands(commands.Commands, alloc, io, backend);
     defer app.deinit();
 
     app.run();
