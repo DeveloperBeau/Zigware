@@ -134,15 +134,10 @@ fn AppCommands(comptime B: type) type {
 /// Only the app's declared commands (plus core:default) are granted, and only to
 /// the app's own window labels. Caller owns the returned table.
 ///
-/// v0.1 scope (intentional, documented):
-///   - Origin: the grant trusts only `.app_scheme` (app://). Production windows
-///     load from app://, so this is correct for a shipped app; a Debug dev-server
-///     window (http://localhost) cannot yet invoke app commands. Per-origin app
-///     grants arrive with manifest-driven capability loading.
-///   - Breadth: every app command is granted to EVERY window label uniformly
-///     (Tauri-like: your own commands are invokable). Per-window scoping also
-///     waits on capability-file loading. Scopes on individual commands are still
-///     enforced (see the scope-preservation path above).
+/// Fallback used when the app declares NO src/grants/*.zon: grants every app
+/// command to EVERY window over app_scheme, alongside core:default. Apps that
+/// declare capabilities go through buildGrantsFromCaps instead, which honors
+/// per-window and per-origin declarations (including a Debug dev origin).
 fn synthAppGrants(
     alloc: std.mem.Allocator,
     labels: []const []const u8,
@@ -195,6 +190,83 @@ fn synthAppGrants(
     var diags: manifest_types.Diagnostics = .{};
     defer diags.deinit(alloc);
     gt.* = try security_grant.GrantTable.compile(alloc, &caps, &catalog, .{}, labels, &diags);
+    return gt;
+}
+
+/// Build the live GrantTable from the app's DECLARED capabilities. Each declared
+/// cap contributes its own windows and origins; its permission list is augmented
+/// with core:default and an `app:<cmd>` grant for every registered command (a
+/// declared scoped `app:<cmd>` is reused, not re-minted), so the app's commands
+/// stay invokable from its windows while per-window scoping and per-origin trust
+/// (including a Debug dev origin) now come from the declarations. With no declared
+/// caps this delegates to synthAppGrants (all windows, app_scheme, core:default +
+/// app commands), preserving the pre-capability behavior. Caller owns the table.
+fn buildGrantsFromCaps(
+    alloc: std.mem.Allocator,
+    comptime AppCmds: type,
+    comptime declared: []const security_cap.Permission,
+    decl_caps: []const security_cap.Capability,
+    labels: []const []const u8,
+) !*security_grant.GrantTable {
+    if (decl_caps.len == 0) return synthAppGrants(alloc, labels, AppCmds, declared);
+
+    const names = comptime registry.Commands(struct {}, builtin.State, AppCmds).command_names;
+    const declared_perms = defaults.builtin_catalog.permissions ++ declared;
+    const synth = comptime blk: {
+        var perm_ids: []const []const u8 = &[_][]const u8{"core:default"};
+        var extra: []const security_cap.Permission = &.{};
+        for (names) |name| {
+            const id = "app:" ++ name;
+            perm_ids = perm_ids ++ &[_][]const u8{id};
+            var is_declared = false;
+            for (declared_perms) |p| {
+                if (std.mem.eql(u8, p.identifier, id)) {
+                    is_declared = true;
+                    break;
+                }
+            }
+            if (!is_declared)
+                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commands_allow = &[_][]const u8{name} }};
+        }
+        break :blk .{ .perm_ids = perm_ids, .extra = extra };
+    };
+    const catalog = security_cap.Catalog{
+        .permissions = declared_perms ++ synth.extra,
+        .sets = defaults.builtin_catalog.sets,
+    };
+
+    // Augment each declared cap: keep its windows + origins, and add every
+    // perm id not already present. A scratch arena backs the temporary
+    // permission-id slices; compile() dupes what it keeps, so the arena is torn
+    // down right after.
+    var scratch = std.heap.ArenaAllocator.init(alloc);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+    var caps_list: std.ArrayList(security_cap.Capability) = .empty;
+    for (decl_caps) |c| {
+        var perms: std.ArrayList([]const u8) = .empty;
+        for (c.permissions) |pid| try perms.append(sa, pid);
+        for (synth.perm_ids) |pid| {
+            var present = false;
+            for (perms.items) |have| if (std.mem.eql(u8, have, pid)) {
+                present = true;
+                break;
+            };
+            if (!present) try perms.append(sa, pid);
+        }
+        try caps_list.append(sa, .{
+            .identifier = c.identifier,
+            .windows = c.windows,
+            .origins = c.origins,
+            .permissions = try perms.toOwnedSlice(sa),
+        });
+    }
+
+    const gt = try alloc.create(security_grant.GrantTable);
+    errdefer alloc.destroy(gt);
+    var diags: manifest_types.Diagnostics = .{};
+    defer diags.deinit(alloc);
+    gt.* = try security_grant.GrantTable.compile(alloc, caps_list.items, &catalog, .{}, labels, &diags);
     return gt;
 }
 
@@ -270,16 +342,15 @@ pub fn App(comptime B: type) type {
             for (windows) |w| try labels_list.append(alloc, w.label);
             const labels = labels_list.items;
 
-            const app_caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = labels, .permissions = &.{"core:default"} }};
-            var diags: manifest_types.Diagnostics = .{};
-            defer diags.deinit(alloc);
-            const grants = try alloc.create(security_grant.GrantTable);
-            errdefer alloc.destroy(grants);
-            // Compile against the built-in catalog: core:default resolves, and
-            // deny-by-default holds for everything else. The single cap references
-            // only core:default, so the built-in catalog is sufficient.
-            grants.* = try security_grant.GrantTable.compile(alloc, &app_caps, &defaults.builtin_catalog, .{}, labels, &diags);
-            errdefer grants.deinit();
+            // Build the grant table from the app's DECLARED capabilities (empty
+            // struct{} => no app commands, so per-cap augmentation adds only
+            // core:default). With no declared caps this falls back to the historic
+            // all-windows core:default cap via synthAppGrants(struct{}).
+            const grants = try buildGrantsFromCaps(alloc, struct {}, comptime parse.embedded().security.permissions, live_caps, labels);
+            errdefer {
+                grants.deinit();
+                alloc.destroy(grants);
+            }
             const bases = security_gates.Bases{ .appdata = ".", .home = ".", .appconfig = "." };
             return initWithConfig(
                 struct {},
@@ -312,7 +383,7 @@ pub fn App(comptime B: type) type {
             for (windows) |w| try labels_list.append(alloc, w.label);
             const labels = labels_list.items;
 
-            const grants = try synthAppGrants(alloc, labels, AppCmds, comptime parse.embedded().security.permissions);
+            const grants = try buildGrantsFromCaps(alloc, AppCmds, comptime parse.embedded().security.permissions, live_caps, labels);
             errdefer {
                 grants.deinit();
                 alloc.destroy(grants);
@@ -1096,4 +1167,62 @@ test "dropDevUrlInRelease strips dev_url origins outside Debug, keeps them in De
     } else {
         try std.testing.expect(!has_dev); // release binary carries no dev origin
     }
+}
+
+test "buildGrantsFromCaps honors a declared cap's window and trusts app_scheme" {
+    // One declared cap (main window, app_scheme). The app's ping command is
+    // reachable from "main" but NOT from an undeclared window label.
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"core:default"} }};
+    const grants = try buildGrantsFromCaps(std.testing.allocator, TestAppCommands, &.{}, &decl, &.{"main"});
+    const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":21,\"cmd\":\"ping\",\"args\":{\"x\":4}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("window.Zigware._resolve(21, "));
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":5"));
+}
+
+test "buildGrantsFromCaps trusts a declared dev origin only in Debug" {
+    // The cap declares a dev_url origin. In Debug the grant table trusts it; in
+    // ReleaseSafe compile() drops it, so originsFor never surfaces it.
+    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
+    const grants = try buildGrantsFromCaps(std.testing.allocator, struct {}, &.{}, &decl, &.{"main"});
+    defer {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+    }
+    var has_dev = false;
+    for (grants.originsFor("main")) |o| if (o == .dev_url) {
+        has_dev = true;
+    };
+    if (@import("builtin").mode == .Debug) {
+        try std.testing.expect(has_dev);
+    } else {
+        try std.testing.expect(!has_dev);
+    }
+}
+
+test "buildGrantsFromCaps falls back to synthAppGrants when no caps are declared" {
+    // Empty declarations => the synthAppGrants fallback grants every app command
+    // to every window over app_scheme (the framework's own build has no grants).
+    const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
+    const grants = try buildGrantsFromCaps(std.testing.allocator, TestAppCommands, &.{}, &.{}, &.{"main"});
+    const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
+        grants.deinit();
+        std.testing.allocator.destroy(grants);
+        return err;
+    };
+    defer teardown(backend, app);
+    const main_id = mainId(app);
+    backend.simulateMessage(main_id, "app://localhost", "{\"id\":22,\"cmd\":\"ping\",\"args\":{\"x\":8}}");
+    app.bridge.drainForTest();
+    backend.pumpMain();
+    try std.testing.expectEqual(@as(usize, 1), backend.countContaining("\"pong\":9"));
 }
