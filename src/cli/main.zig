@@ -54,9 +54,10 @@ fn printHelp() CliError!void {
         \\zigware <command>
         \\  init <dir>    scaffold a new project
         \\  dev           run the dev loop
-        \\  build [--sign] [--notarize]
-        \\                produce a release binary + macOS .app/.dmg (unsigned by
-        \\                default; --sign/--notarize use your own Apple credentials)
+        \\  build [--arch <arm64|x86_64|universal>] [--sign] [--notarize]
+        \\                produce a release binary + macOS .app/.dmg (host arch and
+        \\                unsigned by default; --arch selects the target, --sign/
+        \\                --notarize use your own Apple credentials)
         \\  version       print the version
         \\  help          print this help
         \\
@@ -183,27 +184,49 @@ fn runDev(io: std.Io, gpa: std.mem.Allocator) CliError!void {
 
 // ─────────────────────────── build verb ───────────────────────────
 
-const BuildFlags = struct { skip_sign: bool, skip_notarize: bool };
+const Arch = enum { host, arm64, x86_64, universal };
+const BuildFlags = struct { skip_sign: bool, skip_notarize: bool, arch: Arch, target: ?[]const u8 };
+
+/// The Zig target triple for a single-arch selection; null for host and for
+/// universal (universal is compiled as two single-arch slices in Task 4).
+fn archTriple(arch: Arch) ?[]const u8 {
+    return switch (arch) {
+        .host, .universal => null,
+        .arm64 => "aarch64-macos",
+        .x86_64 => "x86_64-macos",
+    };
+}
 
 /// Parse the `build` verb flags. Default is UNSIGNED (both skips true): the base
 /// case needs no Apple credentials. `--sign` opts into signing; `--notarize`
 /// opts into notarization and implies signing (an unsigned bundle cannot be
-/// notarized). Signing/notarization then draw the developer's OWN credentials
-/// through the existing env/manifest resolution (white-label).
+/// notarized). `--arch` selects the target architecture (arm64/x86_64); default
+/// is host. `--arch universal` is rejected until Task 4 wires the lipo compile.
 fn parseBuildFlags(rest: []const []const u8) CliError!BuildFlags {
     var sign = false;
     var notarize = false;
-    for (rest) |a| {
+    var arch: Arch = .host;
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        const a = rest[i];
         if (std.mem.eql(u8, a, "--sign")) {
             sign = true;
         } else if (std.mem.eql(u8, a, "--notarize")) {
             notarize = true;
             sign = true; // notarization requires a signed bundle
+        } else if (std.mem.eql(u8, a, "--arch")) {
+            i += 1;
+            if (i >= rest.len) return CliError.bad_usage;
+            // NOTE: `universal` is accepted only after Task 4 wires the lipo
+            // compile. Rejecting it here keeps the intermediate state honest (no
+            // silent host build masquerading as universal). Task 4 adds the
+            // `universal` arm to this branch.
+            arch = if (std.mem.eql(u8, rest[i], "arm64")) .arm64 else if (std.mem.eql(u8, rest[i], "x86_64")) .x86_64 else return CliError.bad_usage;
         } else {
             return CliError.bad_usage;
         }
     }
-    return .{ .skip_sign = !sign, .skip_notarize = !notarize };
+    return .{ .skip_sign = !sign, .skip_notarize = !notarize, .arch = arch, .target = archTriple(arch) };
 }
 
 /// `zigware build`: read the project manifest (validated under .ReleaseSafe, the shipped
@@ -229,7 +252,7 @@ fn runBuild(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliErr
     var build_runner = SystemBuildRunner{};
     var pkg_runner = package.SystemRunner{};
     var runner = pkg_runner.runner();
-    return runBuildInner(io, gpa, &m, build_runner.make(), proc.system(), &runner, "zig-out", flags.skip_sign, flags.skip_notarize);
+    return runBuildInner(io, gpa, &m, build_runner.make(), proc.system(), &runner, "zig-out", flags.skip_sign, flags.skip_notarize, flags.target);
 }
 
 /// The headless-testable build core: compile the release binary, then hand it to the
@@ -249,6 +272,7 @@ fn runBuildInner(
     out_dir: []const u8,
     skip_sign: bool,
     skip_notarize: bool,
+    target: ?[]const u8,
 ) CliError!void {
     const binary_path = build_verb.run(io, gpa, .{
         .manifest = manifest,
@@ -256,6 +280,7 @@ fn runBuildInner(
         .out_dir = out_dir,
         .builder = builder,
         .proc = proc_spawner,
+        .target = target,
     }) catch |err| return mapVerbError(err);
     defer gpa.free(binary_path);
 
@@ -384,6 +409,12 @@ const SystemBuildRunner = struct {
         if (spec.asset_table) |at| {
             at_buf = try std.fmt.allocPrint(gpa, "-Dasset_table={s}", .{at});
             try argv.append(gpa, at_buf);
+        }
+        var tgt_buf: []u8 = &.{};
+        defer if (tgt_buf.len > 0) gpa.free(tgt_buf);
+        if (spec.target) |t| {
+            tgt_buf = try std.fmt.allocPrint(gpa, "-Dtarget={s}", .{t});
+            try argv.append(gpa, tgt_buf);
         }
 
         const result = try std.process.run(gpa, io, .{ .argv = argv.items });
@@ -667,7 +698,7 @@ test "runBuildInner surfaces a packaging failure through printPackageDiagnostic 
     // environment) does not abort before sign(); signing still runs because skip_sign is
     // false and an identity is configured. Without this the test would short-circuit at
     // the notary preflight and the scripted codesign result would never be consumed.
-    try testing.expectError(CliError.package_failed, runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, false, true));
+    try testing.expectError(CliError.package_failed, runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, false, true, null));
 
     // Prove the failure came from the SCRIPTED codesign call, not an earlier preflight:
     // the runner recorded exactly the one codesign invocation before sign() aborted.
@@ -695,6 +726,29 @@ test "parseBuildFlags: --notarize implies signing" {
 
 test "parseBuildFlags: unknown flag is bad_usage" {
     try std.testing.expectError(CliError.bad_usage, parseBuildFlags(&.{"--nope"}));
+}
+
+test "parseBuildFlags: default arch is host (no target triple)" {
+    const f = try parseBuildFlags(&.{});
+    try std.testing.expect(f.target == null);
+}
+
+test "parseBuildFlags: --arch arm64 selects the aarch64-macos triple" {
+    const f = try parseBuildFlags(&.{ "--arch", "arm64" });
+    try std.testing.expectEqualStrings("aarch64-macos", f.target.?);
+}
+
+test "parseBuildFlags: --arch x86_64 selects the x86_64-macos triple" {
+    const f = try parseBuildFlags(&.{ "--arch", "x86_64" });
+    try std.testing.expectEqualStrings("x86_64-macos", f.target.?);
+}
+
+test "parseBuildFlags: --arch with no value or unknown value is bad_usage" {
+    try std.testing.expectError(CliError.bad_usage, parseBuildFlags(&.{"--arch"}));
+    try std.testing.expectError(CliError.bad_usage, parseBuildFlags(&.{ "--arch", "sparc" }));
+    // universal is rejected until Task 4 wires the lipo compile (Task 4 replaces
+    // this line with a positive assertion).
+    try std.testing.expectError(CliError.bad_usage, parseBuildFlags(&.{ "--arch", "universal" }));
 }
 
 test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only)" {
@@ -727,7 +781,7 @@ test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only
     try fr.push(.{ .term = .{ .exited = 0 }, .stdout = "", .stderr = "" }); // hdiutil
     var runner = fr.runner();
 
-    try runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, true, true);
+    try runBuildInner(io, gpa, &manifest, builder.make(), spawner.make(), &runner, out, true, true, null);
 
     const log = fr.argv_log.items;
     try testing.expectEqual(@as(usize, 1), log.len);

@@ -58,9 +58,15 @@ pub fn build(b: *std.Build) void {
     // merge.zig/types.zig join by file-path import. parse.zig declares embedded()
     // with @import("zigware_manifest_zon"), so the anonymous import must be wired
     // even though the codegen never CALLS embedded().
+    //
+    // IMPORTANT: this tool RUNS at build time (via addRunArtifact), so it must
+    // target the BUILD HOST, not the cross-compile target. Using `target` here
+    // causes InvalidExe when the consumer cross-compiles (e.g. --arch x86_64 on
+    // an arm64 host): the tool would be compiled for x86_64 and then the build
+    // system would fail to exec it. b.graph.host is always the native host target.
     const emit_eff_mod = b.createModule(.{
         .root_source_file = b.path("src/emit_effective_main.zig"),
-        .target = target,
+        .target = b.graph.host,
         .optimize = optimize,
     });
     emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });

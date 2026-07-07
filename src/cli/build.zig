@@ -20,6 +20,7 @@ pub const BuildOptions = struct {
     out_dir: []const u8,
     builder: dev.BuildRunner,
     proc: proc.Spawner,
+    target: ?[]const u8 = null,
 };
 
 /// Subdirectory under out_dir that holds the CSP-transformed copy of index.html.
@@ -144,7 +145,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, opts: BuildOptions) anyerror![]co
     // (5) Release compile through the injected runner. ReleaseSafe ONLY (main.zig bans
     // ReleaseFast/ReleaseSmall). A non-ok result is fatal zig_build_failed; the captured
     // compiler stderr is printed verbatim and the buffer freed.
-    const result = try opts.builder.build(io, gpa, .{ .optimize = opts.optimize, .dev = false, .asset_table = asset_table_path });
+    const result = try opts.builder.build(io, gpa, .{ .optimize = opts.optimize, .dev = false, .asset_table = asset_table_path, .target = opts.target });
     defer gpa.free(result.stderr);
     if (!result.ok) {
         if (result.stderr.len > 0) log.err("release build failed", &.{diag.str("stderr", result.stderr)});

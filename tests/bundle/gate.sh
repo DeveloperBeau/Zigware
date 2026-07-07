@@ -49,4 +49,15 @@ if [ ! -f "$rapp/Contents/MacOS/Crypto Demo (React)" ]; then echo "FAIL: crypto-
 if [ -d "$rapp/Contents/_CodeSignature" ]; then echo "FAIL: crypto-react bundle unexpectedly signed"; exit 1; fi
 echo "node-frontend bundle gate passed ($rapp)"
 
+echo "gate: zigware build --arch x86_64 produces an x86_64 bundle"
+( cd "$repo/examples/notes" && \
+  env -u APPLE_SIGNING_IDENTITY -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+      -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH \
+  "$cli" build --arch x86_64 )
+exe="$repo/examples/notes/zig-out/Notes.app/Contents/MacOS/Notes"
+if ! file "$exe" | grep -q 'x86_64'; then
+  echo "FAIL: --arch x86_64 did not produce an x86_64 binary"; file "$exe"; exit 1
+fi
+echo "arch selection gate passed"
+
 echo "all bundle gates passed"

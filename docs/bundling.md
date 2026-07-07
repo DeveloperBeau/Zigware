@@ -39,13 +39,27 @@ _ = zigware.addApp(b, dep, .{ .name = "my-app", ... });
 
 ## Default: unsigned
 
-With no flags, the bundle is UNSIGNED. It needs no Apple credentials and is
-suitable for local use and testing. macOS Gatekeeper will warn when an unsigned
-bundle is opened on another machine.
+With no flags, the bundle is UNSIGNED and targets the host architecture. It
+needs no Apple credentials and is suitable for local use and testing. macOS
+Gatekeeper will warn when an unsigned bundle is opened on another machine.
 
 ```
 zigware build
 ```
+
+## Architecture selection (`--arch`)
+
+By default `zigware build` compiles for the host architecture. Pass `--arch` to
+cross-compile a single-architecture bundle:
+
+```
+zigware build --arch arm64    # aarch64 (Apple Silicon)
+zigware build --arch x86_64   # Intel
+```
+
+The flag threads a `-Dtarget` triple to the consumer `zig build`, which the
+scaffold already handles through `standardTargetOptions`. Universal binaries
+(`--arch universal`) are a future option.
 
 ## Signing and notarization (opt-in)
 
