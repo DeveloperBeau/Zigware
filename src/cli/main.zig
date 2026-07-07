@@ -45,7 +45,7 @@ pub fn dispatch(io: std.Io, gpa: std.mem.Allocator, args: []const []const u8, fr
         .version => return printVersion(),
         .init => return runInit(io, gpa, args[2..], framework_env),
         .dev => return runDev(io, gpa),
-        .build => return runBuild(io, gpa),
+        .build => return runBuild(io, gpa, args[2..]),
     }
 }
 
@@ -54,7 +54,9 @@ fn printHelp() CliError!void {
         \\zigware <command>
         \\  init <dir>    scaffold a new project
         \\  dev           run the dev loop
-        \\  build         produce a release binary + artifact manifest
+        \\  build [--sign] [--notarize]
+        \\                produce a release binary + macOS .app/.dmg (unsigned by
+        \\                default; --sign/--notarize use your own Apple credentials)
         \\  version       print the version
         \\  help          print this help
         \\
@@ -181,24 +183,53 @@ fn runDev(io: std.Io, gpa: std.mem.Allocator) CliError!void {
 
 // ─────────────────────────── build verb ───────────────────────────
 
+const BuildFlags = struct { skip_sign: bool, skip_notarize: bool };
+
+/// Parse the `build` verb flags. Default is UNSIGNED (both skips true): the base
+/// case needs no Apple credentials. `--sign` opts into signing; `--notarize`
+/// opts into notarization and implies signing (an unsigned bundle cannot be
+/// notarized). Signing/notarization then draw the developer's OWN credentials
+/// through the existing env/manifest resolution (white-label).
+fn parseBuildFlags(rest: []const []const u8) CliError!BuildFlags {
+    var sign = false;
+    var notarize = false;
+    for (rest) |a| {
+        if (std.mem.eql(u8, a, "--sign")) {
+            sign = true;
+        } else if (std.mem.eql(u8, a, "--notarize")) {
+            notarize = true;
+            sign = true; // notarization requires a signed bundle
+        } else {
+            return CliError.bad_usage;
+        }
+    }
+    return .{ .skip_sign = !sign, .skip_notarize = !notarize };
+}
+
 /// `zigware build`: read the project manifest (validated under .ReleaseSafe, the shipped
 /// release mode), then run the build orchestrator. No SIGINT install. Build has no
 /// long-lived child loop to interrupt.
-fn runBuild(io: std.Io, gpa: std.mem.Allocator) CliError!void {
+fn runBuild(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliError!void {
+    const flags = try parseBuildFlags(rest);
+
     const manifest = readManifest(io, gpa, .ReleaseSafe) catch |err| return mapVerbError(err);
     var m = manifest;
     defer parse.freeManifest(gpa, m);
 
-    // The thin wrapper constructs the REAL seams (the compile runner over `zig build` +
-    // the system spawner for the before-command, and the system child-process Runner the
-    // packaging step shells `codesign`/`notarytool`/`hdiutil`/`stapler` through), then
-    // delegates to the headless-testable core. The integration tests inject fakes at the
-    // same three seams. Production packages a real release: signing + notarization on, so
-    // the skip flags are false.
+    // Default is an UNSIGNED bundle (no credentials required): tell the developer
+    // it is local-only and how to sign. Signing/notarization opt-in paths surface
+    // their own credential errors from config.zig when a developer supplies none.
+    if (flags.skip_sign) {
+        std.debug.print(
+            "zigware build: producing an UNSIGNED bundle (local use). To sign, pass --sign (and --notarize) and supply your signing identity via APPLE_SIGNING_IDENTITY or the manifest, plus notary credentials via the APPLE_* env vars.\n",
+            .{},
+        );
+    }
+
     var build_runner = SystemBuildRunner{};
     var pkg_runner = package.SystemRunner{};
     var runner = pkg_runner.runner();
-    return runBuildInner(io, gpa, &m, build_runner.make(), proc.system(), &runner, "zig-out", false, false);
+    return runBuildInner(io, gpa, &m, build_runner.make(), proc.system(), &runner, "zig-out", flags.skip_sign, flags.skip_notarize);
 }
 
 /// The headless-testable build core: compile the release binary, then hand it to the
@@ -642,6 +673,28 @@ test "runBuildInner surfaces a packaging failure through printPackageDiagnostic 
     // the runner recorded exactly the one codesign invocation before sign() aborted.
     try testing.expectEqual(@as(usize, 1), fr.argv_log.items.len);
     try testing.expectEqualStrings("codesign", fr.argv_log.items[0][0]);
+}
+
+test "parseBuildFlags: default is unsigned (both skips true)" {
+    const f = try parseBuildFlags(&.{});
+    try std.testing.expect(f.skip_sign);
+    try std.testing.expect(f.skip_notarize);
+}
+
+test "parseBuildFlags: --sign enables signing only" {
+    const f = try parseBuildFlags(&.{"--sign"});
+    try std.testing.expect(!f.skip_sign);
+    try std.testing.expect(f.skip_notarize);
+}
+
+test "parseBuildFlags: --notarize implies signing" {
+    const f = try parseBuildFlags(&.{"--notarize"});
+    try std.testing.expect(!f.skip_sign); // cannot notarize an unsigned bundle
+    try std.testing.expect(!f.skip_notarize);
+}
+
+test "parseBuildFlags: unknown flag is bad_usage" {
+    try std.testing.expectError(CliError.bad_usage, parseBuildFlags(&.{"--nope"}));
 }
 
 test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only)" {
