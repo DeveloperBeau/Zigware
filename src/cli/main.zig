@@ -288,7 +288,7 @@ fn runBuildInner(
         // A universal bundle is two single-arch compiles combined by lipo. Compile the
         // arm64 slice first. `build_verb.run` ALWAYS returns `zig-out/bin/<productName>`
         // regardless of target (build.zig:158), so the x86_64 compile below OVERWRITES
-        // this binary in place — copy the arm64 result to a distinct path first.
+        // this binary in place; copy the arm64 result to a distinct path first.
         const first_bin = build_verb.run(io, gpa, .{
             .manifest = manifest,
             .optimize = .ReleaseSafe,
