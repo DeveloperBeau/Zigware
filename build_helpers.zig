@@ -1,4 +1,5 @@
 const std = @import("std");
+const assets_embed = @import("src/cli/assets_embed.zig");
 
 /// The consumer's own-origin frontend assets. The framework runtime shims
 /// (zigware.js, window.js) are pulled from the dependency, not from here.
@@ -126,14 +127,20 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     // full-barrel integration test alike.
     barrel.addAnonymousImport("zigware_grants_zon", .{ .root_source_file = grants_zon });
 
-    // Production asset table override. `zigware build` stages a CSP-injected
-    // asset_table.zig (colocated with the built assets) and passes its path via
-    // -Dasset_table; this anonymous import shadows the framework default
-    // src/asset_table.zig (resolved relatively by src/assets.zig), so the
-    // release binary serves the transformed production assets. Unset in dev (the
-    // app loads from serveUrl), so the relative default is used.
+    // Asset table wiring. Two shadow sources for the framework default
+    // src/asset_table.zig (a 3-entry table), in priority order:
+    //   1. `zigware build` release staging passes -Dasset_table=<staged path>: a
+    //      CSP-injected table colocated with the built dist. Highest priority.
+    //   2. Dev (`zig build run`): stage the consumer's own frontend/ source dir
+    //      (every file, not just index.html/app.js) plus the framework zigware.js
+    //      shim into one WriteFiles dir, emit asset_table.zig beside them, and
+    //      shadow the default. This gives dev the same full-asset coverage release
+    //      already has, so a consumer stylesheet/image is served over app://.
+    // When neither applies (no frontend/ dir), the framework default table stands.
     if (b.option([]const u8, "asset_table", "Path to a staged asset_table.zig (set by `zigware build`)")) |asset_table| {
         barrel.addAnonymousImport("asset_table.zig", .{ .root_source_file = .{ .cwd_relative = asset_table } });
+    } else if (stageDevAssets(b, dep)) |dev_table| {
+        barrel.addAnonymousImport("asset_table.zig", .{ .root_source_file = dev_table });
     }
 
     // -- run exe (owns the barrel link settings) --
@@ -234,4 +241,68 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     }
 
     return exe;
+}
+
+/// Dev asset staging: walk the consumer's frontend/ source dir, stage every
+/// asset plus the framework zigware.js shim into one WriteFiles output dir, and
+/// emit an asset_table.zig beside them (so its @embedFile resolves by
+/// colocation, exactly as the release-staged table does). Returns the generated
+/// table's LazyPath, or null when there is no frontend/ dir (missing dir is the
+/// graceful "use the framework default table" path, never a hard error). Reuses
+/// src/cli/assets_embed.zig, which enforces the reject-outside-dist containment.
+fn stageDevAssets(b: *std.Build, dep: *std.Build.Dependency) ?std.Build.LazyPath {
+    const io = b.graph.io;
+    const gpa = b.allocator;
+
+    // Resolve frontend/ to an ABSOLUTE path via the build-root handle, so the
+    // walk is independent of the process cwd (b.pathFromRoot can yield a
+    // cwd-relative "./frontend" when build_root.path is null or "."). This
+    // mirrors addApp's other configure-time reads, which use b.build_root.handle
+    // (see the per-OS override + grants probing earlier in addApp). A missing
+    // frontend/ dir is the graceful "use the framework default table" path.
+    b.build_root.handle.access(io, "frontend", .{}) catch return null;
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_n = b.build_root.handle.realPath(io, &root_buf) catch return null;
+    const root_abs = root_buf[0..root_n];
+    const frontend_abs = b.fmt("{s}/frontend", .{root_abs});
+
+    var result = assets_embed.walk(io, gpa, frontend_abs) catch |err| switch (err) {
+        // No frontend/ dir: fall back to the framework default table.
+        error.frontend_dist_missing => return null,
+        // A real staging error (an asset resolving outside the dir, OOM) must
+        // fail the build loudly, not silently serve a partial set.
+        else => std.debug.panic("zigware: staging frontend assets failed: {s}", .{@errorName(err)}),
+    };
+    defer result.deinit();
+
+    const wf = b.addWriteFiles();
+    // Copy each walked consumer asset into the staged dir under its
+    // import_name, so the emitted @embedFile("<import_name>") resolves.
+    for (result.entries) |e| {
+        _ = wf.addCopyFile(b.path(b.fmt("frontend/{s}", .{e.import_name})), e.import_name);
+    }
+    // The framework zigware.js shim is not in the consumer's frontend/ dir; it
+    // comes from the dependency. Stage it and add its table entry so /zigware.js
+    // stays served (parity with the framework default table).
+    _ = wf.addCopyFile(dep.builder.path("frontend/zigware.js"), "zigware.js");
+
+    // Build the full entry list (walked consumer assets + zigware.js) and emit
+    // the table. emitAssetTable does not require sorted input for correctness;
+    // append the shim entry after the walked (already sorted) ones.
+    var entries: std.ArrayList(assets_embed.Entry) = .empty;
+    defer entries.deinit(gpa);
+    entries.appendSlice(gpa, result.entries) catch @panic("OOM");
+    entries.append(gpa, .{ .serve_path = "/zigware.js", .import_name = "zigware.js", .mime = assets_embed.mimeForExt(".js") }) catch @panic("OOM");
+
+    // Ownership: wf.add holds the byte slice until the WriteFiles step runs, so
+    // the bytes must outlive this function. Dupe the emitted table onto
+    // b.allocator (the build arena, alive for the whole build) and let the
+    // Allocating writer's own buffer be freed by defer. This is the safe analog
+    // of emitTemplateIndex's toOwnedSlice pattern (build.zig ~754).
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    assets_embed.emitAssetTable(&aw.writer, entries.items) catch @panic("OOM");
+    const bytes = gpa.dupe(u8, aw.writer.buffered()) catch @panic("OOM");
+
+    return wf.add("asset_table.zig", bytes);
 }
