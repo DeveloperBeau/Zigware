@@ -16,6 +16,27 @@ Before compiling, `zigware build` runs the manifest's `frontend.build` command
   unset and `frontend.dev`/`frontend.serveUrl` null. The committed files under
   `frontend/` are served and packaged as-is.
 
+### Naming convention: productName vs. displayName
+
+`productName` in `zigware.zon` must match the `addApp .name` in `build.zig` exactly.
+Packaging locates the compiled binary at `zig-out/bin/<productName>`, so a mismatch
+silently fails to find it. For a human-facing name with spaces or punctuation, set
+`bundle.displayName`; that value drives the `.app` directory name and
+`CFBundleExecutable` inside the bundle.
+
+```zig
+// build.zig
+_ = zigware.addApp(b, dep, .{ .name = "my-app", ... });
+```
+
+```zig
+// zigware.zon
+.productName = "my-app",       // must equal addApp .name
+.bundle = .{
+    .displayName = "My App",   // drives the .app name and bundle executable
+},
+```
+
 ## Default: unsigned
 
 With no flags, the bundle is UNSIGNED. It needs no Apple credentials and is

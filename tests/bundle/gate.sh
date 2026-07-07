@@ -39,14 +39,14 @@ react="$repo/examples/crypto-react"
   env -u APPLE_SIGNING_IDENTITY -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
       -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH \
   "$cli" build )
-# VERIFY-DURING: confirm crypto-react's productName -> the .app name and the
-# MacOS/<name> binary name from examples/crypto-react/zigware.zon; adjust the
-# asserted paths to match. The built index.html should be the Vite output (a
-# hashed asset reference), proving the npm build ran before packaging.
+# Bundle path confirmed: displayName "Crypto Demo (React)" -> Crypto Demo (React).app
 rapp="$(find "$react/zig-out" -maxdepth 1 -name '*.app' -type d | head -1)"
 if [ -z "$rapp" ] || [ ! -f "$rapp/Contents/Info.plist" ]; then
   echo "FAIL: node-frontend bundle not produced under $react/zig-out"; exit 1
 fi
+if [ ! -f "$rapp/Contents/MacOS/Crypto Demo (React)" ]; then echo "FAIL: crypto-react bundle executable missing"; exit 1; fi
+# Unsigned: no _CodeSignature dir should be present.
+if [ -d "$rapp/Contents/_CodeSignature" ]; then echo "FAIL: crypto-react bundle unexpectedly signed"; exit 1; fi
 echo "node-frontend bundle gate passed ($rapp)"
 
 echo "all bundle gates passed"
