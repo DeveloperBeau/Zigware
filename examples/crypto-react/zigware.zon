@@ -1,7 +1,13 @@
 .{
     .identifier = "com.zigware.crypto-react",
-    .productName = "Crypto Demo (React)",
+    // productName matches the build.zig .name (the installed binary name). The
+    // bundle.displayName carries the human-readable app name for the .app and
+    // CFBundleExecutable; the CLI's binary-path convention uses productName.
+    .productName = "crypto-react",
     .version = "0.1.0",
+    .bundle = .{
+        .displayName = "Crypto Demo (React)",
+    },
     .app = .{
         .windows = .{
             .{ .label = "main", .url = "app://localhost/index.html", .title = "Crypto Demo (React)" },

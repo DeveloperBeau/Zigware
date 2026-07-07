@@ -38,9 +38,10 @@
         },
     },
     .frontend = .{
-        .dev = "npm run dev",
-        .serveUrl = "http://localhost:5173",
-        .build = "npm run build",
+        // notes ships a committed static frontend (no npm); no dev server, no
+        // build command. Matches crypto-vanilla.
+        .dev = null,
+        .serveUrl = null,
         .outDir = "frontend",
     },
 }
