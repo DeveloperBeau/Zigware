@@ -32,13 +32,22 @@ Zig downloads the archive, computes the content hash, and writes the `.hash`
 value directly into `build.zig.zon`. Commit that updated file; subsequent builds
 use the cached value without a network round-trip.
 
+### Verifying locally
+
+`tests/fetch-consumer/gate.sh` is runnable proof: it builds a local tarball of
+the framework with `git archive`, runs `zig fetch` against it, and compiles a
+minimal consumer. This replicates what GitHub serves for a real tag tarball
+(Zig hashes only the `.paths` content, so the hash is identical). Run it
+directly to confirm the mechanism without needing a published tag.
+
 ### Release steps for a maintainer
 
 1. Merge work into `main` and verify `zig build` exits clean.
-2. Tag the commit: `git tag v0.1.0 && git push origin v0.1.0`.
-3. GitHub serves the tag archive at the URL above automatically.
-4. Run `zig fetch --save=zigware <url>` in a test consumer to confirm the hash
-   resolves and the build compiles.
+2. Tag the commit and push: `git tag v0.1.0 && git push origin v0.1.0`.
+   The `.github/workflows/release.yml` workflow triggers on the tag push,
+   builds the framework, and creates the GitHub Release automatically.
+   GitHub serves the tag archive at the URL above; no manual release step
+   is needed.
 
 ### What the tarball includes
 
@@ -92,9 +101,9 @@ fails with that exact message. Success means the ban is working; an unexpected
 clean build or a different error causes the gate to fail.
 
 The fixture uses the same relative-path dep as the other in-repo consumers. The
-URL+hash mode for this fixture is shape-only documentation: the repo is not yet
-publicly tagged, so no real hash exists. When a `v0.1.0` tag ships, any
-consumer can substitute the real URL and run `zig fetch` to obtain the hash.
+`tests/fetch-consumer` gate proves url+hash consumption on every CI run by
+fetching a locally-archived tarball, so the mechanism is verified even before a
+public tag is pushed.
 
 ---
 
