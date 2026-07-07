@@ -77,6 +77,22 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     if (target.result.os.tag == .macos) {
         barrel.linkFramework("Cocoa", .{});
         barrel.linkFramework("WebKit", .{});
+        // When the target is explicitly specified (e.g. `-Dtarget=aarch64-macos`
+        // or `x86_64-macos`, as `zigware build --arch`/`--arch universal` pass),
+        // Zig does not auto-discover the macOS SDK, so both the framework search
+        // path and the sysroot (needed to resolve transitive system library
+        // dependencies in .tbd stubs) are empty. Fix both via xcrun. A native
+        // build (no `-Dtarget`) already resolves the SDK, so only pay the xcrun
+        // spawn and the global b.sysroot mutation for a non-native target. Keying
+        // on arch-inequality alone was wrong: a same-arch explicit target (arm64
+        // host -> aarch64-macos, the first slice of a universal build) is still
+        // non-native and needs the SDK, but would slip past an arch compare.
+        if (!target.query.isNative()) {
+            if (sdkPath(b.allocator, b.graph.io)) |sdk| {
+                b.sysroot = sdk;
+                barrel.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
+            } else |_| {}
+        }
     } else {
         std.debug.panic("zigware v0.1.0 targets macOS only", .{});
     }
@@ -305,4 +321,29 @@ fn stageDevAssets(b: *std.Build, dep: *std.Build.Dependency) ?std.Build.LazyPath
     const bytes = gpa.dupe(u8, aw.writer.buffered()) catch @panic("OOM");
 
     return wf.add("asset_table.zig", bytes);
+}
+
+/// Return the path to the active macOS SDK (e.g.
+/// `.../MacOSX.sdk`). Used to supply an explicit sysroot and framework search
+/// path when cross-compiling between macOS architectures: Zig does not
+/// auto-discover the SDK on non-native builds, so `-framework Cocoa` would
+/// otherwise fail to link with "searched paths: none" and transitive system
+/// library stubs (.tbd) can't resolve their own dependencies.
+///
+/// Runs `xcrun --sdk macosx --show-sdk-path` synchronously during the build
+/// configuration phase. Errors are returned rather than panicked so the call
+/// site can decide whether to treat a missing xcrun as fatal.
+fn sdkPath(gpa: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const res = try std.process.run(gpa, io, .{
+        .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" },
+    });
+    defer gpa.free(res.stderr);
+    defer gpa.free(res.stdout);
+    const ok = switch (res.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+    if (!ok) return error.xcrun_failed;
+    const sdk = std.mem.trim(u8, res.stdout, " \n\r\t");
+    return gpa.dupe(u8, sdk);
 }

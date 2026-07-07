@@ -1,7 +1,13 @@
 .{
     .identifier = "com.zigware.notes",
-    .productName = "Notes",
+    // productName matches the build.zig .name (the installed binary name). The
+    // bundle.displayName carries the human-readable app name for the .app and
+    // CFBundleExecutable; the CLI's binary-path convention uses productName.
+    .productName = "notes",
     .version = "0.1.0",
+    .bundle = .{
+        .displayName = "Notes",
+    },
     .app = .{
         .windows = .{
             .{
@@ -38,9 +44,10 @@
         },
     },
     .frontend = .{
-        .dev = "npm run dev",
-        .serveUrl = "http://localhost:5173",
-        .build = "npm run build",
+        // notes ships a committed static frontend (no npm); no dev server, no
+        // build command. Matches crypto-vanilla.
+        .dev = null,
+        .serveUrl = null,
         .outDir = "frontend",
     },
 }

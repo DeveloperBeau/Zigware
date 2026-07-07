@@ -1,7 +1,13 @@
 .{
     .identifier = "com.zigware.crypto-svelte",
-    .productName = "Crypto Demo (Svelte)",
+    // productName matches the build.zig .name (the installed binary name). The
+    // bundle.displayName carries the human-readable app name for the .app and
+    // CFBundleExecutable; the CLI's binary-path convention uses productName.
+    .productName = "crypto-svelte",
     .version = "0.1.0",
+    .bundle = .{
+        .displayName = "Crypto Demo (Svelte)",
+    },
     .app = .{
         .windows = .{
             .{

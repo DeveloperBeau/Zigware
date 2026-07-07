@@ -12,6 +12,10 @@ pub const BuildSpec = struct {
     /// When set (prod packaging), the path to a staged `asset_table.zig` the
     /// scaffold build wires via `-Dasset_table`. Null for dev (loads from serveUrl).
     asset_table: ?[]const u8 = null,
+    /// Zig target triple passed to the consumer build as `-Dtarget=<triple>`
+    /// (e.g. "aarch64-macos"). Null builds for the host. Set by `zigware build
+    /// --arch`.
+    target: ?[]const u8 = null,
 };
 pub const BuildResult = struct { ok: bool, stderr: []u8 }; // stderr owned by caller (gpa)
 

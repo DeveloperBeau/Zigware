@@ -27,7 +27,7 @@ pub const configFromManifest = config.configFromManifest;
 /// can script the packaging child-process sequence without a real toolchain.
 pub const FakeRunnerForTest = runner_mod.FakeRunner;
 
-pub const Arch = enum { host }; // universal (lipo arm64 + x86_64) reserved for v0.2
+pub const Arch = enum { host, arm64, x86_64, universal };
 
 /// The F -> G handoff struct. F populates the binary; G fills the rest and returns it.
 /// THIS is the single definition; src/cli imports it (do not redefine in cli/build.zig).
@@ -101,6 +101,9 @@ pub const PackageOptions = struct {
     runner: *Runner,
     skip_sign: bool = false,
     skip_notarize: bool = false,
+    /// The architecture this bundle targets. Recorded in the returned `Artifacts`;
+    /// `.universal` means `binaries` holds the arch slices `assembleBundle` lipos.
+    arch: Arch = .host,
     /// Structured-failure out-pointer. A stage (or `package()` itself) writes a
     /// gpa-owned `Diagnostic` here before returning a typed `PackageError`; the
     /// caller reads it after `package()` returns and frees `detail`.
@@ -294,7 +297,7 @@ pub fn packageInner(
 
     // Success: build the fully-owned Artifacts. EVERY string is a fresh gpa dupe so
     // `Artifacts.deinit` and `freeCredentials` never share an allocation.
-    return try fillArtifacts(gpa, opts.config, opts.binaries, creds.signing_identity);
+    return try fillArtifacts(gpa, opts.config, opts.binaries, creds.signing_identity, opts.arch);
 }
 
 /// Populate `Artifacts` with gpa-owned dupes of every string field, unwinding cleanly
@@ -305,6 +308,7 @@ fn fillArtifacts(
     cfg: PackageConfig,
     binaries: []const []const u8,
     signing_identity: ?[]const u8,
+    arch: Arch,
 ) std.mem.Allocator.Error!Artifacts {
     const binary_path = try gpa.dupe(u8, binaries[0]);
     errdefer gpa.free(binary_path);
@@ -330,7 +334,7 @@ fn fillArtifacts(
         .entitlements_path = entitlements_path,
         .signing_identity = identity_dupe,
         .frontend_embedded = true,
-        .arch = .host,
+        .arch = arch,
     };
 }
 

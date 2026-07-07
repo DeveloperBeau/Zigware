@@ -3,10 +3,9 @@ import react from "@vitejs/plugin-react";
 
 // Pin the dev server to 5173 (matches serveUrl in zigware.zon). The production
 // build emits a SINGLE, fixed-name bundle `app.js` (no content hash, no code
-// splitting) plus index.html. The framework's static asset table serves
-// /index.html and /app.js and embeds the build as-is, keeping the script
-// external ('self', strict CSP) rather than inlined. The bundle injects CSS
-// at runtime as a <style>, covered by style-src 'unsafe-inline'.
+// splitting) plus `style.css` and index.html. The framework's static asset
+// table serves /index.html, /app.js, and /style.css, keeping every resource
+// external ('self', strict CSP) rather than inlined.
 export default defineConfig({
   plugins: [react()],
   base: "./",

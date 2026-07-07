@@ -154,14 +154,19 @@ pub fn assembleBundle(
     cwd.createDirPath(io, macos_dir) catch return error.CreateDirPathFailed;
     cwd.createDirPath(io, resources_dir) catch return error.CreateDirPathFailed;
 
-    // Copy the binary to Contents/MacOS/<displayName>, executable.
+    // Place the executable at Contents/MacOS/<displayName>. A single-arch build
+    // copies the one binary; a universal build lipos its arch slices together.
     const exe_dest = std.fmt.allocPrint(gpa, "{s}/{s}", .{ macos_dir, cfg.displayName }) catch
         return error.OutOfMemory;
     defer gpa.free(exe_dest);
-    cwd.copyFile(binaries[0], cwd, exe_dest, io, .{
-        .permissions = .executable_file,
-        .make_path = true,
-    }) catch return error.BinaryCopyFailed;
+    if (binaries.len == 1) {
+        cwd.copyFile(binaries[0], cwd, exe_dest, io, .{
+            .permissions = .executable_file,
+            .make_path = true,
+        }) catch return error.BinaryCopyFailed;
+    } else {
+        try lipoBinaries(io, gpa, runner, binaries, exe_dest, diag);
+    }
 
     // Write Info.plist. The Allocating writer's only failure is OOM; any
     // other writer error maps to the plist-write domain variant.
@@ -229,6 +234,54 @@ fn resolveIcon(
         };
         return error.IconConvertFailed;
     }
+}
+
+/// Combine `binaries` (two or more single-arch Mach-O slices) into one universal
+/// executable at `exe_dest` with `lipo -create <inputs...> -output <exe_dest>`,
+/// then mark it executable. A non-zero lipo exit writes a gpa-duped Diagnostic
+/// through `diag` (its detail a copy of the captured stderr, taken BEFORE the
+/// RunResult is freed) and returns `error.BinaryCopyFailed` (mirrors resolveIcon).
+/// Supports N inputs, not just two.
+fn lipoBinaries(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    runner: *Runner,
+    binaries: []const []const u8,
+    exe_dest: []const u8,
+    diag: *?Diagnostic,
+) BundleError!void {
+    // argv: lipo -create <b0> <b1> ... -output <exe_dest>
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    argv.append(gpa, "lipo") catch return error.OutOfMemory;
+    argv.append(gpa, "-create") catch return error.OutOfMemory;
+    for (binaries) |b| argv.append(gpa, b) catch return error.OutOfMemory;
+    argv.append(gpa, "-output") catch return error.OutOfMemory;
+    argv.append(gpa, exe_dest) catch return error.OutOfMemory;
+
+    const result = runner.run(io, gpa, argv.items) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BinaryCopyFailed,
+    };
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    if (!termOk(result.term)) {
+        // Dupe the stderr into the Diagnostic BEFORE the RunResult is freed.
+        const detail = gpa.dupe(u8, result.stderr) catch return error.OutOfMemory;
+        diag.* = .{
+            .code = .unknown_tool_failure,
+            .title = "Packaging tool failed",
+            .detail = detail,
+            .remediation = "lipo failed to combine the architecture slices. Inspect the captured output above and re-run.",
+        };
+        return error.BinaryCopyFailed;
+    }
+
+    // lipo's output is not reliably marked executable; the bundle exe must be, or
+    // the app will not launch. Best-effort: in tests the faked runner writes no
+    // output file, so a missing-file chmod here is a benign no-op.
+    std.Io.Dir.cwd().setFilePermissions(io, exe_dest, .executable_file, .{}) catch {};
 }
 
 /// True only for a clean `exited == 0` termination.
@@ -513,6 +566,88 @@ test "assembleBundle lays out the app, copies the executable, and writes the pli
     const plist_bytes = try std.Io.Dir.cwd().readFileAlloc(io, plist_rel, gpa, .limited(64 * 1024));
     defer gpa.free(plist_bytes);
     try testing.expect(std.mem.indexOf(u8, plist_bytes, "<string>App</string>") != null);
+}
+
+test "assembleBundle lipos two binaries into one universal bundle executable" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base = base_buf[0..try tmp.dir.realPath(io, &base_buf)];
+
+    // Two real dummy arch slices to combine.
+    const arm_bin = try std.fmt.allocPrint(gpa, "{s}/server-arm64", .{base});
+    defer gpa.free(arm_bin);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = arm_bin, .data = "ARM64SLICE" });
+    const x86_bin = try std.fmt.allocPrint(gpa, "{s}/server-x86_64", .{base});
+    defer gpa.free(x86_bin);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = x86_bin, .data = "X8664SLICE" });
+
+    const out_dir = try std.fmt.allocPrint(gpa, "{s}/out", .{base});
+    defer gpa.free(out_dir);
+
+    var fr = runner_mod.FakeRunner.init(gpa);
+    defer fr.deinit();
+    // Script lipo's success. The fake does not create the output file, so the
+    // best-effort chmod that follows is a no-op here; the assertions target argv.
+    try fr.push(.{ .term = .{ .exited = 0 }, .stdout = "", .stderr = "" });
+    var runner = fr.runner();
+
+    var diag: ?Diagnostic = null;
+    const cfg = minimalCfg(); // displayName "App", no icon
+    const app_path = try assembleBundle(io, gpa, &runner, cfg, &.{ arm_bin, x86_bin }, out_dir, &diag);
+    defer gpa.free(app_path);
+
+    try testing.expect(diag == null);
+
+    // Exactly one runner call: lipo -create <arm> <x86> -output <exe_dest>.
+    try testing.expectEqual(@as(usize, 1), fr.argv_log.items.len);
+    const argv = fr.argv_log.items[0];
+    try testing.expectEqual(@as(usize, 6), argv.len);
+    try testing.expectEqualStrings("lipo", argv[0]);
+    try testing.expectEqualStrings("-create", argv[1]);
+    try testing.expectEqualStrings(arm_bin, argv[2]);
+    try testing.expectEqualStrings(x86_bin, argv[3]);
+    try testing.expectEqualStrings("-output", argv[4]);
+    // The output is placed at Contents/MacOS/<displayName>.
+    try testing.expect(std.mem.endsWith(u8, argv[5], "/App.app/Contents/MacOS/App"));
+}
+
+test "assembleBundle surfaces a lipo failure as a populated diagnostic" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base = base_buf[0..try tmp.dir.realPath(io, &base_buf)];
+
+    const arm_bin = try std.fmt.allocPrint(gpa, "{s}/server-arm64", .{base});
+    defer gpa.free(arm_bin);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = arm_bin, .data = "a" });
+    const x86_bin = try std.fmt.allocPrint(gpa, "{s}/server-x86_64", .{base});
+    defer gpa.free(x86_bin);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = x86_bin, .data = "b" });
+
+    const out_dir = try std.fmt.allocPrint(gpa, "{s}/out", .{base});
+    defer gpa.free(out_dir);
+
+    var fr = runner_mod.FakeRunner.init(gpa);
+    defer fr.deinit();
+    try fr.push(.{ .term = .{ .exited = 1 }, .stdout = "", .stderr = "lipo: bad slices" });
+    var runner = fr.runner();
+
+    var diag: ?Diagnostic = null;
+    const cfg = minimalCfg();
+    const r = assembleBundle(io, gpa, &runner, cfg, &.{ arm_bin, x86_bin }, out_dir, &diag);
+    try testing.expectError(error.BinaryCopyFailed, r);
+
+    try testing.expect(diag != null);
+    try testing.expectEqual(diagnostics.Code.unknown_tool_failure, diag.?.code);
+    try testing.expectEqualStrings("lipo: bad slices", diag.?.detail);
+    gpa.free(diag.?.detail);
 }
 
 test "assembleBundle copies an .icns icon verbatim into Resources" {

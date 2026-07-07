@@ -1,7 +1,13 @@
 .{
     .identifier = "com.zigware.crypto-vue",
-    .productName = "Crypto Demo (Vue)",
+    // productName matches the build.zig .name (the installed binary name). The
+    // bundle.displayName carries the human-readable app name for the .app and
+    // CFBundleExecutable; the CLI's binary-path convention uses productName.
+    .productName = "crypto-vue",
     .version = "0.1.0",
+    .bundle = .{
+        .displayName = "Crypto Demo (Vue)",
+    },
     .app = .{
         .windows = .{
             .{ .label = "main", .url = "app://localhost/index.html", .title = "Crypto Demo (Vue)" },
