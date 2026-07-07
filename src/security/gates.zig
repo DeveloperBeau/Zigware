@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cap = @import("capability.zig");
 const grant = @import("grant_table.zig");
 const path = @import("scope/path.zig");
@@ -194,9 +195,15 @@ test "G1: dev_url honored only in debug" {
     var table = try gt(&caps);
     defer table.deinit();
     const bases = Bases{ .appdata = "/a", .home = "/h", .appconfig = "/c" };
-    try std.testing.expect(evaluate(&table, ctxFor("http://localhost:1420", "window.setTitle", true), bases, std.testing.io, std.Io.Dir.cwd()) == .allow);
+    // In Debug: dev_url is in the compiled trust set, so the runtime is_debug gate
+    // is the deciding factor. In ReleaseSafe: dev_url is dropped from the compiled
+    // trust set at compile time (belt beyond the runtime gate), so even is_debug=true
+    // at runtime denies.
+    if (comptime builtin.mode == .Debug) {
+        try std.testing.expect(evaluate(&table, ctxFor("http://localhost:1420", "window.setTitle", true), bases, std.testing.io, std.Io.Dir.cwd()) == .allow);
+    }
     const d = evaluate(&table, ctxFor("http://localhost:1420", "window.setTitle", false), bases, std.testing.io, std.Io.Dir.cwd());
-    try std.testing.expectEqualStrings("origin.untrusted", d.deny.code); // release build rejects dev url
+    try std.testing.expectEqualStrings("origin.untrusted", d.deny.code); // always denied when is_debug=false
 }
 
 test "G4: a .none command allows immediately" {

@@ -38,6 +38,9 @@
         },
     },
     .frontend = .{
+        .dev = "npm run dev",
+        .serveUrl = "http://localhost:5173",
+        .build = "npm run build",
         .outDir = "frontend",
     },
 }

@@ -1,13 +1,15 @@
 //! Build-time codegen: parses zigware.zon + per-OS override, validates, and
 //! re-serializes the MERGED+VALIDATED manifest as a .zon literal at the path
-//! given as argv[1]. argv[2] is the base manifest path; argv[3..] are per-OS
-//! override paths. The codegen NEVER opens std.Io.Dir.cwd() for source input;
+//! given as argv[1]. argv[2] is the grant-capability bodies output; argv[3] is
+//! the base manifest path; argv[4..] are per-OS override paths. The codegen
+//! NEVER opens std.Io.Dir.cwd() for source input;
 //! build.zig passes every input path explicitly so the Run step's cache key is
 //! stable. Production embedded() reads this artifact, NOT the raw zigware.zon.
 const std = @import("std");
 const parse = @import("parse.zig");
 const types = @import("types.zig");
 const diag = @import("diag");
+const caps_loader = @import("capabilities.zig");
 
 const log = diag.scoped("manifest");
 
@@ -17,11 +19,12 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 3) return error.MissingArgs;
+    if (args.len < 4) return error.MissingArgs;
     const out_path = args[1];
-    const base_path = args[2];
-    // args[3..] (per-OS overrides + capability files) are still passed by build.zig
-    // so an edit invalidates the Run cache; the loader below re-discovers them by
+    const grants_out_path = args[2];
+    const base_path = args[3];
+    // args[4..] (per-OS overrides + capability files) are still passed by build.zig
+    // so an edit invalidates the Run cache; the loaders below re-discover them by
     // walking the manifest's directory, so they need not be threaded individually.
 
     var diagnostics: types.Diagnostics = .{};
@@ -57,4 +60,30 @@ pub fn main(init: std.process.Init) !void {
     defer aw.deinit();
     try std.zon.stringify.serialize(m, .{}, &aw.writer);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = aw.writer.buffered() });
+
+    // Second artifact: the app's DECLARED capability bodies, filtered to the ids
+    // the manifest references (security.grants), serialized so the runtime can
+    // @import them the same way it imports the effective manifest. loadCapabilities
+    // walks the same root dir; a missing src/grants yields an empty list, which
+    // serializes to `.{}` and drives the runtime fallback.
+    var caps_arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer caps_arena_state.deinit();
+    const caps_arena = caps_arena_state.allocator();
+    const loaded = caps_loader.loadCapabilities(caps_arena, io, root_dir) catch |e| {
+        log.err("cannot load capability bodies", &.{diag.str("path", root_path)});
+        return e;
+    };
+    var referenced: std.ArrayList(caps_loader.Capability) = .empty;
+    for (loaded) |c| {
+        for (m.security.grants) |id| {
+            if (std.mem.eql(u8, c.identifier, id)) {
+                try referenced.append(caps_arena, c);
+                break;
+            }
+        }
+    }
+    var gaw: std.Io.Writer.Allocating = .init(gpa);
+    defer gaw.deinit();
+    try std.zon.stringify.serialize(referenced.items, .{}, &gaw.writer);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = grants_out_path, .data = gaw.writer.buffered() });
 }

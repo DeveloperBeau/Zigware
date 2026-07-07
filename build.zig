@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
     // with @import("zigware_manifest_zon"), so the anonymous import must be wired
     // even though the codegen never CALLS embedded().
     const emit_eff_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest/emit_effective.zig"),
+        .root_source_file = b.path("src/emit_effective_main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -425,11 +425,13 @@ pub fn build(b: *std.Build) void {
 
     // ─── Manifest module wiring ──────────────────────────────────────────────
     const emit_eff_run = b.addRunArtifact(emit_eff_exe);
-    // argv[1] = output path (materialised as a LazyPath downstream consumers can wire).
+    // argv[1] = effective manifest output (a LazyPath downstream consumers wire).
     const effective_zon: std.Build.LazyPath = emit_eff_run.addOutputFileArg("zigware.effective.zon");
-    // argv[2] = base manifest path; pinned via addFileArg so an edit invalidates the cache.
+    // argv[2] = grant-capability bodies output, referenced by app.zig.
+    const grants_zon: std.Build.LazyPath = emit_eff_run.addOutputFileArg("zigware.effective.grants.zon");
+    // argv[3] = base manifest path; pinned via addFileArg so an edit invalidates the cache.
     emit_eff_run.addFileArg(b.path("zigware.zon"));
-    // argv[3..] = per-OS override paths; pin every existing one. build.zig's
+    // argv[4..] = per-OS override paths; pin every existing one. build.zig's
     // configure-phase filesystem reads use b.build_root.handle + b.graph.io;
     // std.fs.cwd() is not in 0.16.
     const root = b.build_root.handle;
@@ -467,13 +469,14 @@ pub fn build(b: *std.Build) void {
     // near the top of build(); addExecutable captured it by reference, so wiring
     // the anonymous import here (after effective_zon exists) is in time.
     wireManifest(exe_mod, effective_zon);
+    wireGrants(exe_mod, grants_zon);
 
     // src/app.zig and src/sec_regression.zig both need the frontend embeds AND
     // wireManifest (app.zig calls parse.embedded(); sec_regression imports App).
     // addEmbedTest exposes no module handle for wireManifest, so they are
     // registered explicitly here, after effective_zon is defined.
     const addEmbedManifestTest = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, zon: std.Build.LazyPath, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, zon: std.Build.LazyPath, grants: std.Build.LazyPath, src: []const u8) void {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -484,18 +487,19 @@ pub fn build(b: *std.Build) void {
             m.addAnonymousImport("frontend/zigware.js", .{ .root_source_file = bb.path("frontend/zigware.js") });
             m.addAnonymousImport("frontend/window.js", .{ .root_source_file = bb.path("frontend/window.js") });
             wireManifest(m, zon);
+            wireGrants(m, grants);
             const tt = bb.addTest(.{ .root_module = m });
             ts.dependOn(&bb.addRunArtifact(tt).step);
         }
     }.add;
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/app.zig");
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/sec_regression.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/app.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/sec_regression.zig");
     // Targeted runners for the App/security suites (the full `test` step can hang
     // on unrelated long-running suites; these isolate the wiring under change).
     const test_app_step = b.step("test-app", "Run only the src/app.zig tests");
-    addEmbedManifestTest(b, test_app_step, target, optimize, effective_zon, "src/app.zig");
+    addEmbedManifestTest(b, test_app_step, target, optimize, effective_zon, grants_zon, "src/app.zig");
     const test_sec_step = b.step("test-sec", "Run only the src/sec_regression.zig tests");
-    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, "src/sec_regression.zig");
+    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, grants_zon, "src/sec_regression.zig");
 
     // Isolated security-suite step: src/security_tests.zig builds a standalone
     // logic-test module (no embedded manifest, no Cocoa), so it runs without
@@ -505,11 +509,11 @@ pub fn build(b: *std.Build) void {
 
     // bridge.zig and window_tests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/bridge.zig");
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/window_tests.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/bridge.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/window_tests.zig");
     // compute_tests.zig drives the real Bridge async offload path, so it pulls in
     // manager.zig (manifest fuses) and the frontend embeds like bridge.zig does.
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, "src/compute_tests.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/compute_tests.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts
@@ -635,6 +639,15 @@ pub fn build(b: *std.Build) void {
 /// exe itself) MUST have this called on it.
 fn wireManifest(mod: *std.Build.Module, zon: std.Build.LazyPath) void {
     mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = zon });
+}
+
+/// Wires the emitted grant-capability artifact onto a module so
+/// `@import("zigware_grants_zon")` resolves at compile time. Every module that
+/// transitively compiles src/app.zig MUST have this called on it. Wiring it on a
+/// module that does not import it is harmless (an unused anonymous import),
+/// mirroring how the codegen exe wires zigware_manifest_zon without calling it.
+fn wireGrants(mod: *std.Build.Module, grants_zon: std.Build.LazyPath) void {
+    mod.addAnonymousImport("zigware_grants_zon", .{ .root_source_file = grants_zon });
 }
 
 const template_root = "src/cli/template";

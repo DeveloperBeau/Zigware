@@ -1,10 +1,12 @@
-//! Build-time grant-loading enforcement test. Walks the renamed surface end to
-//! end: parseAtBuild (reads zigware.zon, cross-checks security.grants against the
+//! Build-time grant-loading enforcement test. Walks the surface end to end:
+//! parseAtBuild (reads zigware.zon, cross-checks security.grants against the
 //! present src/grants/*.zon ids) -> loadCapabilities (parses each src/grants/*.zon
 //! body) -> filter to the manifest's referenced grant ids -> GrantTable.compile
-//! against the runtime catalog -> commandGranted. The live runtime enforces via
-//! synthAppGrants (src/app.zig), which ignores manifest.security.grants and
-//! loadCapabilities, so this is the only coverage of the build-time grant edge.
+//! against the runtime catalog -> commandGranted. This mirrors the LIVE path: the
+//! manifest codegen emits the same referenced capabilities as zigware_grants_zon,
+//! and app.zig builds the runtime table from them via buildGrantsFromCaps. This
+//! test pins the build-time half (loader + filter + compile) that the live embed
+//! rides on.
 
 const std = @import("std");
 const parse = @import("manifest/parse.zig");
