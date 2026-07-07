@@ -81,12 +81,15 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
         // x86_64 target), Zig does not auto-discover the macOS SDK, so both the
         // framework search path and the sysroot (needed to resolve transitive
         // system library dependencies in .tbd stubs) are empty. Fix both via
-        // xcrun. On native builds the sysroot is already correct and the extra
-        // framework path is a harmless duplicate.
-        if (sdkPath(b.allocator, b.graph.io)) |sdk| {
-            b.sysroot = sdk;
-            barrel.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
-        } else |_| {}
+        // xcrun. A native build already resolves the SDK, so only pay the xcrun
+        // spawn and the global b.sysroot mutation when the target arch differs
+        // from the host.
+        if (target.result.cpu.arch != b.graph.host.result.cpu.arch) {
+            if (sdkPath(b.allocator, b.graph.io)) |sdk| {
+                b.sysroot = sdk;
+                barrel.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
+            } else |_| {}
+        }
     } else {
         std.debug.panic("zigware v0.1.0 targets macOS only", .{});
     }
