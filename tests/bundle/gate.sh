@@ -60,4 +60,16 @@ if ! file "$exe" | grep -q 'x86_64'; then
 fi
 echo "arch selection gate passed"
 
+echo "gate: zigware build --arch universal produces a universal binary"
+( cd "$repo/examples/notes" && \
+  env -u APPLE_SIGNING_IDENTITY -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+      -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH \
+  "$cli" build --arch universal )
+exe="$repo/examples/notes/zig-out/Notes.app/Contents/MacOS/Notes"
+archs="$(lipo -archs "$exe" 2>/dev/null || echo '')"
+case "$archs" in
+  *arm64*x86_64*|*x86_64*arm64*) echo "universal gate passed ($archs)" ;;
+  *) echo "FAIL: expected a universal (arm64 + x86_64) binary, got: $archs"; exit 1 ;;
+esac
+
 echo "all bundle gates passed"

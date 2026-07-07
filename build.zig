@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
     // that resolves @import("zigware_manifest").Manifest in the test module. Used by the
     // CLI leaves that consume D's parsed manifest type (csp.zig now; dev/build in A3).
     const addLogicTestWithManifest = struct {
-        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) void {
+        fn add(bb: *std.Build, ts: *std.Build.Step, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, mm: *std.Build.Module, dm: *std.Build.Module, src: []const u8) *std.Build.Step.Run {
             const m = bb.createModule(.{
                 .root_source_file = bb.path(src),
                 .target = t,
@@ -203,7 +203,9 @@ pub fn build(b: *std.Build) void {
             // dev.zig routes compiler-error stderr through diag; csp.zig leaves it unused (harmless).
             m.addImport("diag", dm);
             const tt = bb.addTest(.{ .root_module = m });
-            ts.dependOn(&bb.addRunArtifact(tt).step);
+            const run = bb.addRunArtifact(tt);
+            ts.dependOn(&run.step);
+            return run;
         }
     }.add;
 
@@ -292,12 +294,16 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
+    _ = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
+    _ = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
     const build_test_run = addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
     const test_build_step = b.step("test-build", "Run only the CLI build-orchestrator tests");
     test_build_step.dependOn(&build_test_run.step);
-    addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
+    const package_test_run = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
+    // Isolated packaging-module step: the aggregate `test` step hangs on the App
+    // suites, so the bundle/lipo/sign/notarize/dmg logic tests get their own binary.
+    const test_package_step = b.step("test-package", "Run only the packaging module tests");
+    test_package_step.dependOn(&package_test_run.step);
     // init.zig reads the template embeds + the generated template_index module; the
     // template-aware registrar wires both onto its test root so C4's init.run tests
     // can resolve the anonymous template imports.

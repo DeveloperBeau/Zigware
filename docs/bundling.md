@@ -58,8 +58,24 @@ zigware build --arch x86_64   # Intel
 ```
 
 The flag threads a `-Dtarget` triple to the consumer `zig build`, which the
-scaffold already handles through `standardTargetOptions`. Universal binaries
-(`--arch universal`) are a future option.
+scaffold already handles through `standardTargetOptions`.
+
+### Universal (fat) binaries (`--arch universal`)
+
+```
+zigware build --arch universal
+```
+
+A universal bundle runs natively on both Apple Silicon and Intel Macs. `zigware`
+compiles the `arm64` and `x86_64` slices separately, then combines them into one
+fat Mach-O with `lipo` and places it in the bundle. The result is a single `.app`
+you can ship to either architecture, at the cost of a larger binary and a longer
+build (both slices are compiled, so the frontend build and asset staging run
+twice). Confirm the result with `lipo -archs`:
+
+```
+lipo -archs "zig-out/<App>.app/Contents/MacOS/<App>"   # -> arm64 x86_64
+```
 
 ## Signing and notarization (opt-in)
 

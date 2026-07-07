@@ -77,14 +77,17 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     if (target.result.os.tag == .macos) {
         barrel.linkFramework("Cocoa", .{});
         barrel.linkFramework("WebKit", .{});
-        // When cross-compiling between macOS architectures (e.g. arm64 host ->
-        // x86_64 target), Zig does not auto-discover the macOS SDK, so both the
-        // framework search path and the sysroot (needed to resolve transitive
-        // system library dependencies in .tbd stubs) are empty. Fix both via
-        // xcrun. A native build already resolves the SDK, so only pay the xcrun
-        // spawn and the global b.sysroot mutation when the target arch differs
-        // from the host.
-        if (target.result.cpu.arch != b.graph.host.result.cpu.arch) {
+        // When the target is explicitly specified (e.g. `-Dtarget=aarch64-macos`
+        // or `x86_64-macos`, as `zigware build --arch`/`--arch universal` pass),
+        // Zig does not auto-discover the macOS SDK, so both the framework search
+        // path and the sysroot (needed to resolve transitive system library
+        // dependencies in .tbd stubs) are empty. Fix both via xcrun. A native
+        // build (no `-Dtarget`) already resolves the SDK, so only pay the xcrun
+        // spawn and the global b.sysroot mutation for a non-native target. Keying
+        // on arch-inequality alone was wrong: a same-arch explicit target (arm64
+        // host -> aarch64-macos, the first slice of a universal build) is still
+        // non-native and needs the SDK, but would slip past an arch compare.
+        if (!target.query.isNative()) {
             if (sdkPath(b.allocator, b.graph.io)) |sdk| {
                 b.sysroot = sdk;
                 barrel.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
