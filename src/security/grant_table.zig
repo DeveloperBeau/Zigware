@@ -119,6 +119,12 @@ pub const GrantTable = struct {
 
         // Precompute the per-known-label multi-cap merges. Small N for v0.1.0, so
         // linear scans are fine; the point is a correct, allocation-free lookup.
+        // seen_cmds is a throwaway per-label dedup set, so it lives on a scratch
+        // arena freed when compile returns rather than on the table's arena; only
+        // the merged slices below are kept.
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        const sa = scratch.allocator();
         var lo_list: std.ArrayList(LabelOrigins) = .empty;
         var ls_list: std.ArrayList(LabelCommandScopes) = .empty;
         for (known_labels) |kl| {
@@ -137,7 +143,7 @@ pub const GrantTable = struct {
                 if (!globsMatch(cc.window_globs, kl)) continue;
                 for (cc.commands_allow) |cmd| {
                     if (containsStr(seen_cmds.items, cmd)) continue;
-                    try seen_cmds.append(a, cmd);
+                    try seen_cmds.append(sa, cmd);
                     var m_allow: std.ArrayList(Scope) = .empty;
                     var m_deny: std.ArrayList(Scope) = .empty;
                     for (compiled.items) |c2| {
@@ -174,7 +180,7 @@ pub const GrantTable = struct {
     pub fn commandGranted(self: *const GrantTable, label: []const u8, command: []const u8) bool {
         var allowed = false;
         for (self.caps) |c| {
-            if (!self.windowMatches(c, label)) continue;
+            if (!globsMatch(c.window_globs, label)) continue;
             for (c.commands_deny) |d| {
                 if (std.mem.eql(u8, d, command)) return false; // deny beats allow
             }
@@ -212,16 +218,10 @@ pub const GrantTable = struct {
         }
         return &.{};
     }
-
-    fn windowMatches(self: *const GrantTable, c: CompiledCap, label: []const u8) bool {
-        _ = self;
-        for (c.window_globs) |wg| {
-            if (glob.match(wg, label)) return true;
-        }
-        return false;
-    }
 };
 
+/// Does any window glob match `label`? Shared by commandGranted (query-time) and
+/// the compile()-time origin/scope precompute so both use identical semantics.
 fn globsMatch(globs: []const []const u8, label: []const u8) bool {
     for (globs) |wg| {
         if (glob.match(wg, label)) return true;
