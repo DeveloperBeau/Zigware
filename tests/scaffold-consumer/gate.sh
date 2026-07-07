@@ -23,6 +23,12 @@ if ! strings zig-out/bin/scaffold-consumer | grep -q 'ZWSENTINEL_SCAFFOLD_CONSUM
   echo "FAIL: run exe does not embed the consumer index.html sentinel"; exit 1
 fi
 
+echo "gate: dev run exe serves every frontend asset (style.css)"
+if ! strings zig-out/bin/scaffold-consumer | grep -q 'ZWSENTINEL_SCAFFOLD_CONSUMER_STYLE'; then
+  echo "FAIL: dev run exe does not embed frontend/style.css (asset table missed it)"; exit 1
+fi
+echo "dev asset serving gate passed"
+
 echo "gate: ReleaseFast consumer fails with the documented ban"
 if ( cd ../release-ban-consumer && zig build 2>build.err ); then
   echo "FAIL: ReleaseFast build unexpectedly succeeded"; exit 1
