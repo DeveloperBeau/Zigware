@@ -58,6 +58,9 @@ jobs:
       - name: Bundle gate
         run: ./tests/bundle/gate.sh
 
+      - name: Fetch consumer gate
+        run: ./tests/fetch-consumer/gate.sh
+
       # Run every dedicated test step under a watchdog timeout (macOS runners have
       # no GNU `timeout`), so a runaway suite is bounded and reported rather than
       # running to the job-level timeout. Every step runs (one slow/failing suite
