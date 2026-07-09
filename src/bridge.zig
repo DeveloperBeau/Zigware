@@ -1231,7 +1231,7 @@ const ScopedCommands = struct {
 // permission, plus core:default so the cancel command stays resolvable.
 const scoped_catalog = cap_live.Catalog{
     .permissions = &(defaults_live.builtin_permissions ++ [_]cap_live.Permission{
-        .{ .identifier = "app:hashFile", .commands_allow = &.{"hashFile"}, .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} },
+        .{ .identifier = "app:hashFile", .commandsAllow = &.{"hashFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }} },
     }),
     .sets = &defaults_live.builtin_sets,
 };

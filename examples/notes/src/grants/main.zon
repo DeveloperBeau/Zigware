@@ -5,7 +5,7 @@
     // trusted only in Debug builds; a release binary drops it entirely.
     .origins = .{
         .app_scheme,
-        .{ .dev_url = "http://localhost:5173" },
+        .{ .devUrl = "http://localhost:5173" },
     },
     // core:default carries compute.cancel; app:hashFile grants the hashFile
     // command scoped to $APPDATA/notes/** (the app-declared permission in the

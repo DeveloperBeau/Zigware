@@ -6,7 +6,7 @@ const OriginPattern = cap.OriginPattern;
 
 /// Wire A's reserved onNavigation. Returns A's NavigationDecision (C does not
 /// redefine it). Fail-closed: only app://, the dev URL (debug only), and an
-/// already-fuse-filtered https_exact origin are allowed; everything else cancels.
+/// already-fuse-filtered httpsExact origin are allowed; everything else cancels.
 pub fn decideNavigation(origins: []const OriginPattern, target: []const u8, is_debug: bool) backend_mod.NavigationDecision {
     // The trusted prod origin is EXACTLY app://localhost (the one app host), not
     // any app:// host. `app://evil/` and `app://localhost.attacker.com/` must be
@@ -16,8 +16,8 @@ pub fn decideNavigation(origins: []const OriginPattern, target: []const u8, is_d
     if (gates.isAppScheme(target)) return .allow;
     for (origins) |o| switch (o) {
         .app_scheme => {}, // handled above
-        .dev_url => |u| if (is_debug and std.mem.eql(u8, u, target)) return .allow,
-        .https_exact => |u| if (std.mem.eql(u8, u, target)) return .allow,
+        .devUrl => |u| if (is_debug and std.mem.eql(u8, u, target)) return .allow,
+        .httpsExact => |u| if (std.mem.eql(u8, u, target)) return .allow,
     };
     return .cancel;
 }
@@ -32,7 +32,7 @@ test "navigation: app://localhost allowed; foreign and app://evil cancelled" {
 }
 
 test "navigation: dev url allowed only in debug" {
-    const origins = [_]OriginPattern{.{ .dev_url = "http://localhost:1420" }};
+    const origins = [_]OriginPattern{.{ .devUrl = "http://localhost:1420" }};
     try std.testing.expectEqual(backend_mod.NavigationDecision.allow, decideNavigation(&origins, "http://localhost:1420", true));
     try std.testing.expectEqual(backend_mod.NavigationDecision.cancel, decideNavigation(&origins, "http://localhost:1420", false));
 }

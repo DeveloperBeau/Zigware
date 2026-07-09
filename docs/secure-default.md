@@ -32,7 +32,7 @@ place:
 ```
 
 The capability `main.zon` references the app-declared `hashFile` permission
-(`commands_allow = ["hashFile"]`, `scope_allow = ["$APPDATA/notes/**"]`) and
+(`commandsAllow = ["hashFile"]`, `scopeAllow = ["$APPDATA/notes/**"]`) and
 `core:compute:cancel`. Scope lives on the permission, not the capability.
 
 One capability per window is a runtime precondition once the scoped path is live:

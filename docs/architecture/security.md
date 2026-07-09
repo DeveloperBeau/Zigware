@@ -24,8 +24,8 @@ defaults to deny.
 
 A `Capability` = `{ identifier, windows[], origins[], permissions[] }`: it grants a
 set of resolved permissions to a set of window-label globs from a set of origins.
-Origins are `app_scheme` (exactly `app://localhost`), `dev_url` (exact, Debug only),
-or `https_exact` (exact, requires the `allowRemoteContent` fuse). Empty origins ⇒
+Origins are `app_scheme` (exactly `app://localhost`), `devUrl` (exact, Debug only),
+or `httpsExact` (exact, requires the `allowRemoteContent` fuse). Empty origins ⇒
 `app_scheme` only. `GrantTable.compile` resolves permission sets transitively into
 commands + scopes, dropping fuse-gated families (shell, https) and emitting
 diagnostics. Built-ins live in `defaults.zig`; app-declared permissions are spliced
@@ -37,7 +37,7 @@ only safe commands (no fs, http, or shell).
 `evaluate()` runs **G1 → G2 → G4**, fail-closed, stopping at the first deny:
 
 - **G1 (origin trusted)**: the request origin must exactly match a trusted
-  `OriginPattern` for the window (`app://localhost` only by default; `dev_url`
+  `OriginPattern` for the window (`app://localhost` only by default; `devUrl`
   honored only when `is_debug`). Deny → `origin.untrusted`.
 - **G2 (command granted)**: deny-by-default; deny-list beats allow-list. No matched
   capability ⇒ denied. Deny → `command.not_granted`.
@@ -53,7 +53,7 @@ Four build-time kill switches in `manifest/types.zig`, all default `false`:
 
 | Fuse | Effect |
 |------|--------|
-| `allowRemoteContent` | Required for any `https_exact` origin; otherwise such grants are **dropped** at compile (`fuse_requires_capability`). |
+| `allowRemoteContent` | Required for any `httpsExact` origin; otherwise such grants are **dropped** at compile (`fuse_requires_capability`). |
 | `allowShell` | Required for `shell:*` permissions; otherwise dropped during resolution. |
 | `allowEval` | Gates the dev-client script injection (see [window-and-platform.md](window-and-platform.md)); declared, broader enforcement reserved. |
 | `debugInspector` | **Rejected in any release mode** at validate time (`inspector_in_release`); allowed only in Debug. |
