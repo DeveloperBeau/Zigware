@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     emit_eff_mod.addAnonymousImport("zigware_manifest_zon", .{ .root_source_file = b.path("zigware.zon") });
-    emit_eff_mod.addImport("diag", diag_mod);
+    emit_eff_mod.addImport("diagnostics", diag_mod);
     const emit_eff_exe = b.addExecutable(.{ .name = "emit_effective_manifest", .root_module = emit_eff_mod });
     // REQUIRED: dep.artifact(name) resolves only INSTALLED artifacts.
     b.installArtifact(emit_eff_exe);
@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
     // Expose D's parser+type to the CLI leaves under the name `zigware_manifest`.
     cli_mod.addImport("zigware_manifest", manifest_mod);
     // dev.zig/build.zig route their compiler-error stderr passthroughs through diag.
-    cli_mod.addImport("diag", diag_mod);
+    cli_mod.addImport("diagnostics", diag_mod);
 
     // The packaging module owns the canonical Artifacts/Arch handoff types and the
     // package() pipeline the build verb hands off to. It is its own module so the
@@ -201,7 +201,7 @@ pub fn build(b: *std.Build) void {
             });
             m.addImport("zigware_manifest", mm);
             // dev.zig routes compiler-error stderr through diag; csp.zig leaves it unused (harmless).
-            m.addImport("diag", dm);
+            m.addImport("diagnostics", dm);
             const tt = bb.addTest(.{ .root_module = m });
             const run = bb.addRunArtifact(tt);
             ts.dependOn(&run.step);
@@ -224,7 +224,7 @@ pub fn build(b: *std.Build) void {
             m.addImport("zigware_manifest", mm);
             m.addImport("package", pm);
             // build.zig routes compiler-error stderr through diag.
-            m.addImport("diag", dm);
+            m.addImport("diagnostics", dm);
             const tt = bb.addTest(.{ .root_module = m });
             const run = bb.addRunArtifact(tt);
             ts.dependOn(&run.step);
@@ -247,7 +247,7 @@ pub fn build(b: *std.Build) void {
             wireTemplateEmbeds(bb, m, files, idx);
             m.addImport("zigware_manifest", mm); // init.zig's tests parse the scaffolded zigware.zon via D's reader
             m.addImport("package", pm); // main.zig's build verb invokes package(); init ignores the unused import
-            m.addImport("diag", dm); // main.zig pulls in dev/build, which route stderr through diag
+            m.addImport("diagnostics", dm); // main.zig pulls in dev/build, which route stderr through diagnostics
             const tt = bb.addTest(.{ .root_module = m });
             const run = bb.addRunArtifact(tt);
             ts.dependOn(&run.step);
@@ -335,13 +335,13 @@ pub fn build(b: *std.Build) void {
     {
         const dm = b.createModule(.{ .root_source_file = b.path("src/cli/dev.zig"), .target = target, .optimize = optimize });
         dm.addImport("zigware_manifest", manifest_mod);
-        dm.addImport("diag", diag_mod);
+        dm.addImport("diagnostics", diag_mod);
         test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dm })).step);
 
         const bm = b.createModule(.{ .root_source_file = b.path("src/cli/build.zig"), .target = target, .optimize = optimize });
         bm.addImport("zigware_manifest", manifest_mod);
         bm.addImport("package", package_mod);
-        bm.addImport("diag", diag_mod);
+        bm.addImport("diagnostics", diag_mod);
         test_cli_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = bm })).step);
     }
 

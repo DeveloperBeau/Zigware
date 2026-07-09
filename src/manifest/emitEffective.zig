@@ -8,7 +8,7 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 const types = @import("types.zig");
-const diag = @import("diag");
+const diag = @import("diagnostics");
 const caps_loader = @import("capabilities.zig");
 
 const log = diag.scoped("manifest");

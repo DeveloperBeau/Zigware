@@ -5,7 +5,7 @@ const csp = @import("csp.zig");
 const assets_embed = @import("assetsEmbed.zig");
 const Manifest = @import("zigware_manifest").Manifest;
 const package = @import("package");
-const diag = @import("diag");
+const diag = @import("diagnostics");
 
 const log = diag.scoped("build");
 
