@@ -1,4 +1,4 @@
-# Bridge + command surface (`bridge.zig`, `command_ctx.zig`, `protocol.zig`, `registry.zig`, `allowlist.zig`, `emit_dts.zig`)
+# Bridge + command surface (`bridge.zig`, `commandContext.zig`, `protocol.zig`, `registry.zig`, `allowlist.zig`, `emit_dts.zig`)
 
 ## Purpose
 
@@ -13,7 +13,7 @@ result/stream/binary back to the page.
 | File | Responsibility |
 |------|----------------|
 | `bridge.zig` | `Bridge(B)`: message routing, the security gates, concurrency budget (G5), per-id binary ring buffer, the single `evalJS` emission choke point, window-manager fan-out. |
-| `command_ctx.zig` | The command-author API: `Ctx(State)`, `Result(T)`, `Async(T)`, `Channel(T)`, `CommandError`, `Bytes`; per-call arena + cancel token + emit sink. |
+| `commandContext.zig` | The command-author API: `Ctx(State)`, `Result(T)`, `Async(T)`, `Channel(T)`, `CommandError`, `Bytes`; per-call arena + cancel token + emit sink. |
 | `protocol.zig` | Wire protocol v1: decode/encode, `MAX_MESSAGE_LEN` (64 KiB), `MAX_JSON_DEPTH` (32), reserved names/routes, the `jsString` injection boundary. |
 | `registry.zig` | `Commands(B, State, UserCommands)`: comptime command validation, dispatch, sync/async branching, arg decode + result encode. |
 | `allowlist.zig` | The fail-closed command allowlist (G3), comptime-built. |

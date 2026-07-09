@@ -4,7 +4,7 @@
 //! production one, without routing through the G1/G2/G4 gate (irrelevant here).
 
 const std = @import("std");
-const ctxmod = @import("command_ctx.zig");
+const ctxmod = @import("commandContext.zig");
 const compute = @import("compute.zig");
 const protocol = @import("protocol.zig");
 const Bridge = @import("bridge.zig").Bridge;
@@ -13,7 +13,7 @@ const NullBackend = @import("platform/null.zig").NullBackend;
 const security = struct {
     const gates = @import("security/gates.zig");
 };
-const fixtures = @import("security_test_fixtures.zig");
+const fixtures = @import("securityTestFixtures.zig");
 
 const dummy_bases = security.gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
@@ -366,7 +366,7 @@ test "compute.cancel on an unknown id is an idempotent no-op success" {
 // bin_seq POINTER, not its value.
 
 /// A minimal EmitSink whose evalJS/parkBinary append into one growable log, so
-/// the test can inspect the exact frames Sink emits. Mirrors command_ctx.zig's
+/// the test can inspect the exact frames Sink emits. Mirrors commandContext.zig's
 /// in-file Holder.
 const SinkHolder = struct {
     sink: ctxmod.EmitSink,

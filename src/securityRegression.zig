@@ -19,7 +19,7 @@ const Bridge = @import("bridge.zig").Bridge;
 const builtin = @import("commands/builtin.zig");
 const protocol = @import("protocol.zig");
 const assets = @import("assets.zig");
-const fixtures = @import("security_test_fixtures.zig");
+const fixtures = @import("securityTestFixtures.zig");
 const security_gates = @import("security/gates.zig");
 const manifest_types = @import("manifest/types.zig");
 

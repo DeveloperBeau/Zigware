@@ -1,5 +1,5 @@
 const std = @import("std");
-const grant = @import("../grant_table.zig");
+const grant = @import("../grantTable.zig");
 const ScopeSet = grant.ScopeSet;
 
 /// Shell scope is strictest: every candidate argv token must appear as an EXACT

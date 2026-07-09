@@ -2,7 +2,7 @@ const std = @import("std");
 const proc = @import("proc.zig");
 const watch = @import("watch.zig");
 const Manifest = @import("zigware_manifest").Manifest;
-const diag = @import("diag");
+const diag = @import("diagnostics");
 
 const log = diag.scoped("dev");
 

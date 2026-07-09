@@ -7,7 +7,7 @@ comptime {
     _ = @import("security/defaults.zig");
     _ = @import("security/scope/glob.zig");
     _ = @import("security/scope/path.zig");
-    _ = @import("security/grant_table.zig");
+    _ = @import("security/grantTable.zig");
     _ = @import("security/scope/host.zig");
     _ = @import("security/scope/argv.zig");
     _ = @import("security/scope/label.zig");
@@ -21,7 +21,7 @@ test {
     _ = @import("security/defaults.zig");
     _ = @import("security/scope/glob.zig");
     _ = @import("security/scope/path.zig");
-    _ = @import("security/grant_table.zig");
+    _ = @import("security/grantTable.zig");
     _ = @import("security/scope/host.zig");
     _ = @import("security/scope/argv.zig");
     _ = @import("security/scope/label.zig");
@@ -31,7 +31,7 @@ test {
 
 const std = @import("std");
 const cap = @import("security/capability.zig");
-const grant = @import("security/grant_table.zig");
+const grant = @import("security/grantTable.zig");
 const gates = @import("security/gates.zig");
 const defaults = @import("security/defaults.zig");
 

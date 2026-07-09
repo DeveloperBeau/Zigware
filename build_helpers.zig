@@ -1,5 +1,5 @@
 const std = @import("std");
-const assets_embed = @import("src/cli/assets_embed.zig");
+const assets_embed = @import("src/cli/assetsEmbed.zig");
 
 /// The consumer's own-origin frontend assets. The framework runtime shims
 /// (zigware.js, window.js) are pulled from the dependency, not from here.
@@ -265,7 +265,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
 /// colocation, exactly as the release-staged table does). Returns the generated
 /// table's LazyPath, or null when there is no frontend/ dir (missing dir is the
 /// graceful "use the framework default table" path, never a hard error). Reuses
-/// src/cli/assets_embed.zig, which enforces the reject-outside-dist containment.
+/// src/cli/assetsEmbed.zig, which enforces the reject-outside-dist containment.
 fn stageDevAssets(b: *std.Build, dep: *std.Build.Dependency) ?std.Build.LazyPath {
     const io = b.graph.io;
     const gpa = b.allocator;

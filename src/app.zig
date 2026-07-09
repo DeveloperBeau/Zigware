@@ -15,7 +15,7 @@ comptime {
 }
 
 const security_cap = @import("security/capability.zig");
-const security_grant = @import("security/grant_table.zig");
+const security_grant = @import("security/grantTable.zig");
 const security_gates = @import("security/gates.zig");
 const security_navigation = @import("security/navigation.zig");
 const manifest_types = @import("manifest/types.zig");
@@ -706,7 +706,7 @@ pub fn App(comptime B: type) type {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 const NullBackend = @import("platform/null.zig").NullBackend;
-const fixtures = @import("security_test_fixtures.zig");
+const fixtures = @import("securityTestFixtures.zig");
 
 const dummy_bases = security_gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
@@ -779,7 +779,7 @@ fn buildAppGrantsMulti(alloc: std.mem.Allocator) !*fixtures.GrantTable {
     return gt;
 }
 
-const ctxmod = @import("command_ctx.zig");
+const ctxmod = @import("commandContext.zig");
 
 /// A stand-in app command namespace that fills the role a real app's `pub const Commands`
 /// (in main.zig) plays. Proves App registers and authorizes commands the

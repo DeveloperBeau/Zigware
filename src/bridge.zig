@@ -3,11 +3,11 @@ const protocol = @import("protocol.zig");
 const Allowlist = @import("allowlist.zig").Allowlist;
 const jobs = @import("jobs.zig");
 const backend_mod = @import("platform/backend.zig");
-const ctxmod = @import("command_ctx.zig");
+const ctxmod = @import("commandContext.zig");
 const registry = @import("registry.zig");
 const security = struct {
     const gates = @import("security/gates.zig");
-    const grant = @import("security/grant_table.zig");
+    const grant = @import("security/grantTable.zig");
 };
 const WindowManager = @import("window/manager.zig").WindowManager;
 
@@ -670,7 +670,7 @@ pub fn Bridge(comptime B: type) type {
 
 const NullBackend = @import("platform/null.zig").NullBackend;
 const builtin = @import("commands/builtin.zig");
-const fixtures = @import("security_test_fixtures.zig");
+const fixtures = @import("securityTestFixtures.zig");
 
 const dummy_bases = security.gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig = "/tmp" };
 
@@ -1211,7 +1211,7 @@ test "fuzz: handleMessage tolerates arbitrary window_id and origin (manual drive
 
 // ─── Live scope (Task 5): the bridge derives ScopeInput.path before G4 ─────────
 
-const ctxlive = @import("command_ctx.zig");
+const ctxlive = @import("commandContext.zig");
 const cap_live = @import("security/capability.zig");
 const defaults_live = @import("security/defaults.zig");
 

@@ -2,10 +2,10 @@ const std = @import("std");
 const proc = @import("proc.zig");
 const dev = @import("dev.zig");
 const csp = @import("csp.zig");
-const assets_embed = @import("assets_embed.zig");
+const assets_embed = @import("assetsEmbed.zig");
 const Manifest = @import("zigware_manifest").Manifest;
 const package = @import("package");
-const diag = @import("diag");
+const diag = @import("diagnostics");
 
 const log = diag.scoped("build");
 

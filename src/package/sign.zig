@@ -1,5 +1,5 @@
 const std = @import("std");
-const config = @import("config.zig");
+const config = @import("configuration.zig");
 const diagnostics = @import("diagnostics.zig");
 const runner_mod = @import("runner.zig");
 

@@ -3,7 +3,7 @@
 //! same source bytes.
 //!
 //! This module is wired in build.zig with its OWN anonymous import for
-//! `zigware_manifest_zon`, pointing at `tests/manifest/embed_fixture/zigware.zon`.
+//! `zigware_manifest_zon`, pointing at `tests/manifest/embedFixture/zigware.zon`.
 //! The production wire (the merged effective manifest) is NOT used here; the
 //! embed-agreement contract is between the fixture file and parseAtBuild over
 //! the same fixture directory, so the comparison stays well-defined.
@@ -16,7 +16,7 @@ test "embedded() equals parseAtBuild over the same source fixture" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var fixture_dir = try std.Io.Dir.cwd().openDir(io, "tests/manifest/embed_fixture", .{});
+    var fixture_dir = try std.Io.Dir.cwd().openDir(io, "tests/manifest/embedFixture", .{});
     defer fixture_dir.close(io);
 
     var diag: types.Diagnostics = .{};

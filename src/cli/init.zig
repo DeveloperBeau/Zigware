@@ -290,7 +290,7 @@ test "init scaffolds a normal Zig project (no vendored framework files), manifes
         }
 
         // Framework files must NOT be vendored into the scaffold (they come from the package).
-        for ([_][]const u8{ "command_ctx.zig", "protocol.zig", "bindgen.zig", "emit_dts.zig" }) |p| {
+        for ([_][]const u8{ "commandContext.zig", "protocol.zig", "bindgen.zig", "emit_dts.zig" }) |p| {
             try testing.expectError(error.FileNotFound, tmp.dir.access(io, p, .{}));
         }
 

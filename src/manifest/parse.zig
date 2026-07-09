@@ -569,8 +569,8 @@ test "parseAtBuildFromPaths applies the selected override via merge" {
     const io = std.testing.io;
 
     const overrides = [_][]const u8{
-        "tests/manifest/parseatbuild_override/zigware.linux.zon",
-        "tests/manifest/parseatbuild_override/zigware.macos.zon",
+        "tests/manifest/parseAtBuildOverride/zigware.linux.zon",
+        "tests/manifest/parseAtBuildOverride/zigware.macos.zon",
     };
 
     var diag: Diagnostics = .{};
@@ -579,7 +579,7 @@ test "parseAtBuildFromPaths applies the selected override via merge" {
     const m = try parseAtBuildFromPaths(
         gpa,
         io,
-        "tests/manifest/parseatbuild_override/zigware.zon",
+        "tests/manifest/parseAtBuildOverride/zigware.zon",
         &overrides,
         &.{},
         .linux,
@@ -600,7 +600,7 @@ test "parseAtBuild selects the override matching target_os" {
 
     var fixture = try std.Io.Dir.cwd().openDir(
         io,
-        "tests/manifest/parseatbuild_override",
+        "tests/manifest/parseAtBuildOverride",
         .{},
     );
     defer fixture.close(io);
@@ -624,7 +624,7 @@ test "parseAtBuild emits override_for_target_dropped per recognized override whe
 
     var fixture = try std.Io.Dir.cwd().openDir(
         io,
-        "tests/manifest/parseatbuild_override",
+        "tests/manifest/parseAtBuildOverride",
         .{},
     );
     defer fixture.close(io);
@@ -653,7 +653,7 @@ test "parseAtBuild silently ignores unrelated files in the dir" {
 
     var fixture = try std.Io.Dir.cwd().openDir(
         io,
-        "tests/manifest/parseatbuild_override",
+        "tests/manifest/parseAtBuildOverride",
         .{},
     );
     defer fixture.close(io);

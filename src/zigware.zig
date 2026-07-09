@@ -11,7 +11,7 @@
 //! vendor a template copy (that concern belongs to the scaffold path, not the
 //! in-repo example).
 
-const command_ctx = @import("command_ctx.zig");
+const command_ctx = @import("commandContext.zig");
 const compute_mod = @import("compute.zig");
 const builtin = @import("builtin");
 
@@ -66,7 +66,7 @@ pub const Worker = compute_mod.Worker;
 // ── Security catalog + grant table (for headless integration harnesses) ─────
 pub const capability = @import("security/capability.zig");
 pub const gates = @import("security/gates.zig");
-pub const GrantTable = @import("security/grant_table.zig").GrantTable;
+pub const GrantTable = @import("security/grantTable.zig").GrantTable;
 pub const defaults = @import("security/defaults.zig");
 
 // ── Manifest loader (D) ─────────────────────────────────────────────────────

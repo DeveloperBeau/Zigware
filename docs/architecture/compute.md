@@ -12,7 +12,7 @@ hundreds of MB never blocks the UI and can be cancelled mid-flight.
 |------|----------------|
 | `compute.zig` | Async author types: `CancelToken`, `Sink(P)`, `ComputeError`, `Worker(A,P)`. |
 | `jobs.zig` | The thread `Pool`: workers, a mutex-guarded FIFO queue, inflight count, atomic `cancel_all` shutdown flag. |
-| `command_ctx.zig` | Per-call `Ctx`/`Channel`/emit sink the worker streams through (see [bridge-and-commands.md](bridge-and-commands.md)). |
+| `commandContext.zig` | Per-call `Ctx`/`Channel`/emit sink the worker streams through (see [bridge-and-commands.md](bridge-and-commands.md)). |
 | `bridge.zig` | Owns the pool; arms/cancels/releases the per-id cancel flag in its `inflight` map. |
 | `registry.zig` | Detects `Async(T)` returns, builds the job thunk, arms the cancel token before submit. |
 | `commands/compute.zig` | The `compute.cancel` builtin: looks up an inflight id and sets its flag. |

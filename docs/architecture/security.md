@@ -12,7 +12,7 @@ defaults to deny.
 | File | Responsibility |
 |------|----------------|
 | `security/capability.zig` | `Capability`/`Permission`/`PermissionSet` types; comptime catalog validation (cycle/member checks). |
-| `security/grant_table.zig` | Compile capabilities + fuses into a `GrantTable`: per-(window,command) grants, scope merge, fuse-driven force-deny. |
+| `security/grantTable.zig` | Compile capabilities + fuses into a `GrantTable`: per-(window,command) grants, scope merge, fuse-driven force-deny. |
 | `security/gates.zig` | The gates G1 (origin), G2 (command), G4 (scope) and `evaluate()` orchestration; fuzz-tested origin matching. |
 | `security/defaults.zig` | Built-in permissions (`fs:read/write`, `shell:execute`, `http:request`, `core:window:*`, `core:compute:cancel`) and the safe `core:default` set. |
 | `security/scope/{glob,path,host,argv,label}.zig` | G4 matchers; glob (`**`/`*`/`?`), path (token-expand + realpath + glob), host+port, exact argv, window-label glob. |

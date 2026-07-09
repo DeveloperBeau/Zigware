@@ -1,5 +1,5 @@
 const std = @import("std");
-const ctxmod = @import("command_ctx.zig");
+const ctxmod = @import("commandContext.zig");
 const protocol = @import("protocol.zig");
 
 /// A per-invocation cancel observer. The worker cancels when EITHER its own
@@ -52,7 +52,7 @@ pub const ComputeError = error{ Cancelled, QueueFull, OutOfMemory, WorkerFailed 
 /// must be named separately and never conflated in this type parameter.
 ///
 /// `Sink` does NOT store `*Ctx(State)`: `Ctx(State)` is generic over the app's
-/// `State` (command_ctx.zig), so framework code cannot name `*Ctx(AppState)`.
+/// `State` (commandContext.zig), so framework code cannot name `*Ctx(AppState)`.
 /// Instead it stores exactly the State-independent fields its methods use.
 /// `cancelled()` reads only `cancel`; `channel`/`binaryChunk` read only
 /// `emit`/`id`/`arena`/`bin_seq`, never `state`. `bin_seq` is a POINTER to the
