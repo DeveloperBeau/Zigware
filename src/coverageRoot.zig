@@ -3,7 +3,7 @@
 //! kcov instruments the single `logic-tests` binary. app.zig transitively
 //! reaches bridge, the null backend, assets, the backend contract, protocol,
 //! allowlist, jobs, and commands, so rooting here covers all of those. The two
-//! pure macOS helpers (origin.zig, scheme_logic.zig) are only imported by the
+//! pure macOS helpers (origin.zig, schemeLogic.zig) are only imported by the
 //! objc backend, which app.zig never pulls in, so they are referenced here
 //! explicitly: that runs their tests in this binary and lets kcov report their
 //! coverage. They carry no Cocoa/WebKit dependency, so no GUI is needed.
@@ -13,15 +13,15 @@
 //! tests execute in this binary and kcov reports their coverage.
 test {
     _ = @import("app.zig");
-    _ = @import("sec_regression.zig");
+    _ = @import("securityRegression.zig");
     _ = @import("platform/macos/origin.zig");
-    _ = @import("platform/macos/scheme_logic.zig");
+    _ = @import("platform/macos/schemeLogic.zig");
     _ = @import("registry.zig");
-    _ = @import("command_ctx.zig");
+    _ = @import("commandContext.zig");
     _ = @import("commands/builtin.zig");
     _ = @import("security/capability.zig");
     _ = @import("security/defaults.zig");
-    _ = @import("security/grant_table.zig");
+    _ = @import("security/grantTable.zig");
     _ = @import("security/gates.zig");
     _ = @import("security/navigation.zig");
     _ = @import("security/scope/glob.zig");
@@ -33,6 +33,6 @@ test {
     _ = @import("manifest/parse.zig");
     _ = @import("manifest/validate.zig");
     _ = @import("manifest/merge.zig");
-    _ = @import("manifest/schema_gen.zig");
+    _ = @import("manifest/schemaGeneration.zig");
     _ = @import("manifest/fuses.zig");
 }

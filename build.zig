@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     // rooted in other module roots (cli/*, manifest/*) can import it without a
     // relative path that would escape their own root.
     const diag_mod = b.createModule(.{
-        .root_source_file = b.path("src/diag.zig"),
+        .root_source_file = b.path("src/diagnostics.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -48,13 +48,13 @@ pub fn build(b: *std.Build) void {
 
     // Cocoa-free codegen module a consumer's dts/test builds root against.
     _ = b.addModule("zigware-headless", .{
-        .root_source_file = b.path("src/zigware_codegen.zig"),
+        .root_source_file = b.path("src/zigwareCodegen.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // The merge+validate codegen exe. addApp runs it per consumer over the
-    // consumer's zigware.zon. Rooted at emit_effective.zig; parse.zig/validate.zig/
+    // consumer's zigware.zon. Rooted at emitEffective.zig; parse.zig/validate.zig/
     // merge.zig/types.zig join by file-path import. parse.zig declares embedded()
     // with @import("zigware_manifest_zon"), so the anonymous import must be wired
     // even though the codegen never CALLS embedded().
@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     // an arm64 host): the tool would be compiled for x86_64 and then the build
     // system would fail to exec it. b.graph.host is always the native host target.
     const emit_eff_mod = b.createModule(.{
-        .root_source_file = b.path("src/emit_effective_main.zig"),
+        .root_source_file = b.path("src/emitEffectiveMain.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
@@ -257,11 +257,11 @@ pub fn build(b: *std.Build) void {
 
     addLogicTest(b, test_step, target, optimize, "src/protocol.zig");
     addLogicTest(b, test_step, target, optimize, "src/allowlist.zig");
-    addLogicTest(b, test_step, target, optimize, "src/command_ctx.zig");
+    addLogicTest(b, test_step, target, optimize, "src/commandContext.zig");
     // sha256.zig/demo.zig import ../compute.zig; rooting their tests at the
     // src/-level aggregator keeps that import inside the module root (a standalone
     // src/commands/*.zig root dir would make ../compute.zig escape).
-    addLogicTest(b, test_step, target, optimize, "src/sha256_tests.zig");
+    addLogicTest(b, test_step, target, optimize, "src/sha256Tests.zig");
     addLogicTest(b, test_step, target, optimize, "src/jobs.zig");
     addLogicTest(b, test_step, target, optimize, "src/registry.zig");
     // Isolated registry-only step: the aggregate `test` step hangs on the App
@@ -273,19 +273,19 @@ pub fn build(b: *std.Build) void {
     }
     addLogicTest(b, test_step, target, optimize, "src/platform/backend.zig");
     addLogicTest(b, test_step, target, optimize, "src/platform/null.zig");
-    addLogicTest(b, test_step, target, optimize, "src/platform/macos/scheme_logic.zig");
+    addLogicTest(b, test_step, target, optimize, "src/platform/macos/schemeLogic.zig");
     addLogicTest(b, test_step, target, optimize, "src/manifest/types.zig");
-    addLogicTest(b, test_step, target, optimize, "src/security_tests.zig");
-    // diag.zig is std-only; its tests run in BOTH modes (the build-gating path
-    // diverges only under -Drelease=true).
-    addLogicTest(b, test_step, target, optimize, "src/diag_tests.zig");
-    addLogicTest(b, test_step, target, optimize, "src/zigware_codegen.zig");
+    addLogicTest(b, test_step, target, optimize, "src/securityTests.zig");
+    // diagnostics.zig is std-only; its tests run in BOTH modes (the build-gating
+    // path diverges only under -Drelease=true).
+    addLogicTest(b, test_step, target, optimize, "src/diagnosticsTests.zig");
+    addLogicTest(b, test_step, target, optimize, "src/zigwareCodegen.zig");
 
     // Isolated headless-barrel step: confirms the Cocoa-free codegen surface
     // (Sink export, emitter) compiles and tests without the App suites.
     const test_codegen_step = b.step("test-codegen", "Run only the headless codegen barrel tests");
     {
-        const m = b.createModule(.{ .root_source_file = b.path("src/zigware_codegen.zig"), .target = target, .optimize = optimize });
+        const m = b.createModule(.{ .root_source_file = b.path("src/zigwareCodegen.zig"), .target = target, .optimize = optimize });
         test_codegen_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
 
@@ -293,13 +293,13 @@ pub fn build(b: *std.Build) void {
     addLogicTest(b, test_step, target, optimize, "src/cli/proc.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/watch.zig");
     addLogicTest(b, test_step, target, optimize, "src/cli/devserver.zig");
-    addLogicTest(b, test_step, target, optimize, "src/cli/assets_embed.zig");
+    addLogicTest(b, test_step, target, optimize, "src/cli/assetsEmbed.zig");
     _ = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/csp.zig");
     _ = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/cli/dev.zig");
     const build_test_run = addLogicTestWithManifestAndPackage(b, test_step, target, optimize, manifest_mod, package_mod, diag_mod, "src/cli/build.zig");
     const test_build_step = b.step("test-build", "Run only the CLI build-orchestrator tests");
     test_build_step.dependOn(&build_test_run.step);
-    const package_test_run = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/package_tests.zig");
+    const package_test_run = addLogicTestWithManifest(b, test_step, target, optimize, manifest_mod, diag_mod, "src/packageTests.zig");
     // Isolated packaging-module step: the aggregate `test` step hangs on the App
     // suites, so the bundle/lipo/sign/notarize/dmg logic tests get their own binary.
     const test_package_step = b.step("test-package", "Run only the packaging module tests");
@@ -322,7 +322,7 @@ pub fn build(b: *std.Build) void {
     test_main_step.dependOn(&main_test_run.step);
 
     // Isolated manifest-only test step: runs the manifest module tests
-    // (parse/validate/merge/capabilities/schema_gen/fuses via src/manifest_tests.zig,
+    // (parse/validate/merge/capabilities/schemaGeneration/fuses via src/manifestTests.zig,
     // the embed-agreement test, the fuses comptime-lock test) without the
     // App-based GUI suites that hang on this host. Task 3 appends the grant
     // enforcement test to this step.
@@ -374,12 +374,12 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedTest(b, test_step, target, optimize, "src/assets.zig");
-    // src/bridge.zig and src/window_tests.zig build a WindowManager (E), and
+    // src/bridge.zig and src/windowTests.zig build a WindowManager (E), and
     // manager.zig now imports manifest/fuses.zig (the allow_eval gate), which
     // resolves @import("zigware_manifest_zon"). They therefore need wireManifest
     // in addition to the frontend embeds, so they are registered via
     // addEmbedManifestTest after effective_zon is defined (see below).
-    // src/app.zig and src/sec_regression.zig both transitively compile
+    // src/app.zig and src/securityRegression.zig both transitively compile
     // manifest/parse.zig (app.zig now calls parse.embedded()), so they need
     // wireManifest in addition to the frontend embeds; addEmbedTest exposes no
     // module handle, so they are registered explicitly after effective_zon is
@@ -391,7 +391,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const fixture_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/emit_escapes.zig"),
+        .root_source_file = b.path("src/tools/emitEscapes.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -483,8 +483,8 @@ pub fn build(b: *std.Build) void {
     wireManifest(exe_mod, effective_zon);
     wireGrants(exe_mod, grants_zon);
 
-    // src/app.zig and src/sec_regression.zig both need the frontend embeds AND
-    // wireManifest (app.zig calls parse.embedded(); sec_regression imports App).
+    // src/app.zig and src/securityRegression.zig both need the frontend embeds AND
+    // wireManifest (app.zig calls parse.embedded(); securityRegression imports App).
     // addEmbedTest exposes no module handle for wireManifest, so they are
     // registered explicitly here, after effective_zon is defined.
     const addEmbedManifestTest = struct {
@@ -505,27 +505,27 @@ pub fn build(b: *std.Build) void {
         }
     }.add;
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/app.zig");
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/sec_regression.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/securityRegression.zig");
     // Targeted runners for the App/security suites (the full `test` step can hang
     // on unrelated long-running suites; these isolate the wiring under change).
     const test_app_step = b.step("test-app", "Run only the src/app.zig tests");
     addEmbedManifestTest(b, test_app_step, target, optimize, effective_zon, grants_zon, "src/app.zig");
-    const test_sec_step = b.step("test-sec", "Run only the src/sec_regression.zig tests");
-    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, grants_zon, "src/sec_regression.zig");
+    const test_sec_step = b.step("test-sec", "Run only the src/securityRegression.zig tests");
+    addEmbedManifestTest(b, test_sec_step, target, optimize, effective_zon, grants_zon, "src/securityRegression.zig");
 
-    // Isolated security-suite step: src/security_tests.zig builds a standalone
+    // Isolated security-suite step: src/securityTests.zig builds a standalone
     // logic-test module (no embedded manifest, no Cocoa), so it runs without
     // the App suites that hang on this host.
-    const test_security_step = b.step("test-security", "Run only the src/security_tests.zig tests");
-    addLogicTest(b, test_security_step, target, optimize, "src/security_tests.zig");
+    const test_security_step = b.step("test-security", "Run only the src/securityTests.zig tests");
+    addLogicTest(b, test_security_step, target, optimize, "src/securityTests.zig");
 
-    // bridge.zig and window_tests.zig compile manager.zig, which imports
+    // bridge.zig and windowTests.zig compile manager.zig, which imports
     // manifest/fuses.zig and so needs the effective manifest wired too.
     addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/bridge.zig");
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/window_tests.zig");
-    // compute_tests.zig drives the real Bridge async offload path, so it pulls in
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/windowTests.zig");
+    // computeTests.zig drives the real Bridge async offload path, so it pulls in
     // manager.zig (manifest fuses) and the frontend embeds like bridge.zig does.
-    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/compute_tests.zig");
+    addEmbedManifestTest(b, test_step, target, optimize, effective_zon, grants_zon, "src/computeTests.zig");
 
     // Manifest test root: src/manifest/*.zig files import each other and cannot
     // be rooted as standalone logic-test modules. The manifest test root mounts
@@ -533,7 +533,7 @@ pub fn build(b: *std.Build) void {
     // embedded() forces @import("zigware_manifest_zon") to resolve at compile
     // time of parse.zig; the module needs the anonymous import wired.
     const mt_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest_tests.zig"),
+        .root_source_file = b.path("src/manifestTests.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -543,12 +543,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mt_run.step);
     test_manifest_step.dependOn(&mt_run.step);
 
-    // Build-time grant-loading enforcement test (src/grant_enforcement_test.zig).
+    // Build-time grant-loading enforcement test (src/grantEnforcementTest.zig).
     // Rooted at src/ so manifest/* and security/* are reachable by path in one
     // module; needs the zigware_manifest_zon wire because parse.zig's embedded()
     // compiles even though this test never calls it. No frontend embeds, no Cocoa.
     const grant_enf_mod = b.createModule(.{
-        .root_source_file = b.path("src/grant_enforcement_test.zig"),
+        .root_source_file = b.path("src/grantEnforcementTest.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -560,18 +560,18 @@ pub fn build(b: *std.Build) void {
 
     // Embed-agreement test: proves embedded() and parseAtBuild over the SAME
     // source bytes produce identical Manifest values. The fixture lives at
-    // tests/manifest/embed_fixture/zigware.zon and is wired here as this
+    // tests/manifest/embedFixture/zigware.zon and is wired here as this
     // module's zigware_manifest_zon import so embedded() resolves to the
     // fixture, not the production effective manifest. parseAtBuild in turn
     // reads the fixture dir at test time. Identical bytes on both sides keeps
     // the comparison well-defined.
     const embed_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest/embed_test.zig"),
+        .root_source_file = b.path("src/manifest/embedTest.zig"),
         .target = target,
         .optimize = optimize,
     });
     embed_test_mod.addAnonymousImport("zigware_manifest_zon", .{
-        .root_source_file = b.path("tests/manifest/embed_fixture/zigware.zon"),
+        .root_source_file = b.path("tests/manifest/embedFixture/zigware.zon"),
     });
     const embed_tests = b.addTest(.{ .root_module = embed_test_mod });
     const embed_run = b.addRunArtifact(embed_tests);
@@ -580,7 +580,7 @@ pub fn build(b: *std.Build) void {
 
     // Fuse-constants module: thin re-export of the embedded fuses so the
     // bridge/command layer can prune disabled branches at comptime. Tested
-    // both through the manifest test root (via src/manifest_tests.zig) and
+    // both through the manifest test root (via src/manifestTests.zig) and
     // through its own standalone test binary so the comptime-lock fires
     // even if the test root's import is removed in a refactor.
     const fuses_mod = b.createModule(.{
@@ -597,10 +597,10 @@ pub fn build(b: *std.Build) void {
     // JSON Schema emitter: produces zigware-manifest.schema.json at the repo
     // root for editor autocomplete. Reflection-driven; a new Manifest field
     // shows up in the schema on the next `zig build manifest-schema`.
-    // schema_gen.zig reaches types via `@import("types.zig")` (file path), so
+    // schemaGeneration.zig reaches types via `@import("types.zig")` (file path), so
     // no module-level types import is needed here.
     const schema_mod = b.createModule(.{
-        .root_source_file = b.path("src/manifest/schema_gen.zig"),
+        .root_source_file = b.path("src/manifest/schemaGeneration.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -623,13 +623,13 @@ pub fn build(b: *std.Build) void {
     // coverage-exe: the full headless logic surface. Rooted at app.zig, which
     // transitively imports bridge, null backend, assets, backend contract,
     // protocol, allowlist, jobs, and commands. The pure macOS helpers
-    // (origin.zig, scheme_logic.zig) are pulled in by reference so their tests
+    // (origin.zig, schemeLogic.zig) are pulled in by reference so their tests
     // run in this binary too and kcov reports their coverage; they are reached
     // only through the objc backend, which app.zig does not import, so without
     // the explicit reference below they would never appear in the report.
     // No Cocoa/WebKit needed.
     const cov_mod = b.createModule(.{
-        .root_source_file = b.path("src/coverage_root.zig"),
+        .root_source_file = b.path("src/coverageRoot.zig"),
         .target = target,
         .optimize = optimize,
     });

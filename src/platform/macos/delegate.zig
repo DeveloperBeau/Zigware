@@ -1,5 +1,5 @@
 const objc = @import("objc");
-const assoc = @import("assoc.zig");
+const assoc = @import("association.zig");
 const seam = @import("../backend.zig");
 const mac = @import("backend.zig");
 

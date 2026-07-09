@@ -233,7 +233,7 @@ fn writeJson(w: *std.Io.Writer, rec: Record) !void {
 }
 
 // ─── Test-only render helpers ────────────────────────────────────────────────
-// Exposed so src/diag_tests.zig (a separate module root) can render a Record to
+// Exposed so src/diagnosticsTests.zig (a separate module root) can render a Record to
 // a fixed writer and inspect the bytes without going through a captured Io sink.
 
 pub fn writeJsonForTest(w: *std.Io.Writer, rec: Record) !void {

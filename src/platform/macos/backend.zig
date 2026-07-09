@@ -1,7 +1,7 @@
 const std = @import("std");
 const objc = @import("objc");
 const protocol = @import("../../protocol.zig"); // for MAX_MESSAGE_LEN at the inbound seam
-const assoc = @import("assoc.zig");
+const assoc = @import("association.zig");
 const seam = @import("../backend.zig");
 const window_mod = @import("window.zig");
 const webview_mod = @import("webview.zig");

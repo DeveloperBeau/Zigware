@@ -1,5 +1,5 @@
 const std = @import("std");
-const ctxmod = @import("../command_ctx.zig");
+const ctxmod = @import("../commandContext.zig");
 const Bridge = @import("../bridge.zig").Bridge;
 const builtin = @import("builtin.zig");
 

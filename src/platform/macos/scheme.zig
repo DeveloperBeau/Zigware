@@ -1,7 +1,7 @@
 const std = @import("std");
 const objc = @import("objc");
-const assoc = @import("assoc.zig");
-const logic = @import("scheme_logic.zig");
+const assoc = @import("association.zig");
+const logic = @import("schemeLogic.zig");
 const seam = @import("../backend.zig");
 const mac = @import("backend.zig");
 

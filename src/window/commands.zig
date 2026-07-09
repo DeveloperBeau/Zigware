@@ -1,5 +1,5 @@
 const std = @import("std");
-const ctxmod = @import("../command_ctx.zig");
+const ctxmod = @import("../commandContext.zig");
 const gates = @import("../security/gates.zig");
 const cap = @import("../security/capability.zig");
 const Bridge = @import("../bridge.zig").Bridge;
@@ -223,7 +223,7 @@ test "parseHostRule: malformed urls error (deny-closed)" {
 const NullBackend = @import("../platform/null.zig").NullBackend;
 const Bridge_ = @import("../bridge.zig").Bridge;
 const WindowManager = @import("manager.zig").WindowManager;
-const grant = @import("../security/grant_table.zig");
+const grant = @import("../security/grantTable.zig");
 const defaults = @import("../security/defaults.zig");
 const manifest = @import("../manifest/types.zig");
 const protocol = @import("../protocol.zig");

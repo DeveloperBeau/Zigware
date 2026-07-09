@@ -52,7 +52,7 @@ provides its own `zigware.zon`, `src/main.zig`, commands, and frontend. The
 | [manifest.md](manifest.md) | Manifest (`src/manifest/`) | `zigware.zon` → validated, comptime-embedded config; build-time codegen + runtime `embedded()`. |
 | [app-and-assets.md](app-and-assets.md) | App shell + assets (`app.zig`, `assets.zig`, `zigware.zig`) | `App(Backend)` lifecycle, `app://` asset serving, the public barrel module. |
 | [window-and-platform.md](window-and-platform.md) | Window + platform/FFI (`src/window/`, `src/platform/`, `objc.zig`) | Native window lifecycle over a compile-checked backend seam; Objective-C FFI. |
-| [bridge-and-commands.md](bridge-and-commands.md) | Bridge + command surface (`bridge.zig`, `command_ctx.zig`, `protocol.zig`, `registry.zig`) | How the frontend invokes typed Zig commands; wire protocol, dispatch, streaming, dts codegen. |
+| [bridge-and-commands.md](bridge-and-commands.md) | Bridge + command surface (`bridge.zig`, `commandContext.zig`, `protocol.zig`, `registry.zig`) | How the frontend invokes typed Zig commands; wire protocol, dispatch, streaming, dts codegen. |
 | [compute.md](compute.md) | Compute/async (`compute.zig`, `jobs.zig`) | Off-main worker pool, cancellation, progress/binary streaming. |
 | [security.md](security.md) | Security (`src/security/`, fuses, CSP) | Least-privilege, fail-closed: capabilities, gates (G1-G6), fuses, strict CSP. |
 | [packaging.md](packaging.md) | Packaging (`src/package/`) | Compiled binary + manifest → signed, notarized `.app`/`.dmg`. |

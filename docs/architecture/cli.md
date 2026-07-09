@@ -19,7 +19,7 @@ child processes (`zig`, `npm`, before-commands) with clean shutdown.
 | `devserver.zig` | `waitForUrl` probe for the dev-server URL (backoff, shutdown-gated, 30s default). |
 | `proc.zig` | Child-process `Spawner` seam: spawn/wait/kill, process groups, env merge, SIGTERM→SIGKILL grace. |
 | `csp.zig` | CSP build: SHA-256 script hashing, deny-scan, fail-closed `<meta>` injection (see [security.md](security.md)). |
-| `assets_embed.zig` | Frontend-dist walk (realpath containment), MIME table, `asset_table.zig` emission. |
+| `assetsEmbed.zig` | Frontend-dist walk (realpath containment), MIME table, `asset_table.zig` emission. |
 | `template/` | The scaffold template set (the generated project's `build.zig`, `build.zig.zon`, `src/main.zig`, frontend, `zigware.zon`). |
 
 ## Seams (dependency injection)

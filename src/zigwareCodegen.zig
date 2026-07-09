@@ -1,13 +1,13 @@
 //! Headless codegen surface for the zigware package.
 //!
 //! This barrel roots the Cocoa-free subset a consumer's `zig build dts` needs:
-//! the command-handler value types (from command_ctx.zig) and the `.d.ts`
+//! the command-handler value types (from commandContext.zig) and the `.d.ts`
 //! emitter (from emit_dts.zig). It deliberately does NOT import app.zig,
 //! bridge.zig, any platform/macos/* file, the objc module, or
 //! manifest/parse.zig, so a module rooted here links no Cocoa or WebKit. The
 //! otool gate in tests/scaffold-consumer asserts that on every CI run.
 
-const command_ctx = @import("command_ctx.zig");
+const command_ctx = @import("commandContext.zig");
 const builtin_cmds = @import("commands/builtin.zig");
 const compute = @import("compute.zig");
 

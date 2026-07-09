@@ -1,6 +1,6 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
-const ctxmod = @import("command_ctx.zig");
+const ctxmod = @import("commandContext.zig");
 const compute = @import("compute.zig");
 const jobs = @import("jobs.zig");
 const Allowlist = @import("allowlist.zig").Allowlist;
@@ -19,7 +19,7 @@ const Meta = struct {
 };
 
 /// True if `T` is `Async(X)` for some X. Detected structurally: a one-field
-/// struct named exactly `inner`. (Matches command_ctx.Async's shape.)
+/// struct named exactly `inner`. (Matches commandContext.Async's shape.)
 fn asyncInner(comptime T: type) ?type {
     const info = @typeInfo(T);
     if (info != .@"struct") return null;
@@ -368,7 +368,7 @@ fn callMaybeAsync(comptime handler: anytype, comptime Inner: type, ctx: anytype,
     return raw;
 }
 
-/// True if T is command_ctx.Bytes.
+/// True if T is commandContext.Bytes.
 fn isBytes(comptime T: type) bool {
     return T == ctxmod.Bytes;
 }

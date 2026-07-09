@@ -11,7 +11,7 @@
 const std = @import("std");
 const parse = @import("manifest/parse.zig");
 const caps_loader = @import("manifest/capabilities.zig");
-const grant = @import("security/grant_table.zig");
+const grant = @import("security/grantTable.zig");
 const cap = @import("security/capability.zig");
 const defaults = @import("security/defaults.zig");
 const types = @import("manifest/types.zig");
@@ -34,7 +34,7 @@ test "build-time grant loading authorizes a granted command and denies others" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grants_enforcement", .{});
+    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grantsEnforcement", .{});
     defer fixture.close(io);
 
     // 1. parseAtBuild reads zigware.zon and validates security.grants against the

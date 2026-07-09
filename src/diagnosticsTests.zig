@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const diag = @import("diag.zig");
+const diag = @import("diagnostics.zig");
 
 /// A capturing transport: stores every record's level, scope, message, and a
 /// flattened "key=rendered" view of each field so a test can inspect what the

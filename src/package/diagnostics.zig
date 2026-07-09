@@ -1,5 +1,5 @@
 const std = @import("std");
-const config = @import("config.zig");
+const config = @import("configuration.zig");
 
 // ---------------------------------------------------------------------------
 // Error sets (built from the plan's Task 6 + Locked decisions #5/#6, NOT the

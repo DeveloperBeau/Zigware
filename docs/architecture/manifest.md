@@ -16,9 +16,9 @@ capability references are cross-checked, and CSP defaults to strict.
 | `validate.zig` | Post-merge validation; returns bool (never errors), appends diagnostics. |
 | `merge.zig` | Base + per-OS override merge: borrow-or-pick, then deep-copy into gpa-owned state. |
 | `fuses.zig` | Comptime fuse accessors from the embedded manifest; a comptime block locks them as compile-time-known. |
-| `emit_effective.zig` | Build-time codegen **exe**: argv-driven, merges + validates + re-serializes the effective manifest to a `.zon` artifact. |
+| `emitEffective.zig` | Build-time codegen **exe**: argv-driven, merges + validates + re-serializes the effective manifest to a `.zon` artifact. |
 | `capabilities.zig` | Loads full `Capability` bodies from `src/grants/*.zon` (kept separate so the codegen module needn't import `src/security/`). |
-| `schema_gen.zig` | Reflection-driven JSON-Schema emitter (Draft 2020-12). |
+| `schemaGeneration.zig` | Reflection-driven JSON-Schema emitter (Draft 2020-12). |
 
 ## Core types & notable defaults
 
@@ -32,7 +32,7 @@ capability references are cross-checked, and CSP defaults to strict.
 
 ## The two manifest paths
 
-**(a) Build-time codegen → `effective.zon`.** `emit_effective.zig` is an installed
+**(a) Build-time codegen → `effective.zon`.** `emitEffective.zig` is an installed
 exe. Given argv (`out`, `base path`, then per-OS override + capability paths) it
 opens the manifest's directory, runs `parseAtBuild` (merge + validate + capability
 enumeration), and re-serializes the merged `Manifest` via

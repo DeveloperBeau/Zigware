@@ -1,5 +1,5 @@
 const std = @import("std");
-const z = @import("../command_ctx.zig");
+const z = @import("../commandContext.zig");
 const demo = @import("demo.zig");
 const sha = @import("sha256.zig");
 const compute = @import("../compute.zig");

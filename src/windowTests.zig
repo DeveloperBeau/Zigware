@@ -1,6 +1,6 @@
 //! Test root for the window-lifecycle units. Pulls every window-unit file into
 //! one compilation so `zig build test` runs their file-scope tests. Mirrors
-//! src/manifest_tests.zig (src-level so the window units' `../platform/...`
+//! src/manifestTests.zig (src-level so the window units' `../platform/...`
 //! relative imports resolve inside `src/`). Window unit tests are written as
 //! FILE-SCOPE `test` blocks that reference WindowManager(NullBackend)/
 //! Lifecycle(NullBackend) directly (refAllDeclsRecursive does NOT instantiate

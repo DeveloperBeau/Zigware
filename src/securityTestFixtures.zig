@@ -1,4 +1,4 @@
-//! Shared test-only capability fixtures for the bridge/app/sec_regression test
+//! Shared test-only capability fixtures for the bridge/app/securityRegression test
 //! harnesses. The live App grants only `core:default`, so the builtin demo
 //! commands (sha256/echoBytes/echo) are denied at G2. Tests that drive those
 //! commands build a GrantTable from this fixture catalog instead, so the
@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const cap = @import("security/capability.zig");
-const grant = @import("security/grant_table.zig");
+const grant = @import("security/grantTable.zig");
 const defaults = @import("security/defaults.zig");
 const manifest = @import("manifest/types.zig");
 

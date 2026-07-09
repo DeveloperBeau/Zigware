@@ -9,7 +9,7 @@
 //!
 //! This lives in a SEPARATE file from `parse.zig` deliberately. `Capability`
 //! lives in `../security/capability.zig`, and `parse.zig` is a file-member of
-//! the `emit_effective` codegen module (rooted at `src/manifest/`); a
+//! the `emitEffective` codegen module (rooted at `src/manifest/`); a
 //! top-level import of `../security/...` from `parse.zig` would escape that
 //! module's path and fail to compile. This file is reached only through a
 //! src-rooted test root (and, later, app.zig), never through the codegen graph.
@@ -112,7 +112,7 @@ test "loadCapabilities parses permission identifiers and defaulted bodies" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grants_bodies", .{});
+    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grantsBodies", .{});
     defer fixture.close(io);
 
     const caps = try loadCapabilities(arena, io, fixture);
@@ -139,7 +139,7 @@ test "loadCapabilities fails closed on a malformed capability body" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grants_malformed", .{});
+    var fixture = try std.Io.Dir.cwd().openDir(io, "tests/manifest/grantsMalformed", .{});
     defer fixture.close(io);
 
     try std.testing.expectError(

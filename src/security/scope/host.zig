@@ -1,7 +1,7 @@
 const std = @import("std");
 const cap = @import("../capability.zig");
 const glob = @import("glob.zig");
-const grant = @import("../grant_table.zig");
+const grant = @import("../grantTable.zig");
 const HostRule = cap.HostRule;
 const ScopeSet = grant.ScopeSet;
 

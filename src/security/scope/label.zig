@@ -1,6 +1,6 @@
 const std = @import("std");
 const glob = @import("glob.zig");
-const grant = @import("../grant_table.zig");
+const grant = @import("../grantTable.zig");
 const ScopeSet = grant.ScopeSet;
 
 /// Window-label value-set scope (E's window.* cross-window commands): which target
