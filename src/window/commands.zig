@@ -259,8 +259,8 @@ const dummy_bases = gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig =
 /// the per-(label,command) n<=1 grant assertion inert.
 const manage_catalog = cap.Catalog{
     .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{
-        .{ .identifier = "test:fixtures", .commands_allow = &.{ "sha256", "echoBytes", "echo" } },
-        .{ .identifier = "test:windowscope", .scope_allow = &.{
+        .{ .identifier = "test:fixtures", .commandsAllow = &.{ "sha256", "echoBytes", "echo" } },
+        .{ .identifier = "test:windowscope", .scopeAllow = &.{
             .{ .label = "viewer" },
             .{ .host = .{ .host = "localhost" } },
         } },

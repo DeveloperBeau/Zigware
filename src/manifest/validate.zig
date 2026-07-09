@@ -179,7 +179,7 @@ pub fn validate(
     // (other tokens, tokenless verbatim globs, absolute paths, non-path
     // scopes) is rejected. The `app:` prefix requirement also forbids
     // shadowing a builtin id (all builtins use a non-app: namespace).
-    // `commands_allow` is intentionally not constrained here: the app's
+    // `commandsAllow` is intentionally not constrained here: the app's
     // command names are Zig (not in the manifest), so they are unvalidatable
     // at manifest-build-time, and `synthAppGrants` only reuses a declared
     // permission for the app's own registered commands.
@@ -195,7 +195,7 @@ pub fn validate(
             });
             ok = false;
         }
-        for (perm.scope_allow, 0..) |sc, j| {
+        for (perm.scopeAllow, 0..) |sc, j| {
             const confined = switch (sc) {
                 .path => |p| blk: {
                     if (!std.mem.startsWith(u8, p, APPDATA)) break :blk false;
@@ -213,7 +213,7 @@ pub fn validate(
                 else => false,
             };
             if (!confined) {
-                const path = try std.fmt.allocPrint(gpa, "security.permissions[{d}].scope_allow[{d}]", .{ i, j });
+                const path = try std.fmt.allocPrint(gpa, "security.permissions[{d}].scopeAllow[{d}]", .{ i, j });
                 errdefer gpa.free(path);
                 try diag.add(gpa, .{
                     .code = .permission_scope_unconfined,
@@ -676,7 +676,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     } };
     m.security = .{
         .grants = &.{ "missing.one", "missing.two" },
-        .permissions = &.{.{ .identifier = "nope", .scope_allow = &.{.{ .path = "$HOME/x" }} }},
+        .permissions = &.{.{ .identifier = "nope", .scopeAllow = &.{.{ .path = "$HOME/x" }} }},
     };
     m.frontend = .{ .serveUrl = "http://localhost:5173" };
 
@@ -695,10 +695,10 @@ test "validate accepts an app permission confined to $APPDATA" {
     m.security = .{
         .permissions = &.{.{
             .identifier = "app:hashFile",
-            .commands_allow = &.{"hashFile"},
+            .commandsAllow = &.{"hashFile"},
             // Two entries exercise BOTH accept branches of the boundary condition:
             // `$APPDATA` alone (len == 8) and `$APPDATA/...` (p[8] == '/').
-            .scope_allow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
+            .scopeAllow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
         }},
     };
     try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
@@ -722,11 +722,11 @@ test "validate rejects an app permission scoped outside $APPDATA" {
         var diag: Diagnostics = .{};
         defer diag.deinit(gpa);
         var m = baseValid();
-        m.security = .{ .permissions = &.{.{ .identifier = "app:hashFile", .scope_allow = &.{sc} }} };
+        m.security = .{ .permissions = &.{.{ .identifier = "app:hashFile", .scopeAllow = &.{sc} }} };
         try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .permission_scope_unconfined));
         try std.testing.expectEqualStrings(
-            "security.permissions[0].scope_allow[0]",
+            "security.permissions[0].scopeAllow[0]",
             findOne(diag, .permission_scope_unconfined).?.path.?,
         );
     }

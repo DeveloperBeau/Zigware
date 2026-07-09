@@ -316,7 +316,7 @@ test "compute.cancel flips a live id's flag through the gated message path" {
     defer h.deinit();
 
     // Offload the latched worker (id 1) directly: cmdLatched is not in the grant's
-    // commands_allow, so it cannot route through handleMessage, but compute.cancel
+    // commandsAllow, so it cannot route through handleMessage, but compute.cancel
     // can (and does below). The flag for id 1 is armed pre-submit on this thread.
     std.debug.assert(h.bridge.reserveCall("main", 1));
     h.bridge.dispatchFn(h.bridge, "main", "cmdLatched", 1, "{}");

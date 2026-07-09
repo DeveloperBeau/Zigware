@@ -5,7 +5,7 @@
 //!
 //! The result is consumed by the runtime `Catalog`/`GrantTable` assembly: a
 //! capability's `permissions` list names the permission identifiers whose
-//! `commands_allow`/`scope_allow` reach G2/G4 on every live invocation.
+//! `commandsAllow`/`scopeAllow` reach G2/G4 on every live invocation.
 //!
 //! This lives in a SEPARATE file from `parse.zig` deliberately. `Capability`
 //! lives in `../security/capability.zig`, and `parse.zig` is a file-member of

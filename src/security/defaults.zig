@@ -12,23 +12,23 @@ const Catalog = cap.Catalog;
 // themselves are registered by E (window.*), H (compute.*), and later fs/http/shell.
 pub const builtin_permissions = [_]Permission{
     // Filesystem (scoped by path globs). Commands wired by a later fs plugin.
-    .{ .identifier = "fs:read", .commands_allow = &.{ "fs.readFile", "fs.readDir" } },
-    .{ .identifier = "fs:write", .commands_allow = &.{ "fs.writeFile", "fs.createDir" } },
+    .{ .identifier = "fs:read", .commandsAllow = &.{ "fs.readFile", "fs.readDir" } },
+    .{ .identifier = "fs:write", .commandsAllow = &.{ "fs.writeFile", "fs.createDir" } },
     // Dialog: user-mediated, no path scope (the user picks the path).
-    .{ .identifier = "dialog:open", .commands_allow = &.{ "dialog.open", "dialog.save" } },
+    .{ .identifier = "dialog:open", .commandsAllow = &.{ "dialog.open", "dialog.save" } },
     // Shell (strict argv allowlist). Dropped at compile when allowShell is off.
-    .{ .identifier = "shell:execute", .commands_allow = &.{"shell.execute"} },
+    .{ .identifier = "shell:execute", .commandsAllow = &.{"shell.execute"} },
     // Network (host/port scope). Dropped origins handled at G1, not here.
-    .{ .identifier = "http:request", .commands_allow = &.{"http.fetch"} },
+    .{ .identifier = "http:request", .commandsAllow = &.{"http.fetch"} },
     // Core window controls for the window's OWN label (no cross-window scope).
-    .{ .identifier = "core:window:own", .commands_allow = &.{ "window.setTitle", "window.setSize" } },
+    .{ .identifier = "core:window:own", .commandsAllow = &.{ "window.setTitle", "window.setSize" } },
     // Cross-window management verbs. NOT in core:default (deny-by-default): a
     // window must be explicitly granted core:window:manage to spawn/close/focus
     // other windows. setTitle/setSize remain in core:window:own (own label).
-    .{ .identifier = "core:window:manage", .commands_allow = &.{ "window.create", "window.close", "window.focus", "window.setFullscreen" } },
+    .{ .identifier = "core:window:manage", .commandsAllow = &.{ "window.create", "window.close", "window.focus", "window.setFullscreen" } },
     // Core compute: the public compute surface plus cancellation. No external
     // resource, so .none scope.
-    .{ .identifier = "core:compute:cancel", .commands_allow = &.{"compute.cancel"} },
+    .{ .identifier = "core:compute:cancel", .commandsAllow = &.{"compute.cancel"} },
 };
 
 // The shipped default bundle: only safe, ambient-free commands. NO fs/http/shell.

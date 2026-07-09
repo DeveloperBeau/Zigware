@@ -42,14 +42,14 @@ pub const Decision = union(enum) {
 };
 
 /// G1: does `origin` match any trusted OriginPattern for this window?
-/// Empty origins means app_scheme only. dev_url honored only when is_debug.
-/// https_exact already fuse-filtered at compile.
+/// Empty origins means app_scheme only. devUrl honored only when is_debug.
+/// httpsExact already fuse-filtered at compile.
 fn originTrusted(origins: []const OriginPattern, origin: []const u8, is_debug: bool) bool {
     if (origins.len == 0) return isAppScheme(origin);
     for (origins) |o| switch (o) {
         .app_scheme => if (isAppScheme(origin)) return true,
-        .dev_url => |u| if (is_debug and std.mem.eql(u8, u, origin)) return true,
-        .https_exact => |u| if (std.mem.eql(u8, u, origin)) return true,
+        .devUrl => |u| if (is_debug and std.mem.eql(u8, u, origin)) return true,
+        .httpsExact => |u| if (std.mem.eql(u8, u, origin)) return true,
     };
     return false;
 }
@@ -190,13 +190,13 @@ test "G2: granted command allows, ungranted denies with command.not_granted" {
     try std.testing.expectEqualStrings("command.not_granted", d.deny.code);
 }
 
-test "G1: dev_url honored only in debug" {
-    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:1420" } }, .permissions = &.{"core:default"} }};
+test "G1: devUrl honored only in debug" {
+    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .devUrl = "http://localhost:1420" } }, .permissions = &.{"core:default"} }};
     var table = try gt(&caps);
     defer table.deinit();
     const bases = Bases{ .appdata = "/a", .home = "/h", .appconfig = "/c" };
-    // In Debug: dev_url is in the compiled trust set, so the runtime is_debug gate
-    // is the deciding factor. In ReleaseSafe: dev_url is dropped from the compiled
+    // In Debug: devUrl is in the compiled trust set, so the runtime is_debug gate
+    // is the deciding factor. In ReleaseSafe: devUrl is dropped from the compiled
     // trust set at compile time (belt beyond the runtime gate), so even is_debug=true
     // at runtime denies.
     if (comptime builtin.mode == .Debug) {
@@ -217,12 +217,12 @@ test "G4: a .none command allows immediately" {
 test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
     // Three origin patterns matching the live gate's trust set:
     //   app_scheme           -> app://localhost and app://localhost/<path>
-    //   dev_url              -> exact http://localhost:1420
-    //   https_exact          -> exact https://x.example
+    //   devUrl              -> exact http://localhost:1420
+    //   httpsExact          -> exact https://x.example
     const origins = [_]cap.OriginPattern{
         .app_scheme,
-        .{ .dev_url = "http://localhost:1420" },
-        .{ .https_exact = "https://x.example" },
+        .{ .devUrl = "http://localhost:1420" },
+        .{ .httpsExact = "https://x.example" },
     };
     // Known-good seeds: mutations of these land near the boundary and reliably hit
     // the accept branches, giving the tight oracle real work to do.
@@ -282,8 +282,8 @@ test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
             // app_scheme covers:
             //   "app://localhost"        (bare, no path)
             //   "app://localhost/<path>" (with slash-prefixed path)
-            // dev_url: exact string match "http://localhost:1420"
-            // https_exact: exact string match "https://x.example"
+            // devUrl: exact string match "http://localhost:1420"
+            // httpsExact: exact string match "https://x.example"
             const ok = std.mem.startsWith(u8, o, "app://localhost/") or
                 std.mem.eql(u8, o, "app://localhost") or
                 std.mem.eql(u8, o, "http://localhost:1420") or
