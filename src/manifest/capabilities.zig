@@ -147,3 +147,50 @@ test "loadCapabilities fails closed on a malformed capability body" {
         loadCapabilities(arena, io, fixture),
     );
 }
+
+fn loadGrantSource(arena: std.mem.Allocator, body: []const u8) ![]const Capability {
+    const io = std.testing.io;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try td.dir.createDirPath(io, "src/grants");
+    try td.dir.writeFile(io, .{ .sub_path = "src/grants/main.zon", .data = body });
+    return loadCapabilities(arena, io, td.dir);
+}
+
+test "old snake_case origin keys in a grant file are rejected" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Hand-written: the pre-0.2.0 origin tags. A parser that still accepted
+    // them, or skipped unknown fields, would return a capability.
+    const old_bodies = [_][]const u8{
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .{ .dev_url = \"http://localhost:5173\" } } }",
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .{ .https_exact = \"https://cdn.example\" } } }",
+    };
+    for (old_bodies) |body| {
+        try std.testing.expectError(error.ParseFailed, loadGrantSource(arena, body));
+    }
+}
+
+test "camelCase origin keys in a grant file parse to the declared origins" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const body =
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .app_scheme, .{ .devUrl = \"http://localhost:5173\" }, .{ .httpsExact = \"https://cdn.example\" } } }";
+    const caps = try loadGrantSource(arena, body);
+    try std.testing.expectEqual(@as(usize, 1), caps.len);
+    try std.testing.expectEqualStrings("main", caps[0].identifier);
+    try std.testing.expectEqual(@as(usize, 3), caps[0].origins.len);
+    try std.testing.expect(caps[0].origins[0] == .app_scheme);
+    switch (caps[0].origins[1]) {
+        .devUrl => |u| try std.testing.expectEqualStrings("http://localhost:5173", u),
+        .app_scheme, .httpsExact => return error.WrongOrigin,
+    }
+    switch (caps[0].origins[2]) {
+        .httpsExact => |u| try std.testing.expectEqualStrings("https://cdn.example", u),
+        .app_scheme, .devUrl => return error.WrongOrigin,
+    }
+}
