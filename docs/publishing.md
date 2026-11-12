@@ -14,7 +14,7 @@ Once a release tag exists on the framework repo, an external project's
 ```zig
 .dependencies = .{
     .zigware = .{
-        .url = "https://github.com/DeveloperBeau/zigware/archive/refs/tags/v0.1.0.tar.gz",
+        .url = "https://github.com/DeveloperBeau/zigware/archive/refs/tags/v0.2.0.tar.gz",
         .hash = "<the hash zig prints on first fetch>",
     },
 },
@@ -25,7 +25,7 @@ the consumer project:
 
 ```sh
 zig fetch --save=zigware \
-  https://github.com/DeveloperBeau/zigware/archive/refs/tags/v0.1.0.tar.gz
+  https://github.com/DeveloperBeau/zigware/archive/refs/tags/v0.2.0.tar.gz
 ```
 
 Zig downloads the archive, computes the content hash, and writes the `.hash`
@@ -43,7 +43,7 @@ directly to confirm the mechanism without needing a published tag.
 ### Release steps for a maintainer
 
 1. Merge work into `main` and verify `zig build` exits clean.
-2. Tag the commit and push: `git tag v0.1.0 && git push origin v0.1.0`.
+2. Tag the commit and push: `git tag v0.2.0 && git push origin v0.2.0`.
    The `.github/workflows/release.yml` workflow triggers on the tag push,
    builds the framework, and creates the GitHub Release automatically.
    GitHub serves the tag archive at the URL above; no manual release step

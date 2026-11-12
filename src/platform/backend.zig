@@ -148,7 +148,7 @@ pub fn assertBackend(comptime B: type) void {
         // v0.1.0 pins WindowId to u64 so the non-generic Callbacks.window_id
         // never truncates. v0.2 may widen this via an opaque encoding.
         if (B.WindowId != u64)
-            @compileError(@typeName(B) ++ ".WindowId must be u64 in v0.1.0 (finding M11)");
+            @compileError(@typeName(B) ++ ".WindowId must be u64 in v0.2.0 (finding M11)");
 
         for (required_methods) |name| {
             if (!@hasDecl(B, name))

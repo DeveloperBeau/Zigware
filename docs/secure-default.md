@@ -123,9 +123,9 @@ fail closed for the same reason. Requiring the in-scope file to exist,
 and asserting it allows, makes the allow a real allow and confirms G4 is
 discriminating allow from deny on the path, not failing closed on both.
 
-## Scope of v0.1.0
+## Scope of v0.2.0
 
-v0.1.0 ships on macOS only.
+v0.2.0 ships on macOS only.
 
 The in-repo example builds, packages, and signs into a `.app` and has both a
 headless integration test and a GUI smoke. A **scaffolded** project now builds

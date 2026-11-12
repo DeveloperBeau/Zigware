@@ -34,7 +34,7 @@ comptime {
 pub fn Backend() type {
     return switch (builtin.os.tag) {
         .macos => MacOSBackend,
-        else => @compileError("zigware v0.1.0 targets macOS only"),
+        else => @compileError("zigware v0.2.0 targets macOS only"),
     };
 }
 

@@ -158,4 +158,4 @@ rejects error-union returns, so a handler converts a logical failure into a
 `Result.err` value (picking its own `.code`) before returning. Return
 `Async(Result(P_ok))`, not `ComputeError!P_ok`.
 
-v0.1.0 ships on macOS only.
+v0.2.0 ships on macOS only.

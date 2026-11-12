@@ -81,11 +81,11 @@ Failure triage:
 ## Manifest is build-embedded
 The app manifest (`zigware.zon`, plus any per-OS overrides and the grant files under `src/grants/`) is build-embedded. `embedded()` is a comptime `@import` of the codegen's merged-and-validated `zigware.effective.zon` artifact, so a manifest change requires a rebuild. There is no runtime config read or parse path. To regenerate the effective manifest by hand, run `zig build emit-effective-manifest`.
 
-## Capability gate: v0.1.0 demo state
+## Capability gate: v0.2.0 demo state
 
 The shipped `App` compiles a `GrantTable` from `core:default` only. The `sha256`, `echoBytes`, and `echo` commands are not in `core:default`, so the GUI "Hash 300 MB in Zig" demo (step 3 above) is now denied at the capability gate (G2) rather than completing. The invoke returns a structured `command.not_granted` error to the frontend instead of a hash result. This is the correct behavior: the gate is live and fail-closed.
 
-The example app with real author-declared capabilities (including a `sha256` grant) will be rebuilt in sub-project H. Until then, the v0.1.0 smoke pass verifies three things: the window opens and the UI loads, the shim script is injected and `window.Zigware.invoke` is available, and an invoke attempt is rejected with a structured `command.not_granted` error rather than hanging or crashing. Step 3 no longer shows a completed hash or a progress bar; the expected result is a rejected invoke and a console-visible error object from the frontend error handler.
+The example app with real author-declared capabilities (including a `sha256` grant) will be rebuilt in sub-project H. Until then, the v0.2.0 smoke pass verifies three things: the window opens and the UI loads, the shim script is injected and `window.Zigware.invoke` is available, and an invoke attempt is rejected with a structured `command.not_granted` error rather than hanging or crashing. Step 3 no longer shows a completed hash or a progress bar; the expected result is a rejected invoke and a console-visible error object from the frontend error handler.
 
 ## Fuzz contract
 `zig build test --fuzz` (corpus-guided fuzzing) does not work on the Zig 0.16.0 toolchain because of a known test-runner compiler bug. To compensate, every fuzz body ships a manual driver. Each manual driver runs at least 10000 iterations per `zig build test`, seeding `std.Random.DefaultPrng` from `std.testing.random_seed`, and also replays every seed file in `test/fuzz/corpus/`. The enforced contract is: each fuzz body runs >= 10000 iterations per `zig build test`. When the toolchain bug is fixed, the drivers stay and `--fuzz` is re-enabled to run the same corpus under coverage guidance.

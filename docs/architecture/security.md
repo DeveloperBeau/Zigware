@@ -95,10 +95,10 @@ require a `main` window, cross-check every `security.grants` ref against a
   fuse-gated grant from the table; it never leaves one present but unreachable.
 - **Comptime verification**: fuses comptime-known; catalog cycles and unresolved
   permission-set members are build errors; script hashes precomputed.
-- **Multi-cap (v0.1.0)**: at most one capability may match a (window, command) pair;
+- **Multi-cap (v0.2.0)**: at most one capability may match a (window, command) pair;
   an assert guards the not-yet-implemented multi-cap scope/origin merge.
 - **Path TOCTOU / case-insensitive FS**: acknowledged low-risk author footguns;
-  no scoped command ships in v0.1.0 (all scope inputs are `.none`), so not currently
+  no scoped command ships in v0.2.0 (all scope inputs are `.none`), so not currently
   exploitable. Future fs handlers should re-verify the fd (e.g. `O_NOFOLLOW`).
 - Permission strings are static comptime literals; `GrantTable.compile` copies
   headers only and dereferences those exact bytes on every check, so callers must
