@@ -35,7 +35,7 @@ fi
 # kcov on macOS needs a codesigned binary with the debugger entitlement. An
 # unsigned or incompatible kcov fails (task_for_pid) or hangs. A watchdog stops a
 # hung run so the script ends and falls back.
-KCOV_TIMEOUT="${KCOV_TIMEOUT:-300}"
+KCOV_TIMEOUT="${KCOV_TIMEOUT:-3600}"
 kcov \
   --include-path="$(pwd)/src" \
   --exclude-pattern=objc.zig,platform/macos/assoc.zig,platform/macos/backend.zig,platform/macos/window.zig,platform/macos/webview.zig,platform/macos/scheme.zig,platform/macos/delegate.zig,platform/macos/dispatch.zig,main.zig,tools/ \
