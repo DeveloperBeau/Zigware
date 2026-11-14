@@ -262,6 +262,7 @@ test "fuzz: pathMatches never allows an escape (manual >= 10000)" {
     var okb: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const ok_base = try std.fmt.bufPrint(&okb, "{s}/ok", .{base});
 
+    errdefer std.debug.print("seed for 'fuzz: pathMatches never allows an escape (manual >': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();
     // Segment vocabulary: mixing "ok", "okf", "f", and ".." ensures:

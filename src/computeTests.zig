@@ -569,6 +569,7 @@ fn assertControlFrame(frame: []const u8) !void {
 const FuzzPct = struct { pct: u8 };
 
 test "fuzz: progressBytes/binaryChunk keep raw bytes off the eval channel (manual >= 10000 iterations)" {
+    errdefer std.debug.print("seed for 'fuzz: progressBytes/binaryChunk keep raw bytes off': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x5bd1e995);
     const rand = prng.random();
 
@@ -655,6 +656,7 @@ test "fuzz: encodeBinReady mime literal is always a safe JS literal (manual >= 1
     // _bin frame's only string position is the mime, and it must survive any
     // hostile byte sequence as a jsString-safe literal. Numeric fields cannot
     // breakout (printed as decimals), so the encoder output is fully bounded.
+    errdefer std.debug.print("seed for 'fuzz: encodeBinReady mime literal is always a safe': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x27d4eb2f);
     const rand = prng.random();
 

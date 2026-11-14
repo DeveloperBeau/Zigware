@@ -232,6 +232,7 @@ test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
         "http://localhost:1420",
         "https://x.example",
     };
+    errdefer std.debug.print("seed for 'fuzz: only the three origin shapes ever accept (ma': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0xC0FFEE);
     const rand = prng.random();
     var accepted_hits: usize = 0;

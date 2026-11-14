@@ -573,6 +573,7 @@ fn pickFragment(rand: std.Random) []const u8 {
 }
 
 test "fuzz: window.create tolerates adversarial label/url/title across the gate chain (manual driver)" {
+    errdefer std.debug.print("seed for 'fuzz: window.create tolerates adversarial label/ur': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x57494e44); // 'WIND'
     const rand = prng.random();
     var t = try WinHarness.init();
