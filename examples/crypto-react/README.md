@@ -42,10 +42,10 @@ the command through `App.initWithCommands` (`src/main.zig`).
 ## Test
 
 The command is a pure function shared by all four crypto examples, proven
-headlessly from the repo root:
+headlessly from `examples/crypto-react`:
 
 ```sh
-zig build test-crypto
+zig build test integration-test
 ```
 
 ## Layout

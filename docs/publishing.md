@@ -8,7 +8,7 @@ tests.
 
 ## URL+hash mode (external consumer)
 
-Once a release tag exists on the framework repo, an external project's
+The `v0.2.0` tag is not created yet. Once a release tag exists on the framework repo, an external project's
 `build.zig.zon` declares the dependency like this:
 
 ```zig
