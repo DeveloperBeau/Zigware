@@ -173,6 +173,22 @@ test "old snake_case origin keys in a grant file are rejected" {
     }
 }
 
+test "unknown keys in a grant file are rejected" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Hand-written: an unknown top-level key and an unknown key in a permission
+    // reference list. Neither may be skipped silently.
+    const bodies = [_][]const u8{
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .fuzzUnknown = 1 }",
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origin_list = .{ .app_scheme } }",
+    };
+    for (bodies) |body| {
+        try std.testing.expectError(error.ParseFailed, loadGrantSource(arena, body));
+    }
+}
+
 test "camelCase origin keys in a grant file parse to the declared origins" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
