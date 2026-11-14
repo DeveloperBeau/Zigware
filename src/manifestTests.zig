@@ -129,24 +129,26 @@ test "fuzz parser+validator: deterministic teeth on parse/validate/valid arms" {
 
 const Verdict = enum { parse_rejected, validate_rejected, accepted };
 
-fn judge(gpa: std.mem.Allocator, text: [:0]const u8) !Verdict {
-    const types = @import("manifest/types.zig");
-    const validate = @import("manifest/validate.zig");
+/// Runs `text` through the production entry point, `parseAtBuildFromPaths`, so a
+/// change to the real parse options is seen by the oracles below.
+fn judge(gpa: std.mem.Allocator, dir: *std.testing.TmpDir, text: []const u8) !Verdict {
     const parse_mod = @import("manifest/parse.zig");
+    const types = @import("manifest/types.zig");
+    const io = std.testing.io;
 
-    var zon_diag: std.zon.parse.Diagnostics = .{};
-    defer zon_diag.deinit(gpa);
-    const parsed = std.zon.parse.fromSliceAlloc(types.Manifest, gpa, text, &zon_diag, .{}) catch |err| switch (err) {
-        error.ParseZon => return .parse_rejected,
-        error.OutOfMemory => return err,
-    };
-    defer parse_mod.freeManifest(gpa, parsed);
+    try dir.dir.writeFile(io, .{ .sub_path = "zigware.zon", .data = text });
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/zigware.zon", .{dir.sub_path});
 
     var diag: types.Diagnostics = .{};
     defer diag.deinit(gpa);
-    const no_caps: []const []const u8 = &.{};
-    const ok = try validate.validate(gpa, parsed, .Debug, no_caps, &diag);
-    return if (ok and !diag.hasErrors()) .accepted else .validate_rejected;
+    const parsed = parse_mod.parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag) catch |err| switch (err) {
+        error.ParseFailed => return .parse_rejected,
+        error.ValidationFailed => return .validate_rejected,
+        else => return err,
+    };
+    parse_mod.freeManifest(gpa, parsed);
+    return .accepted;
 }
 
 /// A lowercase word of 1 to 8 characters that starts with a letter. The result
@@ -162,7 +164,7 @@ fn genWord(rand: std.Random, buf: *[8]u8) []const u8 {
 
 /// Builds a valid manifest. With `full` set it always declares one permission
 /// that uses all four permission keys, so a mutator can find each key.
-fn genValidManifest(gpa: std.mem.Allocator, rand: std.Random, full: bool) ![:0]u8 {
+fn genValidManifest(gpa: std.mem.Allocator, rand: std.Random, full: bool) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     const w = &aw.writer;
@@ -190,7 +192,7 @@ fn genValidManifest(gpa: std.mem.Allocator, rand: std.Random, full: bool) ![:0]u
         try w.writeAll(" } } }");
     }
     try w.writeAll(" }");
-    return aw.toOwnedSliceSentinel(0);
+    return aw.toOwnedSlice();
 }
 
 const old_key_renames = [_]struct { new: []const u8, old: []const u8 }{
@@ -205,12 +207,14 @@ test "fuzz manifest false-negative oracle: valid generated manifests are always 
     errdefer std.debug.print("manifest false-negative fuzz seed: {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
 
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
         const text = try genValidManifest(gpa, rand, i % 2 == 0);
         defer gpa.free(text);
-        const verdict = try judge(gpa, text);
+        const verdict = try judge(gpa, &dir, text);
         if (verdict != .accepted) {
             std.debug.print("valid manifest was {s}: {s}\n", .{ @tagName(verdict), text });
             return error.TestUnexpectedResult;
@@ -223,6 +227,8 @@ test "fuzz manifest false-positive oracle: old keys, unknown keys and missing ke
     errdefer std.debug.print("manifest false-positive fuzz seed: {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
 
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
@@ -248,10 +254,10 @@ test "fuzz manifest false-positive oracle: old keys, unknown keys and missing ke
             std.debug.print("mutation target not found: {s} in {s}\n", .{ needle, base });
             return error.TestUnexpectedResult;
         };
-        const mutant = try std.fmt.allocPrintSentinel(gpa, "{s}{s}{s}", .{ base[0..at], replacement, base[at + needle.len ..] }, 0);
+        const mutant = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ base[0..at], replacement, base[at + needle.len ..] });
         defer gpa.free(mutant);
 
-        const verdict = try judge(gpa, mutant);
+        const verdict = try judge(gpa, &dir, mutant);
         if (verdict == .accepted) {
             std.debug.print("invalid manifest was accepted: {s}\n", .{mutant});
             return error.TestUnexpectedResult;
