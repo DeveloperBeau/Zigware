@@ -48,5 +48,5 @@ if wait "$KCOV_PID"; then
   echo "coverage report: $OUT/index.html"
 else
   kill "$WATCHDOG_PID" 2>/dev/null || true
-  fallback "kcov failed or timed out after ${KCOV_TIMEOUT}s (on macOS it needs a codesigned build with the debugger entitlement)."
+  fallback "kcov failed or ran past ${KCOV_TIMEOUT}s. Set KCOV_TIMEOUT for a longer run. On macOS, kcov also needs a codesigned build with the debugger entitlement."
 fi
