@@ -56,6 +56,7 @@ test "fuzz parser+validator: deterministic teeth on parse/validate/valid arms" {
     // Multiple of 16 so the threshold math `iters / 16` is exact.
     const iters: usize = 10240;
 
+    errdefer std.debug.print("manifest robustness fuzz seed: {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();
 
@@ -113,4 +114,147 @@ test "fuzz parser+validator: deterministic teeth on parse/validate/valid arms" {
     try std.testing.expect(parse_failures > 0);
     try std.testing.expect(validation_failures > 0);
     try std.testing.expect(valid_parses >= iters / 16);
+}
+
+// Two-direction manifest fuzz. The robustness fuzz above only checks that
+// nothing crashes. These two tests check the accept decision itself.
+//
+// False-negative oracle: every manifest built by the generator is valid by
+// construction, so the parser and validator must accept all of them.
+// False-positive oracle: every mutant below is invalid by construction (an old
+// snake_case key, an unknown key, or a misspelled required key), so the parser
+// must reject all of them. A failing test prints its seed. A passing test must stay
+// silent: the build runner fails a step whose test writes to stderr. To replay a
+// failure, pass the printed seed to the test binary as `--seed`.
+
+const Verdict = enum { parse_rejected, validate_rejected, accepted };
+
+fn judge(gpa: std.mem.Allocator, text: [:0]const u8) !Verdict {
+    const types = @import("manifest/types.zig");
+    const validate = @import("manifest/validate.zig");
+    const parse_mod = @import("manifest/parse.zig");
+
+    var zon_diag: std.zon.parse.Diagnostics = .{};
+    defer zon_diag.deinit(gpa);
+    const parsed = std.zon.parse.fromSliceAlloc(types.Manifest, gpa, text, &zon_diag, .{}) catch |err| switch (err) {
+        error.ParseZon => return .parse_rejected,
+        error.OutOfMemory => return err,
+    };
+    defer parse_mod.freeManifest(gpa, parsed);
+
+    var diag: types.Diagnostics = .{};
+    defer diag.deinit(gpa);
+    const no_caps: []const []const u8 = &.{};
+    const ok = try validate.validate(gpa, parsed, .Debug, no_caps, &diag);
+    return if (ok and !diag.hasErrors()) .accepted else .validate_rejected;
+}
+
+/// A lowercase word of 1 to 8 characters that starts with a letter. The result
+/// is a valid reverse-DNS label, window label, command name and path segment.
+fn genWord(rand: std.Random, buf: *[8]u8) []const u8 {
+    const letters = "abcdefghijklmnopqrstuvwxyz";
+    const alnum = letters ++ "0123456789";
+    const len = rand.uintLessThan(usize, 8) + 1;
+    buf[0] = letters[rand.uintLessThan(usize, letters.len)];
+    for (buf[1..len]) |*c| c.* = alnum[rand.uintLessThan(usize, alnum.len)];
+    return buf[0..len];
+}
+
+/// Builds a valid manifest. With `full` set it always declares one permission
+/// that uses all four permission keys, so a mutator can find each key.
+fn genValidManifest(gpa: std.mem.Allocator, rand: std.Random, full: bool) ![:0]u8 {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    const w = &aw.writer;
+
+    var b1: [8]u8 = undefined;
+    var b2: [8]u8 = undefined;
+    var b3: [8]u8 = undefined;
+    var b4: [8]u8 = undefined;
+    try w.print(".{{ .identifier = \"com.{s}.{s}\", .productName = \"{s}\", .version = \"{d}.{d}.{d}\", ", .{
+        genWord(rand, &b1),
+        genWord(rand, &b2),
+        genWord(rand, &b3),
+        rand.uintLessThan(u8, 50),
+        rand.uintLessThan(u8, 50),
+        rand.uintLessThan(u8, 50),
+    });
+    try w.print(".app = .{{ .windows = .{{ .{{ .label = \"main\", .title = \"{s}\" }}", .{genWord(rand, &b4)});
+    if (rand.boolean()) try w.print(", .{{ .label = \"x{s}\", .title = \"T\" }}", .{genWord(rand, &b1)});
+    try w.writeAll(" } }");
+    if (full or rand.boolean()) {
+        try w.print(", .security = .{{ .permissions = .{{ .{{ .identifier = \"app:{s}\", .commandsAllow = .{{ \"{s}\" }}", .{ genWord(rand, &b1), genWord(rand, &b2) });
+        if (full or rand.boolean()) try w.print(", .commandsDeny = .{{ \"{s}\" }}", .{genWord(rand, &b3)});
+        if (full or rand.boolean()) try w.print(", .scopeAllow = .{{ .{{ .path = \"$APPDATA/{s}/**\" }} }}", .{genWord(rand, &b4)});
+        if (full or rand.boolean()) try w.print(", .scopeDeny = .{{ .{{ .path = \"$APPDATA/{s}/**\" }} }}", .{genWord(rand, &b1)});
+        try w.writeAll(" } } }");
+    }
+    try w.writeAll(" }");
+    return aw.toOwnedSliceSentinel(0);
+}
+
+const old_key_renames = [_]struct { new: []const u8, old: []const u8 }{
+    .{ .new = ".commandsAllow = ", .old = ".commands_allow = " },
+    .{ .new = ".commandsDeny = ", .old = ".commands_deny = " },
+    .{ .new = ".scopeAllow = ", .old = ".scope_allow = " },
+    .{ .new = ".scopeDeny = ", .old = ".scope_deny = " },
+};
+
+test "fuzz manifest false-negative oracle: valid generated manifests are always accepted" {
+    const gpa = std.testing.allocator;
+    errdefer std.debug.print("manifest false-negative fuzz seed: {d}\n", .{std.testing.random_seed});
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const rand = prng.random();
+
+    var i: usize = 0;
+    while (i < 2000) : (i += 1) {
+        const text = try genValidManifest(gpa, rand, i % 2 == 0);
+        defer gpa.free(text);
+        const verdict = try judge(gpa, text);
+        if (verdict != .accepted) {
+            std.debug.print("valid manifest was {s}: {s}\n", .{ @tagName(verdict), text });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "fuzz manifest false-positive oracle: old keys, unknown keys and missing keys are never accepted" {
+    const gpa = std.testing.allocator;
+    errdefer std.debug.print("manifest false-positive fuzz seed: {d}\n", .{std.testing.random_seed});
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const rand = prng.random();
+
+    var i: usize = 0;
+    while (i < 2000) : (i += 1) {
+        const base = try genValidManifest(gpa, rand, true);
+        defer gpa.free(base);
+
+        // Pick the mutation and the exact text to replace.
+        const kind = rand.uintLessThan(usize, 4);
+        const rename = old_key_renames[rand.uintLessThan(usize, old_key_renames.len)];
+        const needle: []const u8 = switch (kind) {
+            0 => rename.new,
+            1 => ".{ .identifier",
+            2 => ".identifier = \"app:",
+            else => ".version = ",
+        };
+        const replacement: []const u8 = switch (kind) {
+            0 => rename.old,
+            1 => ".{ .fuzzUnknown = 1, .identifier",
+            2 => ".fuzzUnknown = 1, .identifier = \"app:",
+            else => ".versoin = ",
+        };
+        const at = std.mem.indexOf(u8, base, needle) orelse {
+            std.debug.print("mutation target not found: {s} in {s}\n", .{ needle, base });
+            return error.TestUnexpectedResult;
+        };
+        const mutant = try std.fmt.allocPrintSentinel(gpa, "{s}{s}{s}", .{ base[0..at], replacement, base[at + needle.len ..] }, 0);
+        defer gpa.free(mutant);
+
+        const verdict = try judge(gpa, mutant);
+        if (verdict == .accepted) {
+            std.debug.print("invalid manifest was accepted: {s}\n", .{mutant});
+            return error.TestUnexpectedResult;
+        }
+    }
 }
