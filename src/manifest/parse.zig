@@ -732,14 +732,14 @@ test "manifest round-trips an app-declared scoped permission through zon" {
         ".{ .identifier = \"com.example.app\", .productName = \"A\", .version = \"0.1.0\", " ++
         ".app = .{ .windows = .{ .{ .label = \"main\", .title = \"M\" } } }, " ++
         ".security = .{ .permissions = .{ .{ .identifier = \"app:hashFile\", " ++
-        ".commands_allow = .{ \"hashFile\" }, .scope_allow = .{ .{ .path = \"$APPDATA/notes/**\" } } } } } }";
+        ".commandsAllow = .{ \"hashFile\" }, .scopeAllow = .{ .{ .path = \"$APPDATA/notes/**\" } } } } } }";
     var zd: std.zon.parse.Diagnostics = .{};
     defer zd.deinit(gpa);
     const m = try std.zon.parse.fromSliceAlloc(types.Manifest, gpa, src, &zd, .{});
     defer freeManifest(gpa, m); // also asserts the union free arm under the testing allocator
     try std.testing.expectEqual(@as(usize, 1), m.security.permissions.len);
     try std.testing.expectEqualStrings("app:hashFile", m.security.permissions[0].identifier);
-    try std.testing.expectEqualStrings("$APPDATA/notes/**", m.security.permissions[0].scope_allow[0].path);
+    try std.testing.expectEqualStrings("$APPDATA/notes/**", m.security.permissions[0].scopeAllow[0].path);
 }
 
 test "std.zon.parse.free is safe on a parsed OverrideManifest" {
@@ -789,4 +789,89 @@ test "freeManifest skips static-default slices via pointer identity" {
     // double-free or invalid-pointer free, so reaching the next line is the
     // assertion.
     freeManifest(gpa, m);
+}
+
+fn cacheRel(buf: []u8, td: *const std.testing.TmpDir, child: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}/{s}", .{ td.sub_path, child }) catch unreachable;
+}
+
+// The four permission keys renamed in 0.2.0. Each value is shaped like the
+// camelCase field it replaced, so a parser that still accepted the old name
+// (or ignored unknown fields) would return a manifest instead of ParseFailed.
+const snake_permission_keys = [_]struct { key: []const u8, value: []const u8 }{
+    .{ .key = "commands_allow", .value = ".{ \"hashFile\" }" },
+    .{ .key = "commands_deny", .value = ".{ \"hashFile\" }" },
+    .{ .key = "scope_allow", .value = ".{ .{ .path = \"$APPDATA/notes/**\" } }" },
+    .{ .key = "scope_deny", .value = ".{ .{ .path = \"$APPDATA/notes/**\" } }" },
+};
+
+fn manifestWithPermissionField(gpa: std.mem.Allocator, key: []const u8, value: []const u8) ![]u8 {
+    const prefix = ".{ .identifier = \"com.example.snake\", .productName = \"A\", .version = \"0.1.0\", .app = .{ .windows = .{ .{ .label = \"main\", .title = \"M\" } } }, .security = .{ .permissions = .{ .{ .identifier = \"app:hashFile\", .";
+    const suffix = " } } } }";
+    return std.fmt.allocPrint(gpa, "{s}{s} = {s}{s}", .{ prefix, key, value, suffix });
+}
+
+test "old snake_case permission keys in a manifest are rejected" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    for (snake_permission_keys) |case| {
+        var td = std.testing.tmpDir(.{});
+        defer td.cleanup();
+
+        const body = try manifestWithPermissionField(gpa, case.key, case.value);
+        defer gpa.free(body);
+        try td.dir.writeFile(io, .{ .sub_path = "zigware.zon", .data = body });
+
+        var path_buf: [512]u8 = undefined;
+        const path = cacheRel(&path_buf, &td, "zigware.zon");
+
+        var diag: Diagnostics = .{};
+        defer diag.deinit(gpa);
+
+        if (parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag)) |parsed| {
+            freeManifest(gpa, parsed);
+            std.debug.print("accepted snake_case key {s}\n", .{case.key});
+            return error.TestUnexpectedResult;
+        } else |err| {
+            // Hand-written: a renamed key is a parse failure, not a validated manifest.
+            try std.testing.expect(err == error.ParseFailed);
+            try std.testing.expectEqual(@as(usize, 1), diag.items.items.len);
+            try std.testing.expectEqual(types.Code.zon_parse_error, diag.items.items[0].code);
+            try std.testing.expectEqualStrings("base manifest failed to parse", diag.items.items[0].message);
+        }
+    }
+}
+
+test "camelCase permission keys in a manifest parse to the declared command and scope" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const body = try manifestWithPermissionField(
+        gpa,
+        "commandsAllow",
+        ".{ \"hashFile\" }, .scopeAllow = .{ .{ .path = \"$APPDATA/notes/**\" } }",
+    );
+    defer gpa.free(body);
+    try td.dir.writeFile(io, .{ .sub_path = "zigware.zon", .data = body });
+
+    var path_buf: [512]u8 = undefined;
+    const path = cacheRel(&path_buf, &td, "zigware.zon");
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    const parsed = try parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag);
+    defer freeManifest(gpa, parsed);
+
+    try std.testing.expect(!diag.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), parsed.security.permissions.len);
+    try std.testing.expectEqualStrings("app:hashFile", parsed.security.permissions[0].identifier);
+    try std.testing.expectEqual(@as(usize, 1), parsed.security.permissions[0].commandsAllow.len);
+    try std.testing.expectEqualStrings("hashFile", parsed.security.permissions[0].commandsAllow[0]);
+    try std.testing.expectEqual(@as(usize, 1), parsed.security.permissions[0].scopeAllow.len);
+    try std.testing.expectEqualStrings("$APPDATA/notes/**", parsed.security.permissions[0].scopeAllow[0].path);
 }

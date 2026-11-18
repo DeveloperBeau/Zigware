@@ -29,10 +29,10 @@ pub const Scope = union(enum) {
 /// A single permission grants commands and carries scope. Deny beats allow.
 pub const Permission = struct {
     identifier: []const u8, // "<plugin>:<action>", lower-ascii
-    commands_allow: []const []const u8 = &.{},
-    commands_deny: []const []const u8 = &.{},
-    scope_allow: []const Scope = &.{},
-    scope_deny: []const Scope = &.{},
+    commandsAllow: []const []const u8 = &.{},
+    commandsDeny: []const []const u8 = &.{},
+    scopeAllow: []const Scope = &.{},
+    scopeDeny: []const Scope = &.{},
 };
 
 /// Stable diagnostic codes for the build-time config + capability cross-check
@@ -217,7 +217,7 @@ pub const Security = struct {
     /// keep the generic "capability" term; do not rename them to match.
     grants: []const []const u8 = &.{},
     /// App-declared scoped permissions. Each id MUST be `app:`-prefixed and
-    /// each scope_allow path MUST be confined to `$APPDATA` (validate.zig).
+    /// each scopeAllow path MUST be confined to `$APPDATA` (validate.zig).
     /// Threaded into the live grant catalog by synthAppGrants/App.init.
     permissions: []const Permission = &.{},
     /// Content-Security-Policy. F performs compile-time script-hash injection
@@ -442,7 +442,7 @@ test "stringify renders a Scope union as a tagged literal" {
     const gpa = std.testing.allocator;
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
-    const p = Permission{ .identifier = "app:hashFile", .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} };
+    const p = Permission{ .identifier = "app:hashFile", .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }} };
     try std.zon.stringify.serialize(p, .{}, &aw.writer);
     try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), ".path") != null);
 }

@@ -52,7 +52,7 @@ A handler may stream binary chunks. The raw bytes never cross the eval channel:
 the backend emits only a `_bin` control frame (id, sequence, length, mime), and
 the shim fetches the bytes separately over the app's stream scheme
 (`app://localhost/__zigware_stream/<id>/<seq>`). The promise does not finish
-until every advertised chunk has been fetched. In v0.1.0 a single advertised
+until every advertised chunk has been fetched. In v0.2.0 a single advertised
 chunk becomes the resolved value directly (a `Uint8Array`).
 
 ## Errors: `window.Zigware.ZigError`
@@ -97,4 +97,4 @@ own cancel flag; the worker observes it between chunks and settles the **origina
 `invoke` promise with a `ZigError` whose `.code` is `cancelled`. Concurrent calls
 are unaffected, since each has its own flag.
 
-v0.1.0 ships on macOS only.
+v0.2.0 ships on macOS only.

@@ -29,10 +29,10 @@ const CryptoCommands = crypto.Commands;
 
 /// An unscoped app permission granting the one command. `cryptoDemo` touches no
 /// filesystem, so unlike the notes example it carries no path scope. The gate
-/// authorizes it on the command being in `commands_allow`.
+/// authorizes it on the command being in `commandsAllow`.
 const crypto_permission = z.capability.Permission{
     .identifier = "app:cryptoDemo",
-    .commands_allow = &.{"cryptoDemo"},
+    .commandsAllow = &.{"cryptoDemo"},
 };
 
 /// A minimal catalog holding that permission. The capability references
@@ -169,7 +169,7 @@ test "crypto example: an ungranted command is denied at the gate" {
     var h = try Harness.init();
     defer h.deinit();
 
-    // "encryptAll" is not in commands_allow, so the gate must reject it before any
+    // "encryptAll" is not in commandsAllow, so the gate must reject it before any
     // handler runs, proving the grant gates the surface.
     h.send(
         \\{"id":2,"cmd":"encryptAll","args":{}}

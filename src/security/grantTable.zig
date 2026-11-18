@@ -24,10 +24,10 @@ pub const ScopeSet = struct {
 const CompiledCap = struct {
     window_globs: []const []const u8,
     origins: []const OriginPattern,
-    commands_allow: []const []const u8,
-    commands_deny: []const []const u8,
-    scope_allow: []const Scope,
-    scope_deny: []const Scope,
+    commandsAllow: []const []const u8,
+    commandsDeny: []const []const u8,
+    scopeAllow: []const Scope,
+    scopeDeny: []const Scope,
 };
 
 /// Per-known-label merged origin set (union across every matching cap).
@@ -88,18 +88,18 @@ pub const GrantTable = struct {
                 try resolvePerm(a, catalog, pid, fuses, diags, gpa, &cmd_allow, &cmd_deny, &sc_allow, &sc_deny, 0);
             }
 
-            // Origins: drop https_exact when allowRemoteContent is off (force-deny),
-            // and drop dev_url outside Debug so a shipped binary's trust set can
+            // Origins: drop httpsExact when allowRemoteContent is off (force-deny),
+            // and drop devUrl outside Debug so a shipped binary's trust set can
             // never include a dev-server origin even if a capability declares one
             // (belt beyond the runtime is_debug gate in gates.originTrusted).
             var origins: std.ArrayList(OriginPattern) = .empty;
             for (c.origins) |o| {
                 switch (o) {
-                    .https_exact => if (!fuses.allowRemoteContent) {
+                    .httpsExact => if (!fuses.allowRemoteContent) {
                         diags.report(gpa, .{ .code = .fuse_requires_capability, .message = "https origin dropped: allowRemoteContent is off" });
                         continue;
                     },
-                    .dev_url => if (comptime builtin.mode != .Debug) {
+                    .devUrl => if (comptime builtin.mode != .Debug) {
                         continue;
                     },
                     else => {},
@@ -110,10 +110,10 @@ pub const GrantTable = struct {
             try compiled.append(a, .{
                 .window_globs = try a.dupe([]const u8, c.windows),
                 .origins = try origins.toOwnedSlice(a),
-                .commands_allow = try cmd_allow.toOwnedSlice(a),
-                .commands_deny = try cmd_deny.toOwnedSlice(a),
-                .scope_allow = try sc_allow.toOwnedSlice(a),
-                .scope_deny = try sc_deny.toOwnedSlice(a),
+                .commandsAllow = try cmd_allow.toOwnedSlice(a),
+                .commandsDeny = try cmd_deny.toOwnedSlice(a),
+                .scopeAllow = try sc_allow.toOwnedSlice(a),
+                .scopeDeny = try sc_deny.toOwnedSlice(a),
             });
         }
 
@@ -141,16 +141,16 @@ pub const GrantTable = struct {
             var seen_cmds: std.ArrayList([]const u8) = .empty;
             for (compiled.items) |cc| {
                 if (!globsMatch(cc.window_globs, kl)) continue;
-                for (cc.commands_allow) |cmd| {
+                for (cc.commandsAllow) |cmd| {
                     if (containsStr(seen_cmds.items, cmd)) continue;
                     try seen_cmds.append(sa, cmd);
                     var m_allow: std.ArrayList(Scope) = .empty;
                     var m_deny: std.ArrayList(Scope) = .empty;
                     for (compiled.items) |c2| {
                         if (!globsMatch(c2.window_globs, kl)) continue;
-                        if (!containsStr(c2.commands_allow, cmd)) continue;
-                        for (c2.scope_allow) |s| try m_allow.append(a, s);
-                        for (c2.scope_deny) |s| try m_deny.append(a, s);
+                        if (!containsStr(c2.commandsAllow, cmd)) continue;
+                        for (c2.scopeAllow) |s| try m_allow.append(a, s);
+                        for (c2.scopeDeny) |s| try m_deny.append(a, s);
                     }
                     try ls_list.append(a, .{
                         .label = try a.dupe(u8, kl),
@@ -181,10 +181,10 @@ pub const GrantTable = struct {
         var allowed = false;
         for (self.caps) |c| {
             if (!globsMatch(c.window_globs, label)) continue;
-            for (c.commands_deny) |d| {
+            for (c.commandsDeny) |d| {
                 if (std.mem.eql(u8, d, command)) return false; // deny beats allow
             }
-            for (c.commands_allow) |al| {
+            for (c.commandsAllow) |al| {
                 if (std.mem.eql(u8, al, command)) allowed = true;
             }
         }
@@ -261,10 +261,10 @@ fn resolvePerm(
             diags.report(gpa, .{ .code = .fuse_requires_capability, .message = "shell permission dropped: allowShell is off" });
             return;
         }
-        for (p.commands_allow) |c| try cmd_allow.append(a, c);
-        for (p.commands_deny) |c| try cmd_deny.append(a, c);
-        for (p.scope_allow) |s| try sc_allow.append(a, s);
-        for (p.scope_deny) |s| try sc_deny.append(a, s);
+        for (p.commandsAllow) |c| try cmd_allow.append(a, c);
+        for (p.commandsDeny) |c| try cmd_deny.append(a, c);
+        for (p.scopeAllow) |s| try sc_allow.append(a, s);
+        for (p.scopeDeny) |s| try sc_deny.append(a, s);
         return;
     }
     if (catalog.set(id)) |s| {
@@ -306,7 +306,7 @@ test "unknown permission identifier is a hard compile error" {
 test "deny beats allow at the command level" {
     // A custom catalog with a perm that both allows and denies the same command.
     const custom = cap.Catalog{
-        .permissions = &.{.{ .identifier = "x:p", .commands_allow = &.{"cmd.a"}, .commands_deny = &.{"cmd.a"} }},
+        .permissions = &.{.{ .identifier = "x:p", .commandsAllow = &.{"cmd.a"}, .commandsDeny = &.{"cmd.a"} }},
         .sets = &.{},
     };
     var diags: manifest.Diagnostics = .{};
@@ -339,7 +339,7 @@ test "shell granted when allowShell is on" {
 }
 
 test "https origin dropped when allowRemoteContent off; emitted as diagnostic" {
-    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{.{ .https_exact = "https://x.example" }}, .permissions = &.{"core:default"} }};
+    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{.{ .httpsExact = "https://x.example" }}, .permissions = &.{"core:default"} }};
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(std.testing.allocator);
     var gt = try GrantTable.compile(std.testing.allocator, &caps, &defaults.builtin_catalog, .{}, &.{"main"}, &diags);
@@ -354,7 +354,7 @@ test "https origin dropped when allowRemoteContent off; emitted as diagnostic" {
 
 test "scopeFor returns a granted command's allow/deny scopes" {
     const custom = cap.Catalog{
-        .permissions = &.{.{ .identifier = "fs:x", .commands_allow = &.{"fs.readFile"}, .scope_allow = &.{.{ .path = "$APPDATA/**" }}, .scope_deny = &.{.{ .path = "$APPDATA/secret/**" }} }},
+        .permissions = &.{.{ .identifier = "fs:x", .commandsAllow = &.{"fs.readFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/**" }}, .scopeDeny = &.{.{ .path = "$APPDATA/secret/**" }} }},
         .sets = &.{},
     };
     var diags: manifest.Diagnostics = .{};
@@ -387,7 +387,7 @@ test "originsFor unions origins across all window-matching caps (multi-cap)" {
     // only the first cap's origins.
     const caps = [_]Capability{
         .{ .identifier = "a", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"core:default"} },
-        .{ .identifier = "b", .windows = &.{"main"}, .origins = &.{.{ .https_exact = "https://x.example" }}, .permissions = &.{"core:default"} },
+        .{ .identifier = "b", .windows = &.{"main"}, .origins = &.{.{ .httpsExact = "https://x.example" }}, .permissions = &.{"core:default"} },
     };
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(std.testing.allocator);
@@ -398,7 +398,7 @@ test "originsFor unions origins across all window-matching caps (multi-cap)" {
     var saw_https = false;
     for (origins) |o| switch (o) {
         .app_scheme => saw_app = true,
-        .https_exact => saw_https = true,
+        .httpsExact => saw_https = true,
         else => {},
     };
     try std.testing.expect(saw_app and saw_https);
@@ -410,8 +410,8 @@ test "scopeFor merges scopes across caps, deny beats allow (deviation-5 hole clo
     // Before the merge, scopeFor returned cap A only and B's deny was ignored.
     const custom = cap.Catalog{
         .permissions = &.{
-            .{ .identifier = "fs:a", .commands_allow = &.{"fs.readFile"}, .scope_allow = &.{.{ .path = "$APPDATA/**" }} },
-            .{ .identifier = "fs:b", .commands_allow = &.{"fs.readFile"}, .scope_deny = &.{.{ .path = "$APPDATA/secret/**" }} },
+            .{ .identifier = "fs:a", .commandsAllow = &.{"fs.readFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/**" }} },
+            .{ .identifier = "fs:b", .commandsAllow = &.{"fs.readFile"}, .scopeDeny = &.{.{ .path = "$APPDATA/secret/**" }} },
         },
         .sets = &.{},
     };
@@ -433,8 +433,8 @@ test "scopeFor does not bleed a non-granting cap's scopes onto a command" {
     // not attach to fs.readFile.
     const custom = cap.Catalog{
         .permissions = &.{
-            .{ .identifier = "fs:a", .commands_allow = &.{"fs.readFile"}, .scope_allow = &.{.{ .path = "$APPDATA/a/**" }} },
-            .{ .identifier = "fs:b", .commands_allow = &.{"fs.writeFile"}, .scope_deny = &.{.{ .path = "$APPDATA/b/**" }} },
+            .{ .identifier = "fs:a", .commandsAllow = &.{"fs.readFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/a/**" }} },
+            .{ .identifier = "fs:b", .commandsAllow = &.{"fs.writeFile"}, .scopeDeny = &.{.{ .path = "$APPDATA/b/**" }} },
         },
         .sets = &.{},
     };
@@ -458,13 +458,13 @@ test "wildcard cap: a label not in known_labels is fail-closed at originsFor/sco
     // "*" and would allow. This pins the intended fail-closed divergence.
     const custom = cap.Catalog{
         .permissions = &.{
-            .{ .identifier = "fs:a", .commands_allow = &.{"fs.readFile"}, .scope_allow = &.{.{ .path = "$APPDATA/**" }} },
+            .{ .identifier = "fs:a", .commandsAllow = &.{"fs.readFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/**" }} },
         },
         .sets = &.{},
     };
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(std.testing.allocator);
-    const caps = [_]Capability{.{ .identifier = "wild", .windows = &.{"*"}, .origins = &.{.{ .https_exact = "https://x.example" }}, .permissions = &.{"fs:a"} }};
+    const caps = [_]Capability{.{ .identifier = "wild", .windows = &.{"*"}, .origins = &.{.{ .httpsExact = "https://x.example" }}, .permissions = &.{"fs:a"} }};
     // Only "main" is a known label; "popup" is a runtime-created label absent here.
     var gt = try GrantTable.compile(std.testing.allocator, &caps, &custom, .{ .allowRemoteContent = true }, &.{"main"}, &diags);
     defer gt.deinit();
@@ -478,14 +478,14 @@ test "wildcard cap: a label not in known_labels is fail-closed at originsFor/sco
     try std.testing.expect(gt.commandGranted("popup", "fs.readFile"));
 }
 
-test "dev_url origin is dropped from the compiled trust set outside Debug" {
+test "devUrl origin is dropped from the compiled trust set outside Debug" {
     // Belt: a shipped (ReleaseSafe) binary carries no dev-server origin. Under
     // Debug the dev origin is kept; under ReleaseSafe compile() drops it.
-    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
+    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .devUrl = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
     var gt = try compileOne(&caps, .{});
     defer gt.deinit();
     var has_dev = false;
-    for (gt.originsFor("main")) |o| if (o == .dev_url) {
+    for (gt.originsFor("main")) |o| if (o == .devUrl) {
         has_dev = true;
     };
     if (builtin.mode == .Debug) {

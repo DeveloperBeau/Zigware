@@ -3,6 +3,6 @@
     .windows = .{"main"},
     .origins = .{
         .app_scheme,
-        .{ .dev_url = "http://localhost:5173" },
+        .{ .devUrl = "http://localhost:5173" },
     },
 }

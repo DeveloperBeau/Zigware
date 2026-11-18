@@ -632,6 +632,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/coverageRoot.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     cov_mod.addAnonymousImport("frontend/index.html", .{ .root_source_file = b.path("frontend/index.html") });
     cov_mod.addAnonymousImport("frontend/app.js", .{ .root_source_file = b.path("frontend/app.js") });
@@ -639,6 +640,7 @@ pub fn build(b: *std.Build) void {
     cov_mod.addAnonymousImport("frontend/window.js", .{ .root_source_file = b.path("frontend/window.js") });
     cov_mod.addImport("objc", objc_mod);
     wireManifest(cov_mod, effective_zon);
+    wireGrants(cov_mod, grants_zon);
     const cov_tests = b.addTest(.{ .root_module = cov_mod, .name = "logic-tests" });
     const cov_install = b.addInstallArtifact(cov_tests, .{});
     const cov_step = b.step("coverage-exe", "Build the logic-tests binary for kcov");

@@ -39,10 +39,10 @@ the window — so `window.Zigware.invoke("cryptoDemo", …)` reaches the Zig han
 
 ## Test
 
-Two headless checks cover the command from the repo root:
+Two headless checks cover the command. Run them from `examples/crypto-vanilla`:
 
 ```sh
-zig build test-crypto
+zig build test integration-test
 ```
 
 - the unit tests in `src/commands/crypto.zig` prove the pure crypto core

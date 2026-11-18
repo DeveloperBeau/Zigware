@@ -19,7 +19,7 @@ pub const GrantTable = grant.GrantTable;
 // field needs `&(...)` to coerce.
 pub const test_catalog = cap.Catalog{
     .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{
-        .{ .identifier = "test:fixtures", .commands_allow = &.{ "sha256", "echoBytes", "echo" } },
+        .{ .identifier = "test:fixtures", .commandsAllow = &.{ "sha256", "echoBytes", "echo" } },
     }),
     .sets = &(defaults.builtin_sets ++ [_]cap.PermissionSet{
         .{ .identifier = "test:default", .members = &.{ "core:default", "test:fixtures" } },

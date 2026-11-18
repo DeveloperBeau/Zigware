@@ -41,8 +41,8 @@ const defaults = @import("security/defaults.zig");
 const hashfile_test_catalog = cap.Catalog{
     .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{.{
         .identifier = "app:hashFile",
-        .commands_allow = &.{"hashFile"},
-        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+        .commandsAllow = &.{"hashFile"},
+        .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }},
     }}),
     .sets = &defaults.builtin_sets,
 };

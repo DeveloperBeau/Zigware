@@ -6,6 +6,6 @@
     // app:* grant is needed beyond the command surface.
     .origins = .{
         .app_scheme,
-        .{ .dev_url = "http://localhost:5173" },
+        .{ .devUrl = "http://localhost:5173" },
     },
 }

@@ -203,6 +203,19 @@ test "schema rejects unknown top-level keys via additionalProperties:false" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"additionalProperties\": false") != null);
 }
 
+test "schema lists camelCase permission keys and omits the old snake_case names" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try writeSchema(&aw.writer);
+    const out = aw.writer.buffered();
+
+    const camel = [_][]const u8{ "\"commandsAllow\"", "\"commandsDeny\"", "\"scopeAllow\"", "\"scopeDeny\"" };
+    const snake = [_][]const u8{ "commands_allow", "commands_deny", "scope_allow", "scope_deny" };
+    for (camel) |name| try std.testing.expect(std.mem.indexOf(u8, out, name) != null);
+    for (snake) |name| try std.testing.expect(std.mem.indexOf(u8, out, name) == null);
+}
+
 test "schema declares Draft 2020-12 and renders an enum for QuitPolicy" {
     const gpa = std.testing.allocator;
     var aw: std.Io.Writer.Allocating = .init(gpa);

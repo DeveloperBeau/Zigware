@@ -89,5 +89,5 @@ error.
 - **Per-message arena**: all transient handler allocations live in one arena freed
   after the terminal result.
 - **Gates run before the G5 reservation**: denied requests never reserve a slot.
-- **No error unions on handlers** (v0.1.0): use `Result(T)` for expected failures;
+- **No error unions on handlers** (v0.2.0): use `Result(T)` for expected failures;
   `CommandError.payload_json` must be `std.json` output, never raw bytes.

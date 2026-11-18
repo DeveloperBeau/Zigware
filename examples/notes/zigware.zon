@@ -25,8 +25,8 @@
         .permissions = .{
             .{
                 .identifier = "app:hashFile",
-                .commands_allow = .{"hashFile"},
-                .scope_allow = .{.{ .path = "$APPDATA/notes/**" }},
+                .commandsAllow = .{"hashFile"},
+                .scopeAllow = .{.{ .path = "$APPDATA/notes/**" }},
             },
         },
         // Strict baseline: own scripts only, no inline JS, no remote anything.

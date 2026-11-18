@@ -27,8 +27,8 @@ echo "gate: zig fetch --save the local tarball (writes .url + .hash)"
 # https://github.com/.../vX.Y.Z.tar.gz URL uses. The local tarball just removes
 # the need for a published tag or network in the gate.
 zig fetch --save=zigware "$work/zigware.tar.gz"
-if ! grep -q '\.hash = "zigware-0\.1\.0-' build.zig.zon; then
-  echo "FAIL: fetch did not record a zigware-0.1.0 hash"; cat build.zig.zon; exit 1
+if ! grep -q '\.hash = "zigware-0\.2\.0-' build.zig.zon; then
+  echo "FAIL: fetch did not record a zigware-0.2.0 hash"; cat build.zig.zon; exit 1
 fi
 
 echo "gate: build the consumer against the FETCHED package"

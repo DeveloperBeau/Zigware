@@ -43,7 +43,7 @@ pub const AppOptions = struct {
 /// (spiked 2026-06-28), so the consumer never calls linkFramework.
 ///
 /// Registers the `run`, `dts`, and `test` steps, so call addApp ONCE per consumer
-/// build invocation (v0.1.0 single-app scope). A second call would collide on
+/// build invocation (v0.2.0 single-app scope). A second call would collide on
 /// those step names.
 pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.Build.Step.Compile {
     const target = opts.target;
@@ -94,7 +94,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
             } else |_| {}
         }
     } else {
-        std.debug.panic("zigware v0.1.0 targets macOS only", .{});
+        std.debug.panic("zigware v0.2.0 targets macOS only", .{});
     }
     // Consumer-supplied own-origin assets override the framework defaults.
     barrel.addAnonymousImport("frontend/index.html", .{ .root_source_file = opts.frontend.index_html });

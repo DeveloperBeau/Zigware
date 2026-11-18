@@ -1177,6 +1177,7 @@ test "binary: bytes never appear on the eval channel (G6 untouched)" {
 const FUZZ_ITERS: usize = 10_000;
 
 test "fuzz: handleMessage tolerates arbitrary text bytes (manual driver)" {
+    errdefer std.debug.print("seed for 'fuzz: handleMessage tolerates arbitrary text bytes': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = prng.random();
     var t = try TestBridge.init();
@@ -1192,6 +1193,7 @@ test "fuzz: handleMessage tolerates arbitrary text bytes (manual driver)" {
 }
 
 test "fuzz: handleMessage tolerates arbitrary window_id and origin (manual driver)" {
+    errdefer std.debug.print("seed for 'fuzz: handleMessage tolerates arbitrary window_id ': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x9e3779b9);
     const rand = prng.random();
     var t = try TestBridge.init();
@@ -1231,7 +1233,7 @@ const ScopedCommands = struct {
 // permission, plus core:default so the cancel command stays resolvable.
 const scoped_catalog = cap_live.Catalog{
     .permissions = &(defaults_live.builtin_permissions ++ [_]cap_live.Permission{
-        .{ .identifier = "app:hashFile", .commands_allow = &.{"hashFile"}, .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} },
+        .{ .identifier = "app:hashFile", .commandsAllow = &.{"hashFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }} },
     }),
     .sets = &defaults_live.builtin_sets,
 };
