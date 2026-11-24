@@ -97,9 +97,9 @@ require a `main` window, cross-check every `security.grants` ref against a
   permission-set members are build errors; script hashes precomputed.
 - **Multi-cap (v0.2.0)**: more than one capability may match a (window, command) pair.
   `GrantTable.compile` merges them per window label. Origins are the union.
-  Scopes are the union of the allow sets and the union of the deny sets, so a deny
-  in any capability beats an allow in another. A command is denied if any matching
-  capability denies it.
+  Scopes merge only from matching capabilities that also list the command in
+  `commandsAllow`. A `scopeDeny` in a capability that does not allow the command is
+  not merged. A command is denied if any matching capability denies it.
 - **Path TOCTOU / case-insensitive FS**: acknowledged low-risk author footguns.
   A scoped command ships: the `notes` example declares `hashFile`, confined to
   `$APPDATA/notes/**`. G4 checks the real path before the handler opens the file.
