@@ -30,18 +30,19 @@ fi
 
 # Scope coverage to THIS project's src/ (kcov otherwise instruments the whole Zig
 # stdlib + compiler_rt pulled into the test binary, drowning the real number).
-# Within src/, exclude the objc/AppKit glue — it needs a live GUI and is verified
+# Within src/, exclude the objc/AppKit glue. It needs a live GUI and is verified
 # only by the manual smoke checklist (docs/SMOKE.md), not by the logic test binary.
 # kcov on macOS needs a codesigned binary with the debugger entitlement. An
 # unsigned or incompatible kcov fails (task_for_pid) or hangs. A watchdog stops a
 # hung run so the script ends and falls back.
 KCOV_TIMEOUT="${KCOV_TIMEOUT:-3600}"
+ABS_EXE="$(pwd)/$EXE"
 kcov \
   --include-path="$(pwd)/src" \
   --exclude-pattern=objc.zig,platform/macos/assoc.zig,platform/macos/backend.zig,platform/macos/window.zig,platform/macos/webview.zig,platform/macos/scheme.zig,platform/macos/delegate.zig,platform/macos/dispatch.zig,main.zig,tools/ \
-  "$OUT" "$EXE" &
+  "$OUT" "$ABS_EXE" &
 KCOV_PID=$!
-( sleep "$KCOV_TIMEOUT"; kill -9 "$KCOV_PID" 2>/dev/null; pkill -9 -f "$EXE" 2>/dev/null ) &
+( sleep "$KCOV_TIMEOUT"; kill -9 "$KCOV_PID" 2>/dev/null; pkill -9 -f "$ABS_EXE" 2>/dev/null ) &
 WATCHDOG_PID=$!
 if wait "$KCOV_PID"; then
   kill "$WATCHDOG_PID" 2>/dev/null || true
@@ -49,4 +50,6 @@ if wait "$KCOV_PID"; then
 else
   kill "$WATCHDOG_PID" 2>/dev/null || true
   fallback "kcov failed or ran past ${KCOV_TIMEOUT}s. Set KCOV_TIMEOUT for a longer run. On macOS, kcov also needs a codesigned build with the debugger entitlement."
+  echo "coverage run failed: kcov exited non-zero or timed out." >&2
+  exit 1
 fi
