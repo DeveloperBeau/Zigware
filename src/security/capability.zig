@@ -6,8 +6,10 @@ pub const Fuses = manifest.Fuses;
 /// A trusted origin shape (Tauri capability remote-origin analog).
 pub const OriginPattern = union(enum) {
     app_scheme, // app:// (the prod origin), always trusted
-    devUrl: []const u8, // exact dev origin, honored only in debug builds
-    httpsExact: []const u8, // explicit https origin, requires allowRemoteContent fuse
+    /// An exact dev origin, honored only in debug builds.
+    devUrl: []const u8,
+    /// An explicit https origin, which requires the allowRemoteContent fuse.
+    httpsExact: []const u8,
 };
 
 // HostRule/Scope/Permission are canonical in the manifest layer (types.zig)

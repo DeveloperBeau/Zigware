@@ -29,9 +29,13 @@ pub const Scope = union(enum) {
 /// A single permission grants commands and carries scope. Deny beats allow.
 pub const Permission = struct {
     identifier: []const u8, // "<plugin>:<action>", lower-ascii
+    /// Command names this permission allows.
     commandsAllow: []const []const u8 = &.{},
+    /// Command names this permission denies, which beats any allow.
     commandsDeny: []const []const u8 = &.{},
+    /// Scopes that the allowed commands may act on.
     scopeAllow: []const Scope = &.{},
+    /// Scopes that the allowed commands may not act on.
     scopeDeny: []const Scope = &.{},
 };
 
