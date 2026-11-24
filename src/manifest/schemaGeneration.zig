@@ -203,6 +203,92 @@ test "schema rejects unknown top-level keys via additionalProperties:false" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"additionalProperties\": false") != null);
 }
 
+test "top-level schema object sets additionalProperties to false" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try writeSchema(&aw.writer);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, aw.writer.buffered(), .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value == .object);
+    const ap = parsed.value.object.get("additionalProperties") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(ap == .bool);
+    try std.testing.expectEqual(false, ap.bool);
+}
+
+/// Counts of scope lists seen while walking the parsed schema.
+const ScopeWalk = struct {
+    allow: usize = 0,
+    deny: usize = 0,
+};
+
+/// Check every variant of one scope list. `list` is the value of a
+/// `scopeAllow` or `scopeDeny` property.
+fn checkScopeVariants(list: std.json.Value) !void {
+    try std.testing.expect(list == .object);
+    const items = list.object.get("items") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(items == .object);
+    const one_of = items.object.get("oneOf") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(one_of == .array);
+    try std.testing.expectEqual(@as(usize, 4), one_of.array.items.len);
+
+    const expected_names = [_][]const u8{ "path", "host", "argv", "label" };
+    for (expected_names) |name| {
+        var seen = false;
+        for (one_of.array.items) |variant| {
+            try std.testing.expect(variant == .object);
+            const props = variant.object.get("properties") orelse return error.TestUnexpectedResult;
+            try std.testing.expect(props == .object);
+            if (props.object.get(name) != null) seen = true;
+        }
+        try std.testing.expect(seen);
+    }
+    for (one_of.array.items) |variant| {
+        const ap = variant.object.get("additionalProperties") orelse return error.TestUnexpectedResult;
+        try std.testing.expect(ap == .bool);
+        try std.testing.expectEqual(false, ap.bool);
+    }
+}
+
+fn walkForScopeLists(value: std.json.Value, found: *ScopeWalk) !void {
+    switch (value) {
+        .object => |obj| {
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (std.mem.eql(u8, key, "scopeAllow")) {
+                    found.allow += 1;
+                    try checkScopeVariants(entry.value_ptr.*);
+                } else if (std.mem.eql(u8, key, "scopeDeny")) {
+                    found.deny += 1;
+                    try checkScopeVariants(entry.value_ptr.*);
+                }
+                try walkForScopeLists(entry.value_ptr.*, found);
+            }
+        },
+        .array => |arr| for (arr.items) |item| try walkForScopeLists(item, found),
+        else => {},
+    }
+}
+
+test "every scopeAllow and scopeDeny variant object sets additionalProperties to false" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try writeSchema(&aw.writer);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, aw.writer.buffered(), .{});
+    defer parsed.deinit();
+
+    var found: ScopeWalk = .{};
+    try walkForScopeLists(parsed.value, &found);
+    // A broken walk must not pass vacuously.
+    try std.testing.expect(found.allow >= 1);
+    try std.testing.expect(found.deny >= 1);
+}
+
 test "schema lists camelCase permission keys and omits the old snake_case names" {
     const gpa = std.testing.allocator;
     var aw: std.Io.Writer.Allocating = .init(gpa);
