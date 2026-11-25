@@ -27,7 +27,7 @@ pub const test_catalog = cap.Catalog{
 };
 
 /// Build a single-cap GrantTable for "main" granting the fixture commands with an
-/// app_scheme origin. Caller owns the returned table: `gt.deinit()` then
+/// appScheme origin. Caller owns the returned table: `gt.deinit()` then
 /// `alloc.destroy(gt)`. Allocator-parameterized so OOM-injection harnesses can
 /// build it on their failing/limited allocator; a compile-OOM frees the create.
 pub fn buildTestGrants(alloc: std.mem.Allocator) !*GrantTable {
@@ -35,7 +35,7 @@ pub fn buildTestGrants(alloc: std.mem.Allocator) !*GrantTable {
     errdefer alloc.destroy(gt);
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(alloc);
-    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
+    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"test:default"} }};
     gt.* = try GrantTable.compile(alloc, &caps, &test_catalog, .{}, &.{"main"}, &diags);
     return gt;
 }
@@ -43,14 +43,14 @@ pub fn buildTestGrants(alloc: std.mem.Allocator) !*GrantTable {
 /// Build a GrantTable covering two window labels "a" and "b" for the E
 /// multi-window routing/impersonation/ready tests. ONE capability spans both
 /// labels (so scopeFor/originsFor keep n<=1 matched cap per label) granting the
-/// fixture commands with an app_scheme origin. Caller owns the returned table:
+/// fixture commands with an appScheme origin. Caller owns the returned table:
 /// `gt.deinit()` then `alloc.destroy(gt)`.
 pub fn buildTestGrantsMulti(alloc: std.mem.Allocator) !*GrantTable {
     const gt = try alloc.create(GrantTable);
     errdefer alloc.destroy(gt);
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(alloc);
-    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "a", "b" }, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
+    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "a", "b" }, .origins = &.{.appScheme}, .permissions = &.{"test:default"} }};
     gt.* = try GrantTable.compile(alloc, &caps, &test_catalog, .{}, &.{ "a", "b" }, &diags);
     return gt;
 }

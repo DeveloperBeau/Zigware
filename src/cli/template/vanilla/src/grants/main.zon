@@ -4,6 +4,6 @@
     // Vanilla ships no dev server, so the main window trusts only the app://
     // production origin. There is no devUrl origin to honor in Debug builds.
     .origins = .{
-        .app_scheme,
+        .appScheme,
     },
 }

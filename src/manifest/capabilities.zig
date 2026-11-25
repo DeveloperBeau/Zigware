@@ -173,6 +173,30 @@ test "old snake_case origin keys in a grant file are rejected" {
     }
 }
 
+test "old app_scheme origin tag in a grant file is rejected" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Hand-written: the pre-0.2.0 tag spelling. It must fail, not be dropped
+    // or rewritten to appScheme.
+    const body = ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .app_scheme } }";
+    try std.testing.expectError(error.ParseFailed, loadGrantSource(arena, body));
+
+    const src: [:0]const u8 = body;
+    var zon_diag: std.zon.parse.Diagnostics = .{};
+    defer zon_diag.deinit(arena);
+    try std.testing.expectError(
+        error.ParseZon,
+        std.zon.parse.fromSliceAlloc(Capability, arena, src, &zon_diag, .{}),
+    );
+    const msg = try std.fmt.allocPrint(arena, "{f}", .{zon_diag});
+    // Hand-written from the std.zon union-tag error: the old tag is named as
+    // unexpected, and the note lists the camelCase tags that are supported.
+    try std.testing.expect(std.mem.indexOf(u8, msg, "error: unexpected field 'app_scheme'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "note: supported: 'appScheme', 'devUrl', 'httpsExact'") != null);
+}
+
 test "unknown keys in a grant file are rejected" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -182,7 +206,7 @@ test "unknown keys in a grant file are rejected" {
     // reference list. Neither may be skipped silently.
     const bodies = [_][]const u8{
         ".{ .identifier = \"main\", .windows = .{\"main\"}, .fuzzUnknown = 1 }",
-        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origin_list = .{ .app_scheme } }",
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origin_list = .{ .appScheme } }",
     };
     for (bodies) |body| {
         try std.testing.expectError(error.ParseFailed, loadGrantSource(arena, body));
@@ -195,18 +219,18 @@ test "camelCase origin keys in a grant file parse to the declared origins" {
     const arena = arena_state.allocator();
 
     const body =
-        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .app_scheme, .{ .devUrl = \"http://localhost:5173\" }, .{ .httpsExact = \"https://cdn.example\" } } }";
+        ".{ .identifier = \"main\", .windows = .{\"main\"}, .origins = .{ .appScheme, .{ .devUrl = \"http://localhost:5173\" }, .{ .httpsExact = \"https://cdn.example\" } } }";
     const caps = try loadGrantSource(arena, body);
     try std.testing.expectEqual(@as(usize, 1), caps.len);
     try std.testing.expectEqualStrings("main", caps[0].identifier);
     try std.testing.expectEqual(@as(usize, 3), caps[0].origins.len);
-    try std.testing.expect(caps[0].origins[0] == .app_scheme);
+    try std.testing.expect(caps[0].origins[0] == .appScheme);
     switch (caps[0].origins[1]) {
         .devUrl => |u| try std.testing.expectEqualStrings("http://localhost:5173", u),
-        .app_scheme, .httpsExact => return error.WrongOrigin,
+        .appScheme, .httpsExact => return error.WrongOrigin,
     }
     switch (caps[0].origins[2]) {
         .httpsExact => |u| try std.testing.expectEqualStrings("https://cdn.example", u),
-        .app_scheme, .devUrl => return error.WrongOrigin,
+        .appScheme, .devUrl => return error.WrongOrigin,
     }
 }

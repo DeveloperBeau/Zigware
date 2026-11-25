@@ -1287,7 +1287,7 @@ const ScopedBridge = struct {
         const caps = [_]cap_live.Capability{.{
             .identifier = "notes",
             .windows = &.{"main"},
-            .origins = &.{.app_scheme},
+            .origins = &.{.appScheme},
             .permissions = &.{ "core:default", "app:hashFile" },
         }};
         grants.* = try fixtures.GrantTable.compile(a, &caps, &scoped_catalog, .{}, &.{"main"}, &diags);

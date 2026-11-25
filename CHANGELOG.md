@@ -12,3 +12,4 @@
   - `scope_deny` to `scopeDeny`
   - `dev_url` to `devUrl`
   - `https_exact` to `httpsExact`
+  - `app_scheme` to `appScheme`

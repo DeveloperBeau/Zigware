@@ -80,7 +80,7 @@ test "live scope: hashFile allows an in-scope path and denies an out-of-scope on
     const caps = [_]cap.Capability{.{
         .identifier = "notes",
         .windows = &.{"main"},
-        .origins = &.{.app_scheme},
+        .origins = &.{.appScheme},
         .permissions = &.{ "core:default", "app:hashFile" },
     }};
     var diags: manifest.Diagnostics = .{};

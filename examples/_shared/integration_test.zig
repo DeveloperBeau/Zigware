@@ -70,7 +70,7 @@ const Harness = struct {
         const caps = [_]z.capability.Capability{.{
             .identifier = "crypto",
             .windows = &.{"main"},
-            .origins = &.{.app_scheme},
+            .origins = &.{.appScheme},
             .permissions = &.{"app:cryptoDemo"},
         }};
         grants.* = try z.GrantTable.compile(a, &caps, &crypto_catalog, .{}, &.{"main"}, &gdiag);

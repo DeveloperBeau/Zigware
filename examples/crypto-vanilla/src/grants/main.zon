@@ -6,6 +6,6 @@
     // filesystem), so no app:* permission is needed — the command surface alone
     // makes it callable from the trusted window.
     .origins = .{
-        .app_scheme,
+        .appScheme,
     },
 }

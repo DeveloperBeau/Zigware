@@ -42,12 +42,12 @@ pub const Decision = union(enum) {
 };
 
 /// G1: does `origin` match any trusted OriginPattern for this window?
-/// Empty origins means app_scheme only. devUrl honored only when is_debug.
+/// Empty origins means appScheme only. devUrl honored only when is_debug.
 /// httpsExact already fuse-filtered at compile.
 fn originTrusted(origins: []const OriginPattern, origin: []const u8, is_debug: bool) bool {
     if (origins.len == 0) return isAppScheme(origin);
     for (origins) |o| switch (o) {
-        .app_scheme => if (isAppScheme(origin)) return true,
+        .appScheme => if (isAppScheme(origin)) return true,
         .devUrl => |u| if (is_debug and std.mem.eql(u8, u, origin)) return true,
         .httpsExact => |u| if (std.mem.eql(u8, u, origin)) return true,
     };
@@ -191,7 +191,7 @@ test "G2: granted command allows, ungranted denies with command.not_granted" {
 }
 
 test "G1: devUrl honored only in debug" {
-    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .devUrl = "http://localhost:1420" } }, .permissions = &.{"core:default"} }};
+    const caps = [_]cap.Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .appScheme, .{ .devUrl = "http://localhost:1420" } }, .permissions = &.{"core:default"} }};
     var table = try gt(&caps);
     defer table.deinit();
     const bases = Bases{ .appdata = "/a", .home = "/h", .appconfig = "/c" };
@@ -216,11 +216,11 @@ test "G4: a .none command allows immediately" {
 
 test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
     // Three origin patterns matching the live gate's trust set:
-    //   app_scheme           -> app://localhost and app://localhost/<path>
+    //   appScheme           -> app://localhost and app://localhost/<path>
     //   devUrl              -> exact http://localhost:1420
     //   httpsExact          -> exact https://x.example
     const origins = [_]cap.OriginPattern{
-        .app_scheme,
+        .appScheme,
         .{ .devUrl = "http://localhost:1420" },
         .{ .httpsExact = "https://x.example" },
     };
@@ -280,7 +280,7 @@ test "fuzz: only the three origin shapes ever accept (manual >= 10000)" {
             // accepted. Any other byte sequence must be rejected. If this fires, it
             // is a REAL bypass in originTrusted; do NOT weaken the oracle.
             //
-            // app_scheme covers:
+            // appScheme covers:
             //   "app://localhost"        (bare, no path)
             //   "app://localhost/<path>" (with slash-prefixed path)
             // devUrl: exact string match "http://localhost:1420"

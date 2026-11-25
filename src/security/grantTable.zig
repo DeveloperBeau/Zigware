@@ -209,9 +209,9 @@ pub const GrantTable = struct {
 
     /// G1 input: origins trusted for this window, unioned across every matching
     /// capability. Empty slice (no matching cap, or a label not in `known_labels`)
-    /// means app_scheme only (G1 treats empty as {app_scheme}). Keyed on
+    /// means appScheme only (G1 treats empty as {appScheme}). Keyed on
     /// `known_labels` (exact match); a label outside known_labels under a wildcard
-    /// cap fails CLOSED to app_scheme-only, never widening trust.
+    /// cap fails CLOSED to appScheme-only, never widening trust.
     pub fn originsFor(self: *const GrantTable, label: []const u8) []const OriginPattern {
         for (self.origins_by_label) |lo| {
             if (std.mem.eql(u8, lo.label, label)) return lo.origins;
@@ -344,7 +344,7 @@ test "https origin dropped when allowRemoteContent off; emitted as diagnostic" {
     defer diags.deinit(std.testing.allocator);
     var gt = try GrantTable.compile(std.testing.allocator, &caps, &defaults.builtin_catalog, .{}, &.{"main"}, &diags);
     defer gt.deinit();
-    try std.testing.expectEqual(@as(usize, 0), gt.originsFor("main").len); // dropped -> empty -> app_scheme only
+    try std.testing.expectEqual(@as(usize, 0), gt.originsFor("main").len); // dropped -> empty -> appScheme only
     var saw = false;
     for (diags.items.items) |d| if (d.code == .fuse_requires_capability) {
         saw = true;
@@ -386,7 +386,7 @@ test "originsFor unions origins across all window-matching caps (multi-cap)" {
     // must expose BOTH. Before the merge, originsFor asserted n<=1 and returned
     // only the first cap's origins.
     const caps = [_]Capability{
-        .{ .identifier = "a", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"core:default"} },
+        .{ .identifier = "a", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"core:default"} },
         .{ .identifier = "b", .windows = &.{"main"}, .origins = &.{.{ .httpsExact = "https://x.example" }}, .permissions = &.{"core:default"} },
     };
     var diags: manifest.Diagnostics = .{};
@@ -397,7 +397,7 @@ test "originsFor unions origins across all window-matching caps (multi-cap)" {
     var saw_app = false;
     var saw_https = false;
     for (origins) |o| switch (o) {
-        .app_scheme => saw_app = true,
+        .appScheme => saw_app = true,
         .httpsExact => saw_https = true,
         else => {},
     };
@@ -471,7 +471,7 @@ test "wildcard cap: a label not in known_labels is fail-closed at originsFor/sco
     // Known label: merged origin + scope present.
     try std.testing.expect(gt.originsFor("main").len == 1);
     try std.testing.expectEqual(@as(usize, 1), gt.scopeFor("main", "fs.readFile").allow.len);
-    // Unknown label: fail-closed (app_scheme-only origins, empty scope), despite
+    // Unknown label: fail-closed (appScheme-only origins, empty scope), despite
     // commandGranted globbing "*".
     try std.testing.expectEqual(@as(usize, 0), gt.originsFor("popup").len);
     try std.testing.expectEqual(@as(usize, 0), gt.scopeFor("popup", "fs.readFile").allow.len);
@@ -481,7 +481,7 @@ test "wildcard cap: a label not in known_labels is fail-closed at originsFor/sco
 test "devUrl origin is dropped from the compiled trust set outside Debug" {
     // Belt: a shipped (ReleaseSafe) binary carries no dev-server origin. Under
     // Debug the dev origin is kept; under ReleaseSafe compile() drops it.
-    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .devUrl = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
+    const caps = [_]Capability{.{ .identifier = "c", .windows = &.{"main"}, .origins = &.{ .appScheme, .{ .devUrl = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
     var gt = try compileOne(&caps, .{});
     defer gt.deinit();
     var has_dev = false;

@@ -1,10 +1,10 @@
 .{
     .identifier = "main",
     .windows = .{"main"},
-    // app_scheme (app://) is the production origin. The Vite dev-server origin is
+    // appScheme (app://) is the production origin. The Vite dev-server origin is
     // trusted only in Debug builds; a release binary drops it entirely.
     .origins = .{
-        .app_scheme,
+        .appScheme,
         .{ .devUrl = "http://localhost:5173" },
     },
     // core:default carries compute.cancel; app:hashFile grants the hashFile

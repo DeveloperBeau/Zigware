@@ -277,8 +277,8 @@ fn buildTestGrantsManage(alloc: std.mem.Allocator) !*grant.GrantTable {
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(alloc);
     const caps = [_]cap.Capability{
-        .{ .identifier = "cap-main", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"test:manage"} },
-        .{ .identifier = "cap-plain", .windows = &.{"plain"}, .origins = &.{.app_scheme}, .permissions = &.{"test:plain"} },
+        .{ .identifier = "cap-main", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"test:manage"} },
+        .{ .identifier = "cap-plain", .windows = &.{"plain"}, .origins = &.{.appScheme}, .permissions = &.{"test:plain"} },
     };
     gt.* = try grant.GrantTable.compile(alloc, &caps, &manage_catalog, .{}, &.{ "main", "plain" }, &diags);
     return gt;

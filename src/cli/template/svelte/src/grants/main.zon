@@ -2,7 +2,7 @@
     .identifier = "main",
     .windows = .{"main"},
     .origins = .{
-        .app_scheme,
+        .appScheme,
         .{ .devUrl = "http://localhost:5173" },
     },
 }

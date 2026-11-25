@@ -5,7 +5,7 @@ pub const Fuses = manifest.Fuses;
 
 /// A trusted origin shape (Tauri capability remote-origin analog).
 pub const OriginPattern = union(enum) {
-    app_scheme, // app:// (the prod origin), always trusted
+    appScheme, // app:// (the prod origin), always trusted
     /// An exact dev origin, honored only in debug builds.
     devUrl: []const u8,
     /// An explicit https origin, which requires the allowRemoteContent fuse.
@@ -30,7 +30,7 @@ pub const PermissionSet = struct {
 pub const Capability = struct {
     identifier: []const u8, // unique, for diagnostics
     windows: []const []const u8, // window LABEL globs ("main", "win-*", "*")
-    origins: []const OriginPattern = &.{}, // empty means {app_scheme} only
+    origins: []const OriginPattern = &.{}, // empty means {appScheme} only
     permissions: []const []const u8 = &.{}, // permission or set identifiers
 };
 

@@ -15,7 +15,7 @@ pub fn decideNavigation(origins: []const OriginPattern, target: []const u8, is_d
     // window with an empty grant set can still load its own content.
     if (gates.isAppScheme(target)) return .allow;
     for (origins) |o| switch (o) {
-        .app_scheme => {}, // handled above
+        .appScheme => {}, // handled above
         .devUrl => |u| if (is_debug and std.mem.eql(u8, u, target)) return .allow,
         .httpsExact => |u| if (std.mem.eql(u8, u, target)) return .allow,
     };

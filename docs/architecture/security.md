@@ -24,9 +24,9 @@ defaults to deny.
 
 A `Capability` = `{ identifier, windows[], origins[], permissions[] }`: it grants a
 set of resolved permissions to a set of window-label globs from a set of origins.
-Origins are `app_scheme` (exactly `app://localhost`), `devUrl` (exact, Debug only),
+Origins are `appScheme` (exactly `app://localhost`), `devUrl` (exact, Debug only),
 or `httpsExact` (exact, requires the `allowRemoteContent` fuse). Empty origins ⇒
-`app_scheme` only. `GrantTable.compile` resolves permission sets transitively into
+`appScheme` only. `GrantTable.compile` resolves permission sets transitively into
 commands + scopes, dropping fuse-gated families (shell, https) and emitting
 diagnostics. Built-ins live in `defaults.zig`; app-declared permissions are spliced
 in at comptime via `app_catalog.zig`. `core:default` (the `App.init` grant) contains

@@ -5,6 +5,6 @@
     // makes it callable from the trusted window, so no explicit permission entry
     // is needed.
     .origins = .{
-        .app_scheme,
+        .appScheme,
     },
 }
