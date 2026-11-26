@@ -35,10 +35,13 @@ toolchain. Run the per-suite steps instead:
     zig build test-init      # CLI scaffolding
     zig build test-app       # app shell / lifecycle
     zig build test-sec       # security regression
-    zig build test-notes     # notes example integration
-    zig build test-crypto    # crypto example round-trip
     zig build test-main      # CLI main wiring
     zig build test-build     # CLI build orchestrator
+
+Each example is its own package. Run its tests from its folder, for example
+`cd examples/notes && zig build test integration-test`. The same steps work in
+`examples/crypto-vanilla`, `crypto-react`, `crypto-vue` and `crypto-svelte`.
+`tests/examples/gate.sh` runs them for every example.
 
     bun test                 # JS shim contract + hardening + JS-eval round-trip
     bash scripts/coverage.sh # kcov HTML report, or a documented fallback if kcov is absent

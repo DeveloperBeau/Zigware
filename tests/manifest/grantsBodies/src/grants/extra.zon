@@ -2,6 +2,6 @@
     .identifier = "extra",
     .windows = .{"main"},
     .origins = .{
-        .app_scheme,
+        .appScheme,
     },
 }

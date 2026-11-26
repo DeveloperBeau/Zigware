@@ -259,8 +259,8 @@ const dummy_bases = gates.Bases{ .appdata = "/tmp", .home = "/tmp", .appconfig =
 /// the per-(label,command) n<=1 grant assertion inert.
 const manage_catalog = cap.Catalog{
     .permissions = &(defaults.builtin_permissions ++ [_]cap.Permission{
-        .{ .identifier = "test:fixtures", .commands_allow = &.{ "sha256", "echoBytes", "echo" } },
-        .{ .identifier = "test:windowscope", .scope_allow = &.{
+        .{ .identifier = "test:fixtures", .commandsAllow = &.{ "sha256", "echoBytes", "echo" } },
+        .{ .identifier = "test:windowscope", .scopeAllow = &.{
             .{ .label = "viewer" },
             .{ .host = .{ .host = "localhost" } },
         } },
@@ -277,8 +277,8 @@ fn buildTestGrantsManage(alloc: std.mem.Allocator) !*grant.GrantTable {
     var diags: manifest.Diagnostics = .{};
     defer diags.deinit(alloc);
     const caps = [_]cap.Capability{
-        .{ .identifier = "cap-main", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"test:manage"} },
-        .{ .identifier = "cap-plain", .windows = &.{"plain"}, .origins = &.{.app_scheme}, .permissions = &.{"test:plain"} },
+        .{ .identifier = "cap-main", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"test:manage"} },
+        .{ .identifier = "cap-plain", .windows = &.{"plain"}, .origins = &.{.appScheme}, .permissions = &.{"test:plain"} },
     };
     gt.* = try grant.GrantTable.compile(alloc, &caps, &manage_catalog, .{}, &.{ "main", "plain" }, &diags);
     return gt;
@@ -573,6 +573,7 @@ fn pickFragment(rand: std.Random) []const u8 {
 }
 
 test "fuzz: window.create tolerates adversarial label/url/title across the gate chain (manual driver)" {
+    errdefer std.debug.print("seed for 'fuzz: window.create tolerates adversarial label/ur': {d}\n", .{std.testing.random_seed});
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed ^ 0x57494e44); // 'WIND'
     const rand = prng.random();
     var t = try WinHarness.init();

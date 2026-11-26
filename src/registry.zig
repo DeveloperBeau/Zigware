@@ -202,7 +202,7 @@ fn validate(comptime State: type, comptime UserCommands: anytype) void {
             const Ret = fn_info.return_type.?;
             const Inner = if (asyncInner(Ret)) |x| x else Ret;
             if (@typeInfo(Inner) == .error_union)
-                @compileError("command '" ++ d.name ++ "' returns an error union; v0.1.0 requires Result(T) instead (deviation 7)");
+                @compileError("command '" ++ d.name ++ "' returns an error union; v0.2.0 requires Result(T) instead (deviation 7)");
             // Otherwise the return type is accepted if it is a value, Result(T),
             // Bytes, or Result(Bytes) (optionally Async-wrapped). encodeResult
             // switches on it; an unmappable value type fails JSON encode at runtime

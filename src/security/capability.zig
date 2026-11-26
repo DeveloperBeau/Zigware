@@ -5,9 +5,12 @@ pub const Fuses = manifest.Fuses;
 
 /// A trusted origin shape (Tauri capability remote-origin analog).
 pub const OriginPattern = union(enum) {
-    app_scheme, // app:// (the prod origin), always trusted
-    dev_url: []const u8, // exact dev origin, honored only in debug builds
-    https_exact: []const u8, // explicit https origin, requires allowRemoteContent fuse
+    /// The app:// production origin, which is always trusted.
+    appScheme,
+    /// An exact dev origin, honored only in debug builds.
+    devUrl: []const u8,
+    /// An explicit https origin, which requires the allowRemoteContent fuse.
+    httpsExact: []const u8,
 };
 
 // HostRule/Scope/Permission are canonical in the manifest layer (types.zig)
@@ -28,7 +31,7 @@ pub const PermissionSet = struct {
 pub const Capability = struct {
     identifier: []const u8, // unique, for diagnostics
     windows: []const []const u8, // window LABEL globs ("main", "win-*", "*")
-    origins: []const OriginPattern = &.{}, // empty means {app_scheme} only
+    origins: []const OriginPattern = &.{}, // empty means {appScheme} only
     permissions: []const []const u8 = &.{}, // permission or set identifiers
 };
 
@@ -99,7 +102,7 @@ fn assertNoCycle(comptime catalog: Catalog, comptime root: []const u8, comptime 
 
 test "Catalog.permission / set resolve by identifier" {
     const cat = Catalog{
-        .permissions = &.{.{ .identifier = "fs:read", .commands_allow = &.{"fs.readFile"} }},
+        .permissions = &.{.{ .identifier = "fs:read", .commandsAllow = &.{"fs.readFile"} }},
         .sets = &.{.{ .identifier = "fs:default", .members = &.{"fs:read"} }},
     };
     try std.testing.expect(cat.permission("fs:read") != null);

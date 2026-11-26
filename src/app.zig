@@ -33,7 +33,7 @@ const registry = @import("registry.zig");
 /// path (Task 3).
 const embedded_caps: []const security_cap.Capability = @import("zigware_grants_zon");
 
-/// Comptime-strip any `.dev_url` origin outside Debug so a shipped (ReleaseSafe)
+/// Comptime-strip any `.devUrl` origin outside Debug so a shipped (ReleaseSafe)
 /// binary carries no dev-server origin STRING at all (a pure comptime rebuild
 /// keeps the string out of the binary; the compile-time drop in
 /// GrantTable.compile and the runtime is_debug gate in gates.originTrusted are
@@ -45,7 +45,7 @@ fn dropDevUrlInRelease(comptime caps: []const security_cap.Capability) []const s
         for (caps) |c| {
             var origins: []const security_cap.OriginPattern = &.{};
             for (c.origins) |o| switch (o) {
-                .dev_url => {}, // dropped in release
+                .devUrl => {}, // dropped in release
                 else => origins = origins ++ &[_]security_cap.OriginPattern{o},
             };
             out = out ++ &[_]security_cap.Capability{.{
@@ -60,7 +60,7 @@ fn dropDevUrlInRelease(comptime caps: []const security_cap.Capability) []const s
 }
 
 /// The live capabilities: the embedded declarations with release dev origins
-/// stripped. A comptime constant so ReleaseSafe never materializes a dev_url.
+/// stripped. A comptime constant so ReleaseSafe never materializes a devUrl.
 const live_caps: []const security_cap.Capability = dropDevUrlInRelease(embedded_caps);
 
 const D = manifest_types;
@@ -135,7 +135,7 @@ fn AppCommands(comptime B: type) type {
 /// the app's own window labels. Caller owns the returned table.
 ///
 /// Fallback used when the app declares NO src/grants/*.zon: grants every app
-/// command to EVERY window over app_scheme, alongside core:default. Apps that
+/// command to EVERY window over appScheme, alongside core:default. Apps that
 /// declare capabilities go through buildGrantsFromCaps instead, which honors
 /// per-window and per-origin declarations (including a Debug dev origin).
 fn synthAppGrants(
@@ -169,7 +169,7 @@ fn synthAppGrants(
                 }
             }
             if (!is_declared)
-                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commands_allow = &[_][]const u8{name} }};
+                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commandsAllow = &[_][]const u8{name} }};
         }
         break :blk .{ .perm_ids = perm_ids, .extra = extra };
     };
@@ -181,7 +181,7 @@ fn synthAppGrants(
     const caps = [_]security_cap.Capability{.{
         .identifier = "app",
         .windows = labels,
-        .origins = &.{.app_scheme},
+        .origins = &.{.appScheme},
         .permissions = synth.perm_ids,
     }};
 
@@ -199,7 +199,7 @@ fn synthAppGrants(
 /// declared scoped `app:<cmd>` is reused, not re-minted), so the app's commands
 /// stay invokable from its windows while per-window scoping and per-origin trust
 /// (including a Debug dev origin) now come from the declarations. With no declared
-/// caps this delegates to synthAppGrants (all windows, app_scheme, core:default +
+/// caps this delegates to synthAppGrants (all windows, appScheme, core:default +
 /// app commands), preserving the pre-capability behavior. Caller owns the table.
 fn buildGrantsFromCaps(
     alloc: std.mem.Allocator,
@@ -226,7 +226,7 @@ fn buildGrantsFromCaps(
                 }
             }
             if (!is_declared)
-                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commands_allow = &[_][]const u8{name} }};
+                extra = extra ++ &[_]security_cap.Permission{.{ .identifier = id, .commandsAllow = &[_][]const u8{name} }};
         }
         break :blk .{ .perm_ids = perm_ids, .extra = extra };
     };
@@ -467,7 +467,7 @@ pub fn App(comptime B: type) type {
                 // The dev-URL override applies ONLY to the "main" window and ONLY in
                 // Debug (devUrlOverride folds to null in release). It selects the window
                 // URL; it is never fed into nav trust (that flows through the manifest
-                // dev_url capability origin in decideNavigation). create() dupes opts.url
+                // devUrl capability origin in decideNavigation). create() dupes opts.url
                 // (manager.zig:73), so the override is freed right after create returns.
                 const dev_override = if (std.mem.eql(u8, w.label, "main"))
                     try devUrlOverride(alloc)
@@ -767,14 +767,14 @@ fn teardownMulti(h: anytype) void {
 
 /// A GrantTable covering labels "main" and "viewer" with one capability (so
 /// scopeFor/originsFor keep n<=1 matched cap per label), granting the fixture
-/// commands with an app_scheme origin.
+/// commands with an appScheme origin.
 fn buildAppGrantsMulti(alloc: std.mem.Allocator) !*fixtures.GrantTable {
     const cap = @import("security/capability.zig");
     const gt = try alloc.create(fixtures.GrantTable);
     errdefer alloc.destroy(gt);
     var diags: manifest_types.Diagnostics = .{};
     defer diags.deinit(alloc);
-    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "main", "viewer" }, .origins = &.{.app_scheme}, .permissions = &.{"test:default"} }};
+    const caps = [_]cap.Capability{.{ .identifier = "test", .windows = &.{ "main", "viewer" }, .origins = &.{.appScheme}, .permissions = &.{"test:default"} }};
     gt.* = try fixtures.GrantTable.compile(alloc, &caps, &fixtures.test_catalog, .{}, &.{ "main", "viewer" }, &diags);
     return gt;
 }
@@ -797,9 +797,9 @@ fn buildPingGrants(alloc: std.mem.Allocator) !*security_grant.GrantTable {
     errdefer alloc.destroy(gt);
     var diags: manifest_types.Diagnostics = .{};
     defer diags.deinit(alloc);
-    const perm = security_cap.Permission{ .identifier = "app:ping", .commands_allow = &.{"ping"} };
+    const perm = security_cap.Permission{ .identifier = "app:ping", .commandsAllow = &.{"ping"} };
     const catalog = security_cap.Catalog{ .permissions = &.{perm}, .sets = &.{} };
-    const caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"app:ping"} }};
+    const caps = [_]security_cap.Capability{.{ .identifier = "app", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"app:ping"} }};
     gt.* = try security_grant.GrantTable.compile(alloc, &caps, &catalog, .{}, &.{"main"}, &diags);
     return gt;
 }
@@ -858,8 +858,8 @@ test "synthesized grants preserve a declared command scope" {
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const notes_hashfile = security_cap.Permission{
         .identifier = "app:hashFile",
-        .commands_allow = &.{"hashFile"},
-        .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }},
+        .commandsAllow = &.{"hashFile"},
+        .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }},
     };
     const grants = try synthAppGrants(std.testing.allocator, &.{"main"}, TestScopedCommands, &.{notes_hashfile});
     const app = App(NullBackend).initWithConfig(TestScopedCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {
@@ -1147,22 +1147,22 @@ test "E: each configured label routes its own invoke reply" {
     }
 }
 
-test "dropDevUrlInRelease strips dev_url origins outside Debug, keeps them in Debug" {
+test "dropDevUrlInRelease strips devUrl origins outside Debug, keeps them in Debug" {
     const in = [_]security_cap.Capability{.{
         .identifier = "c",
         .windows = &.{"main"},
-        .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:5173" } },
+        .origins = &.{ .appScheme, .{ .devUrl = "http://localhost:5173" } },
         .permissions = &.{},
     }};
     const out = comptime dropDevUrlInRelease(&in);
     var has_dev = false;
     var has_app = false;
     inline for (out[0].origins) |o| switch (o) {
-        .dev_url => has_dev = true,
-        .app_scheme => has_app = true,
+        .devUrl => has_dev = true,
+        .appScheme => has_app = true,
         else => {},
     };
-    try std.testing.expect(has_app); // app_scheme always survives
+    try std.testing.expect(has_app); // appScheme always survives
     if (builtin_target.mode == .Debug) {
         try std.testing.expect(has_dev);
     } else {
@@ -1170,11 +1170,11 @@ test "dropDevUrlInRelease strips dev_url origins outside Debug, keeps them in De
     }
 }
 
-test "buildGrantsFromCaps honors a declared cap's window and trusts app_scheme" {
-    // One declared cap (main window, app_scheme). The app's ping command is
+test "buildGrantsFromCaps honors a declared cap's window and trusts appScheme" {
+    // One declared cap (main window, appScheme). The app's ping command is
     // reachable from "main" but NOT from an undeclared window label.
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
-    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{.app_scheme}, .permissions = &.{"core:default"} }};
+    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{.appScheme}, .permissions = &.{"core:default"} }};
     const grants = try buildGrantsFromCaps(std.testing.allocator, TestAppCommands, &.{}, &decl, &.{"main"});
     // The declared cap scopes ping to "main": granted there, denied on any window
     // label the cap does not cover (per-window enforcement, not all-windows).
@@ -1195,16 +1195,16 @@ test "buildGrantsFromCaps honors a declared cap's window and trusts app_scheme" 
 }
 
 test "buildGrantsFromCaps trusts a declared dev origin only in Debug" {
-    // The cap declares a dev_url origin. In Debug the grant table trusts it; in
+    // The cap declares a devUrl origin. In Debug the grant table trusts it; in
     // ReleaseSafe compile() drops it, so originsFor never surfaces it.
-    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{ .app_scheme, .{ .dev_url = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
+    const decl = [_]security_cap.Capability{.{ .identifier = "main", .windows = &.{"main"}, .origins = &.{ .appScheme, .{ .devUrl = "http://localhost:5173" } }, .permissions = &.{"core:default"} }};
     const grants = try buildGrantsFromCaps(std.testing.allocator, struct {}, &.{}, &decl, &.{"main"});
     defer {
         grants.deinit();
         std.testing.allocator.destroy(grants);
     }
     var has_dev = false;
-    for (grants.originsFor("main")) |o| if (o == .dev_url) {
+    for (grants.originsFor("main")) |o| if (o == .devUrl) {
         has_dev = true;
     };
     if (@import("builtin").mode == .Debug) {
@@ -1216,7 +1216,7 @@ test "buildGrantsFromCaps trusts a declared dev origin only in Debug" {
 
 test "buildGrantsFromCaps falls back to synthAppGrants when no caps are declared" {
     // Empty declarations => the synthAppGrants fallback grants every app command
-    // to every window over app_scheme (the framework's own build has no grants).
+    // to every window over appScheme (the framework's own build has no grants).
     const backend = try NullBackend.init(std.testing.allocator, std.testing.io);
     const grants = try buildGrantsFromCaps(std.testing.allocator, TestAppCommands, &.{}, &.{}, &.{"main"});
     const app = App(NullBackend).initWithConfig(TestAppCommands, std.testing.allocator, std.testing.io, backend, grants, dummy_bases, std.Io.Dir.cwd(), false, true, &single_window, .quit_on_last_close, 5000) catch |err| {

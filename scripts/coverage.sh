@@ -5,8 +5,8 @@ rm -rf "$OUT"
 zig build coverage-exe
 EXE="zig-out/bin/logic-tests"
 
-if ! command -v kcov >/dev/null 2>&1; then
-  echo "kcov not installed — skipping HTML coverage."
+fallback() {
+  echo "$1"
   echo "Fallback: logic coverage is asserted by the test suite itself:"
   echo "  protocol.zig            : decode (max_len), encode, jsString, writeJsonAsJsLiteral, reserved-route registry, fuzz"
   echo "  allowlist.zig           : allowed/unknown/empty, duplicate, fuzz bypass"
@@ -20,16 +20,36 @@ if ! command -v kcov >/dev/null 2>&1; then
   echo "  bridge.zig              : happy/unknown/malformed/concurrent/terminate/flood, budget, fuzz"
   echo "  app.zig                 : headless end-to-end, lifecycle, shutdown idempotency, navigation, scheme"
   echo "  sec_regression.zig      : adversarial bench (depth bomb, Unicode, maxInt ids, 100MB field, SlowBackend, memory ceiling)"
-  echo "Run 'zig build test' to exercise all of the above."
+  echo "Run the per-suite zig build test-* steps to exercise all of the above."
+}
+
+if ! command -v kcov >/dev/null 2>&1; then
+  fallback "kcov not installed, skipping HTML coverage."
   exit 0
 fi
 
 # Scope coverage to THIS project's src/ (kcov otherwise instruments the whole Zig
 # stdlib + compiler_rt pulled into the test binary, drowning the real number).
-# Within src/, exclude the objc/AppKit glue — it needs a live GUI and is verified
+# Within src/, exclude the objc/AppKit glue. It needs a live GUI and is verified
 # only by the manual smoke checklist (docs/SMOKE.md), not by the logic test binary.
+# kcov on macOS needs a codesigned binary with the debugger entitlement. An
+# unsigned or incompatible kcov fails (task_for_pid) or hangs. A watchdog stops a
+# hung run so the script ends and falls back.
+KCOV_TIMEOUT="${KCOV_TIMEOUT:-3600}"
+ABS_EXE="$(pwd)/$EXE"
 kcov \
   --include-path="$(pwd)/src" \
   --exclude-pattern=objc.zig,platform/macos/assoc.zig,platform/macos/backend.zig,platform/macos/window.zig,platform/macos/webview.zig,platform/macos/scheme.zig,platform/macos/delegate.zig,platform/macos/dispatch.zig,main.zig,tools/ \
-  "$OUT" "$EXE"
-echo "coverage report: $OUT/index.html"
+  "$OUT" "$ABS_EXE" &
+KCOV_PID=$!
+( sleep "$KCOV_TIMEOUT"; kill -9 "$KCOV_PID" 2>/dev/null; pkill -9 -f "$ABS_EXE" 2>/dev/null ) &
+WATCHDOG_PID=$!
+if wait "$KCOV_PID"; then
+  kill "$WATCHDOG_PID" 2>/dev/null || true
+  echo "coverage report: $OUT/index.html"
+else
+  kill "$WATCHDOG_PID" 2>/dev/null || true
+  fallback "kcov failed or ran past ${KCOV_TIMEOUT}s. Set KCOV_TIMEOUT for a longer run. On macOS, kcov also needs a codesigned build with the debugger entitlement."
+  echo "coverage run failed: kcov exited non-zero or timed out." >&2
+  exit 1
+fi

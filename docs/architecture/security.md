@@ -24,9 +24,9 @@ defaults to deny.
 
 A `Capability` = `{ identifier, windows[], origins[], permissions[] }`: it grants a
 set of resolved permissions to a set of window-label globs from a set of origins.
-Origins are `app_scheme` (exactly `app://localhost`), `dev_url` (exact, Debug only),
-or `https_exact` (exact, requires the `allowRemoteContent` fuse). Empty origins ⇒
-`app_scheme` only. `GrantTable.compile` resolves permission sets transitively into
+Origins are `appScheme` (exactly `app://localhost`), `devUrl` (exact, Debug only),
+or `httpsExact` (exact, requires the `allowRemoteContent` fuse). Empty origins ⇒
+`appScheme` only. `GrantTable.compile` resolves permission sets transitively into
 commands + scopes, dropping fuse-gated families (shell, https) and emitting
 diagnostics. Built-ins live in `defaults.zig`; app-declared permissions are spliced
 in at comptime via `app_catalog.zig`. `core:default` (the `App.init` grant) contains
@@ -37,7 +37,7 @@ only safe commands (no fs, http, or shell).
 `evaluate()` runs **G1 → G2 → G4**, fail-closed, stopping at the first deny:
 
 - **G1 (origin trusted)**: the request origin must exactly match a trusted
-  `OriginPattern` for the window (`app://localhost` only by default; `dev_url`
+  `OriginPattern` for the window (`app://localhost` only by default; `devUrl`
   honored only when `is_debug`). Deny → `origin.untrusted`.
 - **G2 (command granted)**: deny-by-default; deny-list beats allow-list. No matched
   capability ⇒ denied. Deny → `command.not_granted`.
@@ -53,7 +53,7 @@ Four build-time kill switches in `manifest/types.zig`, all default `false`:
 
 | Fuse | Effect |
 |------|--------|
-| `allowRemoteContent` | Required for any `https_exact` origin; otherwise such grants are **dropped** at compile (`fuse_requires_capability`). |
+| `allowRemoteContent` | Required for any `httpsExact` origin; otherwise such grants are **dropped** at compile (`fuse_requires_capability`). |
 | `allowShell` | Required for `shell:*` permissions; otherwise dropped during resolution. |
 | `allowEval` | Gates the dev-client script injection (see [window-and-platform.md](window-and-platform.md)); declared, broader enforcement reserved. |
 | `debugInspector` | **Rejected in any release mode** at validate time (`inspector_in_release`); allowed only in Debug. |
@@ -95,11 +95,16 @@ require a `main` window, cross-check every `security.grants` ref against a
   fuse-gated grant from the table; it never leaves one present but unreachable.
 - **Comptime verification**: fuses comptime-known; catalog cycles and unresolved
   permission-set members are build errors; script hashes precomputed.
-- **Multi-cap (v0.1.0)**: at most one capability may match a (window, command) pair;
-  an assert guards the not-yet-implemented multi-cap scope/origin merge.
-- **Path TOCTOU / case-insensitive FS**: acknowledged low-risk author footguns;
-  no scoped command ships in v0.1.0 (all scope inputs are `.none`), so not currently
-  exploitable. Future fs handlers should re-verify the fd (e.g. `O_NOFOLLOW`).
+- **Multi-cap (v0.2.0)**: more than one capability may match a (window, command) pair.
+  `GrantTable.compile` merges them per window label. Origins are the union.
+  Scopes merge only from matching capabilities that also list the command in
+  `commandsAllow`. A `scopeDeny` in a capability that does not allow the command is
+  not merged. A command is denied if any matching capability denies it.
+- **Path TOCTOU / case-insensitive FS**: acknowledged low-risk author footguns.
+  A scoped command ships: the `notes` example declares `hashFile`, confined to
+  `$APPDATA/notes/**`. G4 checks the real path before the handler opens the file.
+  The handler can still race a symlink swap, so fs handlers should re-verify the
+  file descriptor (for example with `O_NOFOLLOW`).
 - Permission strings are static comptime literals; `GrantTable.compile` copies
   headers only and dereferences those exact bytes on every check, so callers must
   never free them.

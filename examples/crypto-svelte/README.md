@@ -37,7 +37,7 @@ so the button's `window.Zigware.invoke("cryptoDemo", …)` reaches the Zig handl
 ## Test
 
 ```sh
-zig build test-crypto   # from the repo root
+zig build test integration-test   # from examples/crypto-svelte
 ```
 
 ## Layout

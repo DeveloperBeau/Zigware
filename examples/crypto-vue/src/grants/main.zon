@@ -5,7 +5,7 @@
     // navigation in Debug builds only. cryptoDemo declares no path scope, so no
     // app:* grant is needed beyond the command surface.
     .origins = .{
-        .app_scheme,
-        .{ .dev_url = "http://localhost:5173" },
+        .appScheme,
+        .{ .devUrl = "http://localhost:5173" },
     },
 }

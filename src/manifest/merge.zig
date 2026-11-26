@@ -337,22 +337,22 @@ fn dupPermission(gpa: std.mem.Allocator, in: types.Permission) std.mem.Allocator
     var out = in;
     out.identifier = try gpa.dupe(u8, in.identifier);
     errdefer gpa.free(out.identifier);
-    out.commands_allow = try dupStringList(gpa, types.Permission, "commands_allow", in.commands_allow);
-    errdefer freeStringListDuped(gpa, types.Permission, "commands_allow", out.commands_allow);
-    out.commands_deny = try dupStringList(gpa, types.Permission, "commands_deny", in.commands_deny);
-    errdefer freeStringListDuped(gpa, types.Permission, "commands_deny", out.commands_deny);
-    out.scope_allow = try dupScopeList(gpa, in.scope_allow);
-    errdefer freeScopeListDuped(gpa, out.scope_allow);
-    out.scope_deny = try dupScopeList(gpa, in.scope_deny);
+    out.commandsAllow = try dupStringList(gpa, types.Permission, "commandsAllow", in.commandsAllow);
+    errdefer freeStringListDuped(gpa, types.Permission, "commandsAllow", out.commandsAllow);
+    out.commandsDeny = try dupStringList(gpa, types.Permission, "commandsDeny", in.commandsDeny);
+    errdefer freeStringListDuped(gpa, types.Permission, "commandsDeny", out.commandsDeny);
+    out.scopeAllow = try dupScopeList(gpa, in.scopeAllow);
+    errdefer freeScopeListDuped(gpa, out.scopeAllow);
+    out.scopeDeny = try dupScopeList(gpa, in.scopeDeny);
     return out;
 }
 
 fn freePermission(gpa: std.mem.Allocator, p: types.Permission) void {
     gpa.free(p.identifier);
-    freeStringListDuped(gpa, types.Permission, "commands_allow", p.commands_allow);
-    freeStringListDuped(gpa, types.Permission, "commands_deny", p.commands_deny);
-    freeScopeListDuped(gpa, p.scope_allow);
-    freeScopeListDuped(gpa, p.scope_deny);
+    freeStringListDuped(gpa, types.Permission, "commandsAllow", p.commandsAllow);
+    freeStringListDuped(gpa, types.Permission, "commandsDeny", p.commandsDeny);
+    freeScopeListDuped(gpa, p.scopeAllow);
+    freeScopeListDuped(gpa, p.scopeDeny);
 }
 
 fn dupPermissionList(
@@ -686,7 +686,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     };
     const base_caps = [_][]const u8{ "fs.read", "net.fetch" };
     const base_perms = [_]types.Permission{
-        .{ .identifier = "app:hashFile", .commands_allow = &.{"hashFile"}, .scope_allow = &.{.{ .path = "$APPDATA/notes/**" }} },
+        .{ .identifier = "app:hashFile", .commandsAllow = &.{"hashFile"}, .scopeAllow = &.{.{ .path = "$APPDATA/notes/**" }} },
     };
     const ov_script_src = [_][]const u8{ "'self'", "'unsafe-inline'" };
     const base_icons = [_][]const u8{ "icon-256.png", "icon-512.png" };

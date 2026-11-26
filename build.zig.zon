@@ -1,6 +1,6 @@
 .{
     .name = .zigware,
-    .version = "0.1.0",
+    .version = "0.2.0",
     .fingerprint = 0x4eb112455a8379b9,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

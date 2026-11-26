@@ -65,7 +65,7 @@ fn printHelp() CliError!void {
 }
 
 fn printVersion() CliError!void {
-    std.debug.print("zigware 0.1.0\n", .{});
+    std.debug.print("zigware 0.2.0\n", .{});
 }
 
 // ─────────────────────────── init verb ───────────────────────────
