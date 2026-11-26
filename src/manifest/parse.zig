@@ -858,6 +858,42 @@ test "old snake_case permission keys in a manifest are rejected" {
     }
 }
 
+test "a manifest parse failure diagnostic names the file, line, column and zon reason" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    // The unknown field `.bogus` sits on line 3. Its name starts after four
+    // spaces and the dot, so the name is at column 6.
+    const body =
+        \\.{
+        \\    .identifier = "com.example.bad",
+        \\    .bogus = 1,
+        \\}
+    ;
+    try td.dir.writeFile(io, .{ .sub_path = "zigware.zon", .data = body });
+
+    var path_buf: [512]u8 = undefined;
+    const path = cacheRel(&path_buf, &td, "zigware.zon");
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    try std.testing.expectError(
+        error.ParseFailed,
+        parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .debug, &diag),
+    );
+    try std.testing.expectEqual(@as(usize, 1), diag.items.items.len);
+    try std.testing.expectEqual(types.Code.zon_parse_error, diag.items.items[0].code);
+
+    // Expected text is written by hand from the input: file, line 3, column 6, reason.
+    const expected = try std.fmt.allocPrint(gpa, "{s}:3:6: error: unexpected field 'bogus'", .{path});
+    defer gpa.free(expected);
+    try std.testing.expect(std.mem.indexOf(u8, diag.items.items[0].path.?, expected) != null);
+}
+
 test "camelCase permission keys in a manifest parse to the declared command and scope" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;

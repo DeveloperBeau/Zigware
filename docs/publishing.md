@@ -85,12 +85,12 @@ published mode and do not require a tag or network fetch.
 `tests/release-ban-consumer` is a dedicated ReleaseFast-ban fixture, committed
 and wired as the gate's fourth check, that proves the comptime ban fires for an
 external consumer. Its `build.zig` forces
-`.optimize = .ReleaseFast` at the module level. When `zig build` runs inside
+`.optimize = .fast` at the module level. When `zig build` runs inside
 that directory, the framework barrel (`src/zigware.zig`) triggers:
 
 ```zig
 comptime {
-    if (builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall) {
+    if (builtin.mode == .fast or builtin.mode == .small) {
         @compileError("Zigware ships ReleaseSafe or Debug only");
     }
 }
@@ -110,7 +110,7 @@ public tag is pushed.
 ## Note on `-Doptimize` vs module-level optimize
 
 The scaffold-shaped `build.zig` registers a `-Drelease` boolean flag (not
-`-Doptimize`). Passing `-Doptimize=ReleaseFast` on the command line produces an
+`-Doptimize`). Passing `-Doptimize=fast` on the command line produces an
 "unknown option" error before any Zig code compiles, so it never reaches the
-comptime ban. To exercise the ban in a test, set `.optimize = .ReleaseFast`
+comptime ban. To exercise the ban in a test, set `.optimize = .fast`
 directly in the `addApp` call, not via CLI flags.
