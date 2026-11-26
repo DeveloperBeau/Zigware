@@ -3,7 +3,7 @@ const zigware = @import("zigware");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
 
     // The framework. Pass only `.target`; forwarding `.optimize` would send a
     // rejected `-Doptimize` (the framework registers a bool `-Drelease`).

@@ -25,7 +25,7 @@ const builtin = @import("builtin");
 /// The single normative build-gating predicate. `trace`/`debug` are stripped to
 /// no-ops whenever this is true. Exported so a test can assert against the SAME
 /// expression the gate uses (they must agree).
-pub const verbose_stripped = builtin.mode != .Debug;
+pub const verbose_stripped = builtin.mode != .debug;
 
 pub const Level = enum {
     trace,
@@ -99,7 +99,7 @@ pub const Record = struct {
 /// JSON-lines in release. Swapped via `setTransport` (tests capture here).
 var active_transport: Transport = .{
     .ctx = null,
-    .record = if (builtin.mode == .Debug) humanRecord else jsonRecord,
+    .record = if (builtin.mode == .debug) humanRecord else jsonRecord,
 };
 
 pub fn setTransport(t: Transport) void {
@@ -110,7 +110,7 @@ pub fn setTransport(t: Transport) void {
 pub fn resetTransport() void {
     active_transport = .{
         .ctx = null,
-        .record = if (builtin.mode == .Debug) humanRecord else jsonRecord,
+        .record = if (builtin.mode == .debug) humanRecord else jsonRecord,
     };
 }
 

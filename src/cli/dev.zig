@@ -106,7 +106,7 @@ fn teardown(ctx: *DevContext, before_dev: ?*proc.Child) void {
 pub fn rebuildAndReload(ctx: *DevContext, changed: []const watch.ChangedPath) anyerror!ReloadOutcome {
     if (!batchNeedsRebuild(changed)) return .no_change;
 
-    const result = try ctx.builder.build(ctx.io, ctx.gpa, .{ .optimize = .Debug, .dev = true });
+    const result = try ctx.builder.build(ctx.io, ctx.gpa, .{ .optimize = .debug, .dev = true });
     if (!result.ok) {
         // Leave the running app untouched; surface the compiler error and free the buffer.
         if (result.stderr.len > 0) log.err("build failed", &.{diag.str("stderr", result.stderr)});
@@ -164,7 +164,7 @@ pub fn run(ctx: *DevContext) anyerror!void {
 
     // Initial Debug build. A failure here returns (teardown reaps the beforeDev child).
     {
-        const result = try ctx.builder.build(io, gpa, .{ .optimize = .Debug, .dev = true });
+        const result = try ctx.builder.build(io, gpa, .{ .optimize = .debug, .dev = true });
         defer ctx.gpa.free(result.stderr);
         if (!result.ok) {
             if (result.stderr.len > 0) log.err("build failed", &.{diag.str("stderr", result.stderr)});

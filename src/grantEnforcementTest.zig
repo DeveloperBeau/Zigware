@@ -41,7 +41,7 @@ test "build-time grant loading authorizes a granted command and denies others" {
     //    present src/grants/*.zon basenames ("main"), returning the merged manifest.
     var diag: types.Diagnostics = .{};
     defer diag.deinit(gpa);
-    const m = try parse.parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    const m = try parse.parseAtBuild(gpa, io, fixture, .macos, .debug, &diag);
     defer parse.freeManifest(gpa, m);
     try std.testing.expect(!diag.hasErrors());
     try std.testing.expectEqual(@as(usize, 1), m.security.grants.len);

@@ -20,15 +20,15 @@ fn tsType(comptime T: type) []const u8 {
         .optional => |o| tsType(o.child) ++ " | null",
         .@"enum" => |e| comptime blk: {
             var s: []const u8 = "";
-            for (e.fields, 0..) |f, i| {
-                s = s ++ (if (i == 0) "" else " | ") ++ "\"" ++ f.name ++ "\"";
+            for (e.field_names, 0..) |name, i| {
+                s = s ++ (if (i == 0) "" else " | ") ++ "\"" ++ name ++ "\"";
             }
             break :blk s;
         },
         .@"struct" => |st| comptime blk: {
             var s: []const u8 = "{ ";
-            for (st.fields, 0..) |f, i| {
-                s = s ++ (if (i == 0) "" else "; ") ++ f.name ++ ": " ++ tsType(f.type);
+            for (st.field_names, st.field_types, 0..) |name, ftype, i| {
+                s = s ++ (if (i == 0) "" else "; ") ++ name ++ ": " ++ tsType(ftype);
             }
             break :blk s ++ " }";
         },
@@ -43,13 +43,13 @@ fn resultLeaf(comptime Ret: type) type {
     var T = Ret;
     // Async(X) -> X
     const ai = @typeInfo(T);
-    if (ai == .@"struct" and ai.@"struct".fields.len == 1 and std.mem.eql(u8, ai.@"struct".fields[0].name, "inner")) {
-        T = ai.@"struct".fields[0].type;
+    if (ai == .@"struct" and ai.@"struct".field_names.len == 1 and std.mem.eql(u8, ai.@"struct".field_names[0], "inner")) {
+        T = ai.@"struct".field_types[0];
     }
     // Result(X) -> X (union(enum){ ok: X, err: CommandError })
     const ri = @typeInfo(T);
-    if (ri == .@"union" and ri.@"union".fields.len == 2 and ri.@"union".fields[1].type == CommandError) {
-        return ri.@"union".fields[0].type;
+    if (ri == .@"union" and ri.@"union".field_names.len == 2 and ri.@"union".field_types[1] == CommandError) {
+        return ri.@"union".field_types[0];
     }
     return T;
 }
@@ -59,7 +59,7 @@ fn resultLeaf(comptime Ret: type) type {
 /// it). `Sink(P)` stores no P-typed field but exposes `progress(self, v: P)`, so
 /// read P off that method's second parameter. Parallels resultLeaf's unwrap.
 fn streamLeaf(comptime SinkT: type) type {
-    return @typeInfo(@TypeOf(SinkT.progress)).@"fn".params[1].type.?;
+    return @typeInfo(@TypeOf(SinkT.progress)).@"fn".param_types[1].?;
 }
 
 pub fn emit(w: *std.Io.Writer, comptime State: type, comptime UserCommands: type) !void {
@@ -67,19 +67,19 @@ pub fn emit(w: *std.Io.Writer, comptime State: type, comptime UserCommands: type
     try w.writeAll("// u64/i64 may exceed Number.MAX_SAFE_INTEGER.\n\n");
     try w.writeAll("export interface ZigCommands {\n");
 
-    inline for (@typeInfo(UserCommands).@"struct".decls) |d| {
-        const f = @field(UserCommands, d.name);
+    inline for (@typeInfo(UserCommands).@"struct".decl_names) |d_name| {
+        const f = @field(UserCommands, d_name);
         if (@typeInfo(@TypeOf(f)) != .@"fn") continue;
         const fn_info = @typeInfo(@TypeOf(f)).@"fn";
 
-        const ArgsTs = if (fn_info.params.len >= 2) tsType(fn_info.params[1].type.?) else "{}";
+        const ArgsTs = if (fn_info.param_types.len >= 2) tsType(fn_info.param_types[1].?) else "{}";
         const ResultTs = tsType(resultLeaf(fn_info.return_type.?));
         // A streaming command lifts its progress payload P into an explicit third
         // param `sink: z.Sink(P)`; emit the real TS for P. A command with no such
         // param cannot stream, so its frame type is the known-absent `never`.
-        const StreamTs = if (fn_info.params.len == 3) tsType(streamLeaf(fn_info.params[2].type.?)) else "never";
+        const StreamTs = if (fn_info.param_types.len == 3) tsType(streamLeaf(fn_info.param_types[2].?)) else "never";
 
-        try w.print("  {s}: {{ args: {s}; result: {s}; stream: {s} }};\n", .{ d.name, ArgsTs, ResultTs, StreamTs });
+        try w.print("  {s}: {{ args: {s}; result: {s}; stream: {s} }};\n", .{ d_name, ArgsTs, ResultTs, StreamTs });
     }
 
     try w.writeAll("}\n\n");

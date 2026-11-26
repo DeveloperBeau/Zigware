@@ -24,11 +24,11 @@ fn asyncInner(comptime T: type) ?type {
     const info = @typeInfo(T);
     if (info != .@"struct") return null;
     const s = info.@"struct";
-    if (s.fields.len != 1) return null;
-    if (!std.mem.eql(u8, s.fields[0].name, "inner")) return null;
+    if (s.field_names.len != 1) return null;
+    if (!std.mem.eql(u8, s.field_names[0], "inner")) return null;
     // Confirm it is literally Async(field type), not a coincidental {inner: X}.
-    if (T != Async(s.fields[0].type)) return null;
-    return s.fields[0].type;
+    if (T != Async(s.field_types[0])) return null;
+    return s.field_types[0];
 }
 
 /// True if `T` is `compute.Sink(P)` for some progress payload P. `Sink(P)` stores
@@ -44,8 +44,8 @@ fn isSink(comptime T: type) bool {
         // would otherwise fault with an internal comptime error instead of the
         // clean "third param must be z.Sink(P)" message the caller emits.
         const prog = @typeInfo(@TypeOf(T.progress));
-        if (prog != .@"fn" or prog.@"fn".params.len < 2) return false;
-        const P = prog.@"fn".params[1].type.?;
+        if (prog != .@"fn" or prog.@"fn".param_types.len < 2) return false;
+        const P = prog.@"fn".param_types[1].?;
         return T == compute.Sink(P);
     }
 }
@@ -127,18 +127,18 @@ fn declFns(comptime UserCommands: anytype) []const FnDecl {
     comptime {
         var list: []const FnDecl = &.{};
         for (nsTypes(UserCommands)) |Ns| {
-            for (@typeInfo(Ns).@"struct".decls) |d| {
-                const f = @field(Ns, d.name);
+            for (@typeInfo(Ns).@"struct".decl_names) |d_name| {
+                const f = @field(Ns, d_name);
                 if (@typeInfo(@TypeOf(f)) != .@"fn") continue;
                 // A command name shared by two namespaces would let the dispatcher
                 // silently bind one handler while the gate allowlist carries an
                 // ambiguous entry. Reject the collision at comptime rather than
                 // shadow it. The registry never resolves a command name by luck.
                 for (list) |existing| {
-                    if (std.mem.eql(u8, existing.name, d.name))
-                        @compileError("duplicate command '" ++ d.name ++ "' across command namespaces");
+                    if (std.mem.eql(u8, existing.name, d_name))
+                        @compileError("duplicate command '" ++ d_name ++ "' across command namespaces");
                 }
-                list = list ++ &[_]FnDecl{.{ .ns = Ns, .name = d.name }};
+                list = list ++ &[_]FnDecl{.{ .ns = Ns, .name = d_name }};
             }
         }
         return list;
@@ -174,22 +174,22 @@ fn validate(comptime State: type, comptime UserCommands: anytype) void {
         for (declFns(UserCommands)) |d| {
             const FT = @TypeOf(@field(d.ns, d.name));
             const fn_info = @typeInfo(FT).@"fn";
-            if (fn_info.params.len < 1 or fn_info.params.len > 3)
+            if (fn_info.param_types.len < 1 or fn_info.param_types.len > 3)
                 @compileError("command '" ++ d.name ++ "' must take *Ctx(State), an optional args struct, and an optional sink: z.Sink(P)");
-            const P0 = fn_info.params[0].type.?;
+            const P0 = fn_info.param_types[0].?;
             if (P0 != *Ctx(State))
                 @compileError("command '" ++ d.name ++ "' first param must be *Ctx(State)");
             // Param 1 is ALWAYS the args struct when present (for both the 2-param
             // and 3-param forms), so validate it for len >= 2 to surface the clean
             // "must be a struct" message rather than a deeper JSON-decode error. A
             // stream-only command with no args must still declare an empty `struct {}`.
-            if (fn_info.params.len >= 2) {
-                const ArgsT = fn_info.params[1].type.?;
+            if (fn_info.param_types.len >= 2) {
+                const ArgsT = fn_info.param_types[1].?;
                 if (@typeInfo(ArgsT) != .@"struct")
                     @compileError("command '" ++ d.name ++ "' second param must be a struct of JSON-decodable fields");
             }
-            if (fn_info.params.len == 3) {
-                const SinkT = fn_info.params[2].type.?;
+            if (fn_info.param_types.len == 3) {
+                const SinkT = fn_info.param_types[2].?;
                 if (!isSink(SinkT))
                     @compileError("command '" ++ d.name ++ "' third param must be z.Sink(P)");
             }
@@ -333,8 +333,8 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 
     // Decode args if the handler declares an args struct.
     const result: Inner = blk: {
-        if (fn_info.params.len >= 2) {
-            const ArgsT = fn_info.params[1].type.?;
+        if (fn_info.param_types.len >= 2) {
+            const ArgsT = fn_info.param_types[1].?;
             const parsed_args = std.json.parseFromSliceLeaky(ArgsT, a, args_json, protocol.JSON_PARSE_OPTIONS) catch {
                 bridge.emitErrorReject(route, id, "bad_args", "could not decode arguments", null);
                 return;
@@ -352,14 +352,14 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 fn callMaybeAsync(comptime handler: anytype, comptime Inner: type, ctx: anytype, args: anytype) Inner {
     const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
     const Ret = fn_info.return_type.?;
-    const raw = switch (fn_info.params.len) {
+    const raw = switch (fn_info.param_types.len) {
         1 => handler(ctx),
         2 => handler(ctx, args),
         // The framework owns sink construction: project Sink(P) off the live
         // *Ctx (exactly what handlers used to do via `z.Sink(P).from(ctx)`) and
         // pass it third. `ctx` is already a `*Ctx`, which `from` duck-types.
         3 => blk: {
-            const SinkT = fn_info.params[2].type.?;
+            const SinkT = fn_info.param_types[2].?;
             break :blk handler(ctx, args, SinkT.from(ctx));
         },
         else => unreachable, // validate caps params at 3
@@ -413,9 +413,9 @@ fn emitBytes(ctx: anytype, bridge: anytype, label: []const u8, id: u64, b: ctxmo
 fn isResult(comptime T: type) bool {
     const info = @typeInfo(T);
     if (info != .@"union") return false;
-    if (info.@"union".fields.len != 2) return false;
-    const f = info.@"union".fields;
-    return std.mem.eql(u8, f[0].name, "ok") and std.mem.eql(u8, f[1].name, "err") and f[1].type == CommandError;
+    const u = info.@"union";
+    if (u.field_names.len != 2) return false;
+    return std.mem.eql(u8, u.field_names[0], "ok") and std.mem.eql(u8, u.field_names[1], "err") and u.field_types[1] == CommandError;
 }
 
 /// Serialize a success value to JSON and emit a _resolve via the bridge.

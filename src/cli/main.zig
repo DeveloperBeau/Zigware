@@ -155,7 +155,7 @@ fn devserverProbe(io: std.Io, gpa: std.mem.Allocator, url: []const u8, shutdown:
 /// loop. dev == Debug build, so the manifest is validated under .Debug (release rejects
 /// the debug-inspector fuse; a dev manifest that enables it must validate here).
 fn runDev(io: std.Io, gpa: std.mem.Allocator) CliError!void {
-    const manifest = readManifest(io, gpa, .Debug) catch |err| return mapVerbError(err);
+    const manifest = readManifest(io, gpa, .debug) catch |err| return mapVerbError(err);
     var m = manifest;
     defer parse.freeManifest(gpa, m);
 
@@ -233,7 +233,7 @@ fn parseBuildFlags(rest: []const []const u8) CliError!BuildFlags {
 fn runBuild(io: std.Io, gpa: std.mem.Allocator, rest: []const []const u8) CliError!void {
     const flags = try parseBuildFlags(rest);
 
-    const manifest = readManifest(io, gpa, .ReleaseSafe) catch |err| return mapVerbError(err);
+    const manifest = readManifest(io, gpa, .safe) catch |err| return mapVerbError(err);
     var m = manifest;
     defer parse.freeManifest(gpa, m);
 
@@ -291,7 +291,7 @@ fn runBuildInner(
         // this binary in place; copy the arm64 result to a distinct path first.
         const first_bin = build_verb.run(io, gpa, .{
             .manifest = manifest,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
             .out_dir = out_dir,
             .builder = builder,
             .proc = proc_spawner,
@@ -312,7 +312,7 @@ fn runBuildInner(
         // is idempotent (same asset table both times), so v0.1 accepts the extra time.
         const x86_bin = build_verb.run(io, gpa, .{
             .manifest = manifest,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
             .out_dir = out_dir,
             .builder = builder,
             .proc = proc_spawner,
@@ -326,7 +326,7 @@ fn runBuildInner(
     // Single-arch (host/arm64/x86_64): one compile, one binary.
     const binary_path = build_verb.run(io, gpa, .{
         .manifest = manifest,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .out_dir = out_dir,
         .builder = builder,
         .proc = proc_spawner,
@@ -473,7 +473,7 @@ const SystemBuildRunner = struct {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
         try argv.appendSlice(gpa, &.{ "zig", "build" });
-        if (spec.optimize != .Debug) try argv.append(gpa, "-Drelease=true");
+        if (spec.optimize != .debug) try argv.append(gpa, "-Drelease=true");
         var at_buf: []u8 = &.{};
         defer if (at_buf.len > 0) gpa.free(at_buf);
         if (spec.asset_table) |at| {
@@ -635,13 +635,13 @@ test "installSigint stores into the flag and uninstall nulls the pointer" {
 test "exitCodeFor gives every CliError a distinct, nonzero code and a non-empty message" {
     // Enumerate the error set reflectively so a future CliError variant cannot silently
     // collapse onto an existing exit code or skip the user-facing message contract.
-    const variants = @typeInfo(CliError).error_set.?;
+    const variants = @typeInfo(CliError).error_set.error_names.?;
 
     // Track every code seen to assert pairwise distinctness, and assert the exact frozen
     // value per named variant so a reordering cannot quietly renumber the contract.
-    var seen = [_]bool{false} ** 256;
+    var seen: [256]bool = @splat(false);
     inline for (variants) |v| {
-        const err = @field(CliError, v.name);
+        const err = @field(CliError, v);
         const code = exitCodeFor(err);
         try testing.expect(code != 0); // 0 is reserved for success
         try testing.expect(!seen[code]); // distinct across all variants
