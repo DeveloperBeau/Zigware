@@ -5,7 +5,8 @@ pub const Fuses = manifest.Fuses;
 
 /// A trusted origin shape (Tauri capability remote-origin analog).
 pub const OriginPattern = union(enum) {
-    appScheme, // app:// (the prod origin), always trusted
+    /// The app:// production origin, which is always trusted.
+    appScheme,
     /// An exact dev origin, honored only in debug builds.
     devUrl: []const u8,
     /// An explicit https origin, which requires the allowRemoteContent fuse.
