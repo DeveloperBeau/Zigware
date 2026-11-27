@@ -758,27 +758,25 @@ test "manifest round-trips an app-declared scoped permission through zon" {
     try std.testing.expectEqualStrings("$APPDATA/notes/**", m.security.permissions[0].scopeAllow[0].path);
 }
 
-test "a per-OS override fixture parses into an arena without leaking" {
+test "a per-OS override parsed through parseAtBuildFromPaths is merged and freed without leaking" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAllocOptions(
-        io,
-        "tests/manifest/override/zigware.linux.zon",
+    const overrides = [_][]const u8{"tests/manifest/override/zigware.linux.zon"};
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+    const m = try parseAtBuildFromPaths(
         gpa,
-        .limited(READ_LIMIT_BYTES),
-        .of(u8),
-        0,
+        io,
+        "tests/manifest/override/zigware.zon",
+        &overrides,
+        &.{},
+        .linux,
+        .debug,
+        &diag,
     );
-    defer gpa.free(src);
-    var zon_diag: std.zon.parse.Diagnostics = undefined;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    _ = try std.zon.parse.fromSlice(OverrideManifest, .{
-        .gpa = gpa,
-        .arena = arena.allocator(),
-        .source = src,
-        .diagnostics = &zon_diag,
-    });
+    defer freeManifest(gpa, m);
+    // Only the linux override sets this value.
+    try std.testing.expectEqualStrings("LinuxProduct", m.productName);
 }
 
 test "freeManifest skips static-default slices via pointer identity" {

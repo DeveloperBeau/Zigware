@@ -456,6 +456,43 @@ fn mapVerbError(err: anyerror) CliError {
 
 // ─────────────────────────── real BuildRunner ───────────────────────────
 
+/// The `zig build` argv for a BuildSpec plus the formatted flag buffers it points into.
+const BuildArgv = struct {
+    list: std.ArrayList([]const u8) = .empty,
+    asset_flag: ?[]u8 = null,
+    target_flag: ?[]u8 = null,
+
+    fn items(self: *const BuildArgv) []const []const u8 {
+        return self.list.items;
+    }
+
+    fn deinit(self: *BuildArgv, gpa: std.mem.Allocator) void {
+        self.list.deinit(gpa);
+        if (self.asset_flag) |f| gpa.free(f);
+        if (self.target_flag) |f| gpa.free(f);
+    }
+};
+
+/// Pure argv construction, split from `SystemBuildRunner.build` so the flag mapping is testable
+/// without spawning a process. ReleaseSafe uses the repo's `-Drelease=true` flag (NOT
+/// -Doptimize), and Debug omits it. A staged asset table (prod packaging) is wired via
+/// `-Dasset_table`.
+fn buildArgv(gpa: std.mem.Allocator, spec: dev.BuildSpec) std.mem.Allocator.Error!BuildArgv {
+    var out: BuildArgv = .{};
+    errdefer out.deinit(gpa);
+    try out.list.appendSlice(gpa, &.{ "zig", "build" });
+    if (spec.optimize != .debug) try out.list.append(gpa, "-Drelease=true");
+    if (spec.asset_table) |at| {
+        out.asset_flag = try std.fmt.allocPrint(gpa, "-Dasset_table={s}", .{at});
+        try out.list.append(gpa, out.asset_flag.?);
+    }
+    if (spec.target) |t| {
+        out.target_flag = try std.fmt.allocPrint(gpa, "-Dtarget={s}", .{t});
+        try out.list.append(gpa, out.target_flag.?);
+    }
+    return out;
+}
+
 /// Production BuildRunner over `std.process.run` (which spawns, collects stdout/stderr, and
 /// reaps the child itself with no separate kill/wait needed). It maps the run result's term to
 /// the seam's `ok` bool and transfers ONLY stderr into BuildResult; the captured stdout is
@@ -468,26 +505,10 @@ const SystemBuildRunner = struct {
     const vtable: dev.BuildRunner.VTable = .{ .build = build };
 
     fn build(_: *anyopaque, io: std.Io, gpa: std.mem.Allocator, spec: dev.BuildSpec) anyerror!dev.BuildResult {
-        // ReleaseSafe uses the repo's `-Drelease=true` flag (NOT -Doptimize); Debug omits it.
-        // A staged asset table (prod packaging) is wired via `-Dasset_table`.
-        var argv: std.ArrayList([]const u8) = .empty;
+        var argv = try buildArgv(gpa, spec);
         defer argv.deinit(gpa);
-        try argv.appendSlice(gpa, &.{ "zig", "build" });
-        if (spec.optimize != .debug) try argv.append(gpa, "-Drelease=true");
-        var at_buf: []u8 = &.{};
-        defer if (at_buf.len > 0) gpa.free(at_buf);
-        if (spec.asset_table) |at| {
-            at_buf = try std.fmt.allocPrint(gpa, "-Dasset_table={s}", .{at});
-            try argv.append(gpa, at_buf);
-        }
-        var tgt_buf: []u8 = &.{};
-        defer if (tgt_buf.len > 0) gpa.free(tgt_buf);
-        if (spec.target) |t| {
-            tgt_buf = try std.fmt.allocPrint(gpa, "-Dtarget={s}", .{t});
-            try argv.append(gpa, tgt_buf);
-        }
 
-        const result = try std.process.run(gpa, io, .{ .argv = argv.items });
+        const result = try std.process.run(gpa, io, .{ .argv = argv.items() });
         // stderr is transferred into BuildResult; stdout is discarded here so it never leaks.
         defer gpa.free(result.stdout);
 
@@ -859,4 +880,31 @@ test "runBuildInner skip_sign assembles the bundle without signing (hdiutil only
     const log = fr.argv_log.items;
     try testing.expectEqual(@as(usize, 1), log.len);
     try testing.expectEqualStrings("hdiutil", log[0][0]);
+}
+
+test "buildArgv for a debug spec is exactly zig build" {
+    var a = try buildArgv(std.testing.allocator, .{ .optimize = .debug, .dev = true });
+    defer a.deinit(std.testing.allocator);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "zig", "build" }), a.items());
+}
+
+test "buildArgv adds -Drelease=true for a safe spec" {
+    var a = try buildArgv(std.testing.allocator, .{ .optimize = .safe, .dev = false });
+    defer a.deinit(std.testing.allocator);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "zig", "build", "-Drelease=true" }), a.items());
+}
+
+test "buildArgv appends the asset table then the target flag after -Drelease=true" {
+    var a = try buildArgv(std.testing.allocator, .{
+        .optimize = .safe,
+        .dev = false,
+        .asset_table = "x/table.zig",
+        .target = "x86_64-macos",
+    });
+    defer a.deinit(std.testing.allocator);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{
+        "zig",                   "build",
+        "-Drelease=true",        "-Dasset_table=x/table.zig",
+        "-Dtarget=x86_64-macos",
+    }), a.items());
 }

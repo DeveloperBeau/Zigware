@@ -459,26 +459,40 @@ const StubBridge = struct {
     streamed: std.ArrayList(u8) = .empty,
     backend_label: []const u8 = "main",
     stub_flag: std.atomic.Value(bool) = .{ .raw = false },
+    /// Allocator for the stub's own recording buffers. Lets a test point `alloc`
+    /// (what the registry uses) at a FailingAllocator while the recorded reject
+    /// still gets stored.
+    emit_alloc: ?std.mem.Allocator = null,
+    /// When true, armCancel reports OutOfMemory.
+    arm_fails: bool = false,
+    released: usize = 0,
+
+    fn ea(self: *StubBridge) std.mem.Allocator {
+        return self.emit_alloc orelse self.alloc;
+    }
 
     fn emitResolve(self: *StubBridge, _: []const u8, id: u64, json: []const u8) void {
-        var aw: std.Io.Writer.Allocating = .init(self.alloc);
+        var aw: std.Io.Writer.Allocating = .init(self.ea());
         defer aw.deinit();
         protocol.encodeResolve(&aw.writer, id, json) catch return;
         self.last.clearRetainingCapacity();
-        self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
+        self.last.appendSlice(self.ea(), aw.writer.buffered()) catch {};
     }
     fn emitErrorReject(self: *StubBridge, _: []const u8, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
-        var aw: std.Io.Writer.Allocating = .init(self.alloc);
+        var aw: std.Io.Writer.Allocating = .init(self.ea());
         defer aw.deinit();
         protocol.encodeErrorReject(&aw.writer, id, code, message, payload) catch return;
         self.last.clearRetainingCapacity();
-        self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
+        self.last.appendSlice(self.ea(), aw.writer.buffered()) catch {};
     }
-    fn releaseCall(_: *StubBridge, _: u64) void {}
+    fn releaseCall(self: *StubBridge, _: u64) void {
+        self.released += 1;
+    }
     /// Stub arm: return a ptr to a stub-owned flag so the async branch compiles
     /// and threads a valid (never-cancelled) flag into the worker. No real
     /// per-id registry here; the registry tests do not drive cancellation.
     fn armCancel(self: *StubBridge, _: u64) !*std.atomic.Value(bool) {
+        if (self.arm_fails) return error.OutOfMemory;
         return &self.stub_flag;
     }
     fn cancelId(self: *StubBridge, _: u64) void {
@@ -626,6 +640,103 @@ test "Result.err produces a structured reject" {
     defer b.last.deinit(std.testing.allocator);
     Reg.dispatch(&b, &st, "main", "readNote", 3, "{\"id\":0}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"not_found\"") != null);
+}
+
+test "isAsync is false for a name that is not a command" {
+    try std.testing.expect(!Reg.isAsync("noSuchCommand"));
+}
+
+test "dispatch of an unknown name rejects unknown_command and releases the call" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "noSuchCommand", 21, "{}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"unknown_command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "no such command") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+test "readNote resolves the note title when the id is non-zero" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "readNote", 22, "{\"id\":7}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(22, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "{\"title\":\"ok\"}") != null);
+}
+
+test "async dispatch rejects internal out of memory when the cancel flag cannot be armed" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    b.arm_fails = true;
+    Reg.dispatch(&b, &st, "main", "slowAdd", 23, "{\"a\":1,\"b\":2}");
+    pool.waitIdle();
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "out of memory") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+test "async dispatch rolls back and rejects internal when the args copy cannot be allocated" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    // Allocation 0 is the job ctx, allocation 1 is the args copy, which fails.
+    // testing.allocator under the wrapper proves the job ctx is not leaked.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var b = stubBridge(failing.allocator(), pool);
+    b.emit_alloc = std.testing.allocator;
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "slowAdd", 24, "{\"a\":1,\"b\":2}");
+    pool.waitIdle();
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "out of memory") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+/// Fixtures kept out of `Fixture` so the command counts asserted above stay put.
+const WideFixture = struct {
+    const big: [5000]u8 = @as([5000]u8, @splat('x'));
+    pub fn bigText(_: *Ctx(TestState)) []const u8 {
+        return &big;
+    }
+    pub fn blob(_: *Ctx(TestState)) ctxmod.Bytes {
+        return .{ .data = "abc", .mime = "text/plain" };
+    }
+};
+const RegWide = Commands(@import("platform/null.zig").NullBackend, TestState, WideFixture);
+
+test "a result that cannot be encoded becomes an internal reject" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    // Allocation 0 is the first arena block. The 5000-byte result outgrows it,
+    // so the JSON writer asks for a second block, which fails.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var b = stubBridge(failing.allocator(), pool);
+    b.emit_alloc = std.testing.allocator;
+    defer b.last.deinit(std.testing.allocator);
+    RegWide.dispatch(&b, &st, "main", "bigText", 25, "{}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "could not encode result") != null);
+}
+
+test "a Bytes result is parked, announced as a _bin frame, and resolves null" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    defer b.streamed.deinit(std.testing.allocator);
+    RegWide.dispatch(&b, &st, "main", "blob", 26, "{}");
+    try std.testing.expectEqualStrings("window.Zigware._bin(26, 0, 3, \"text\\/plain\");", b.streamed.items);
+    try std.testing.expectEqualStrings("window.Zigware._resolve(26, null);", b.last.items);
 }
 
 test "malformed args become a bad_args reject" {
