@@ -5,7 +5,7 @@ const MacOSBackend = @import("platform/macos/backend.zig").MacOSBackend;
 
 // ReleaseSafe enforcement (M1): Zigware never ships with bounds checks stripped.
 comptime {
-    if (builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall) {
+    if (builtin.mode == .fast or builtin.mode == .small) {
         @compileError("Zigware ships ReleaseSafe or Debug only");
     }
 }

@@ -77,7 +77,7 @@ test "trace/debug are stripped to no transport output in release; live in Debug"
     log.trace("a trace line", &.{});
     log.debug("a debug line", &.{});
 
-    if (comptime builtin.mode != .Debug) {
+    if (comptime builtin.mode != .debug) {
         // The gated-OUT half: the no-op must produce NO transport record.
         try std.testing.expectEqual(@as(usize, 0), cap.countLevel(.trace));
         try std.testing.expectEqual(@as(usize, 0), cap.countLevel(.debug));

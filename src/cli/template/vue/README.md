@@ -4,7 +4,7 @@ A Zigware desktop app with a Vue + Vite frontend.
 
 ## Prerequisites
 
-- [Zig](https://ziglang.org/) 0.16
+- [Zig](https://ziglang.org/) 0.17.1
 - [Node.js](https://nodejs.org/) 18 or newer
 - The `zigware` CLI on your `PATH`
 

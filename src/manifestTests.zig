@@ -11,7 +11,7 @@ test {
 }
 
 test "manifest test root mounted" {
-    try std.testing.expect(@typeInfo(@import("manifest/types.zig").Manifest).@"struct".fields.len >= 4);
+    try std.testing.expect(@typeInfo(@import("manifest/types.zig").Manifest).@"struct".field_names.len >= 4);
 }
 
 // Parser/validator robustness fuzz with deterministic three-counter teeth.
@@ -84,25 +84,33 @@ test "fuzz parser+validator: deterministic teeth on parse/validate/valid arms" {
             break :blk @as([:0]const u8, mutbuf[0..len :0]);
         };
 
-        var zon_diag: std.zon.parse.Diagnostics = .{};
-        defer zon_diag.deinit(gpa);
+        var zon_diag: std.zon.parse.Diagnostics = undefined;
+        var parse_arena: std.heap.ArenaAllocator = .init(gpa);
+        defer parse_arena.deinit();
 
-        const parsed = std.zon.parse.fromSliceAlloc(types.Manifest, gpa, candidate, &zon_diag, .{}) catch |err| switch (err) {
+        const parsed = std.zon.parse.fromSlice(types.Manifest, .{
+            .gpa = gpa,
+            .arena = parse_arena.allocator(),
+            .source = candidate,
+            .diagnostics = &zon_diag,
+        }) catch |err| switch (err) {
             error.ParseZon => {
                 parse_failures += 1;
                 continue;
             },
             error.OutOfMemory => return err,
         };
-        // Manifest free is reflection-driven and skips static-default slices
-        // via pointer-identity; safe on every accepted parse.
-        defer parse_mod.freeManifest(gpa, parsed);
+        // The parse arena owns `parsed`. merge() returns the gpa-owned copy, and
+        // freeManifest (reflection-driven, skips static-default slices via
+        // pointer identity) must be safe on every accepted parse.
+        const owned = try @import("manifest/merge.zig").merge(gpa, parsed, null);
+        defer parse_mod.freeManifest(gpa, owned);
 
         var diag: types.Diagnostics = .{};
         defer diag.deinit(gpa);
 
         const caps_empty: []const []const u8 = &.{};
-        const ok = try validate.validate(gpa, parsed, .Debug, caps_empty, &diag);
+        const ok = try validate.validate(gpa, owned, .debug, caps_empty, &diag);
         if (!ok or diag.hasErrors()) {
             validation_failures += 1;
         } else {
@@ -142,7 +150,7 @@ fn judge(gpa: std.mem.Allocator, dir: *std.testing.TmpDir, text: []const u8) !Ve
 
     var diag: types.Diagnostics = .{};
     defer diag.deinit(gpa);
-    const parsed = parse_mod.parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag) catch |err| switch (err) {
+    const parsed = parse_mod.parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .debug, &diag) catch |err| switch (err) {
         error.ParseFailed => return .parse_rejected,
         error.ValidationFailed => return .validate_rejected,
         else => return err,

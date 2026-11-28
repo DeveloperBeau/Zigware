@@ -406,32 +406,31 @@ test "Manifest defaults fill a minimal manifest" {
 // field set, recursively. A new field on App/Bundle/Csp/etc. with no matching
 // Override<X> field fails this at COMPILE TIME, not silently at runtime.
 fn assertParallel(comptime Base: type, comptime Override: type) void {
-    const bf = @typeInfo(Base).@"struct".fields;
-    const of = @typeInfo(Override).@"struct".fields;
-    if (bf.len != of.len) @compileError(
+    const bf = @typeInfo(Base).@"struct";
+    const of = @typeInfo(Override).@"struct";
+    if (bf.field_names.len != of.field_names.len) @compileError(
         "Override mirror field count differs from base; a field was added on one side without the other.",
     );
-    inline for (bf) |b| {
+    inline for (bf.field_names, bf.field_types) |b_name, BT| {
         comptime var found_idx: ?usize = null;
-        inline for (of, 0..) |o, j| if (comptime std.mem.eql(u8, b.name, o.name)) {
+        inline for (of.field_names, 0..) |o_name, j| if (comptime std.mem.eql(u8, b_name, o_name)) {
             found_idx = j;
         };
         if (found_idx == null) @compileError(
-            "Override mirror is missing a field present in the base: " ++ b.name,
+            "Override mirror is missing a field present in the base: " ++ b_name,
         );
         // Invariant: every struct-typed BASE field maps to an optional-wrapped
         // Override field whose inner type is a struct. Enforce it explicitly;
         // a silent skip would let a non-optional override mirror slip through
         // and break the merge semantics later.
-        const BT = b.type;
-        const OT = of[found_idx.?].type;
+        const OT = of.field_types[found_idx.?];
         if (@typeInfo(BT) == .@"struct") {
             if (@typeInfo(OT) != .optional) @compileError(
-                "Override mirror for base struct field must be optional: " ++ b.name,
+                "Override mirror for base struct field must be optional: " ++ b_name,
             );
             const Inner = @typeInfo(OT).optional.child;
             if (@typeInfo(Inner) != .@"struct") @compileError(
-                "Override mirror for base struct field must wrap a struct (Override<Inner>): " ++ b.name,
+                "Override mirror for base struct field must wrap a struct (Override<Inner>): " ++ b_name,
             );
             assertParallel(BT, Inner);
         }

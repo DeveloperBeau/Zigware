@@ -22,7 +22,7 @@ test "embedded() equals parseAtBuild over the same source fixture" {
     var diag: types.Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const parsed = try parse.parseAtBuild(gpa, io, fixture_dir, .macos, .Debug, &diag);
+    const parsed = try parse.parseAtBuild(gpa, io, fixture_dir, .macos, .debug, &diag);
     defer parse.freeManifest(gpa, parsed);
 
     // embedded() is comptime-static; never freed.

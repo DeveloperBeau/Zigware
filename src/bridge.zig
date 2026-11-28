@@ -1096,7 +1096,7 @@ test "Bridge.deinit while a worker is mid-emit does not UAF" {
 test "parkBinary parks within budget, rejects on overflow, and frees on teardown" {
     var t = try TestBridge.init();
     defer t.deinit(); // joins + deinitBins; freeing the parked ring with no leak is the assertion
-    const small = [_]u8{0xAB} ** 16;
+    const small = @as([16]u8, @splat(0xAB));
     try std.testing.expect(t.bridge.parkBinary(1, 0, &small));
     const big = try std.testing.allocator.alloc(u8, BIN_BUDGET_PER_ID);
     defer std.testing.allocator.free(big);

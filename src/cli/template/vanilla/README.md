@@ -5,7 +5,7 @@ package manager: the frontend is served directly from source.
 
 ## Prerequisites
 
-- [Zig 0.16](https://ziglang.org/download/)
+- [Zig 0.17.1](https://ziglang.org/download/)
 - The `zigware` CLI on your `PATH`
 
 ## Develop

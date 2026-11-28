@@ -89,7 +89,8 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
         // non-native and needs the SDK, but would slip past an arch compare.
         if (!target.query.isNative()) {
             if (sdkPath(b.allocator, b.graph.io)) |sdk| {
-                b.sysroot = sdk;
+                // 0.17 has no b.sysroot; the SDK lib dir lets .tbd stubs resolve.
+                barrel.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{sdk}) });
                 barrel.addFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk}) });
             } else |_| {}
         }
@@ -114,7 +115,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, opts: AppOptions) *std.
     // Per-OS overrides + grants, pinned from the CONSUMER build root so a change
     // re-runs the codegen. These reads run in the consumer build (b is the
     // consumer builder), so b.build_root is the consumer root.
-    const root = b.build_root.handle;
+    const root = b.root.root_dir.handle;
     const bio = b.graph.io;
     for ([_][]const u8{ "zigware.macos.zon", "zigware.linux.zon", "zigware.windows.zon" }) |name| {
         if (root.access(bio, name, .{})) {
@@ -273,12 +274,12 @@ fn stageDevAssets(b: *std.Build, dep: *std.Build.Dependency) ?std.Build.LazyPath
     // Resolve frontend/ to an ABSOLUTE path via the build-root handle, so the
     // walk is independent of the process cwd (b.pathFromRoot can yield a
     // cwd-relative "./frontend" when build_root.path is null or "."). This
-    // mirrors addApp's other configure-time reads, which use b.build_root.handle
+    // mirrors addApp's other configure-time reads, which use b.root.root_dir.handle
     // (see the per-OS override + grants probing earlier in addApp). A missing
     // frontend/ dir is the graceful "use the framework default table" path.
-    b.build_root.handle.access(io, "frontend", .{}) catch return null;
+    b.root.root_dir.handle.access(io, "frontend", .{}) catch return null;
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_n = b.build_root.handle.realPath(io, &root_buf) catch return null;
+    const root_n = b.root.root_dir.handle.realPath(io, &root_buf) catch return null;
     const root_abs = root_buf[0..root_n];
     const frontend_abs = b.fmt("{s}/frontend", .{root_abs});
 

@@ -4,7 +4,7 @@ A Zigware desktop application with a Svelte + Vite frontend.
 
 ## Prerequisites
 
-- Zig 0.16.0
+- Zig 0.17.1
 - Node.js 18+ (for the Svelte dev server and production build)
 
 ## Install frontend dependencies

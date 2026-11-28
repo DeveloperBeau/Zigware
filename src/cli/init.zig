@@ -309,7 +309,7 @@ test "init scaffolds a normal Zig project (no vendored framework files), manifes
 
         var diag: manifest.Diagnostics = .{};
         defer diag.deinit(gpa);
-        const m = try manifest.parseAtBuild(gpa, io, tmp.dir, .macos, .Debug, &diag);
+        const m = try manifest.parseAtBuild(gpa, io, tmp.dir, .macos, .debug, &diag);
         defer manifest.freeManifest(gpa, m);
         try testing.expectEqualStrings("MyApp", m.productName);
     }

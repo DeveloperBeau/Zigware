@@ -177,17 +177,23 @@ pub fn parseAtBuildFromPaths(
     }
 
     // Parse the base.
-    var zon_diag: std.zon.parse.Diagnostics = .{};
-    defer zon_diag.deinit(gpa);
-    const base = std.zon.parse.fromSliceAlloc(Manifest, gpa, base_src, &zon_diag, .{}) catch |err| switch (err) {
+    // Parsed values live in this arena. merge() returns a gpa-owned copy, so
+    // base and override are disposable once the merge is done.
+    var parse_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer parse_arena.deinit();
+    var zon_diag: std.zon.parse.Diagnostics = undefined;
+    const base = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = gpa,
+        .arena = parse_arena.allocator(),
+        .source = base_src,
+        .diagnostics = &zon_diag,
+    }) catch |err| switch (err) {
         error.ParseZon => {
             try mirrorZonDiagnostic(gpa, diag, &zon_diag, base_path, "base manifest failed to parse");
             return error.ParseFailed;
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
-    var base_owned: ?Manifest = base;
-    errdefer if (base_owned) |b| freeManifest(gpa, b);
 
     // Parse and apply override if one was selected.
     var override_value: ?OverrideManifest = null;
@@ -217,9 +223,13 @@ pub fn parseAtBuildFromPaths(
         };
         defer gpa.free(ov_src);
 
-        var ov_zon_diag: std.zon.parse.Diagnostics = .{};
-        defer ov_zon_diag.deinit(gpa);
-        override_value = std.zon.parse.fromSliceAlloc(OverrideManifest, gpa, ov_src, &ov_zon_diag, .{}) catch |err| switch (err) {
+        var ov_zon_diag: std.zon.parse.Diagnostics = undefined;
+        override_value = std.zon.parse.fromSlice(OverrideManifest, .{
+            .gpa = gpa,
+            .arena = parse_arena.allocator(),
+            .source = ov_src,
+            .diagnostics = &ov_zon_diag,
+        }) catch |err| switch (err) {
             error.ParseZon => {
                 try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag, op, "per-OS override failed to parse");
                 return error.ParseFailed;
@@ -227,13 +237,10 @@ pub fn parseAtBuildFromPaths(
             error.OutOfMemory => return error.OutOfMemory,
         };
     }
-    defer if (override_value) |ov| std.zon.parse.free(gpa, ov);
 
     // Apply the merge. It returns a fully gpa-owned deep-dup of base merged
-    // with override, so the base allocation is disposable on the success path.
-    const merged = try merge.merge(gpa, base_owned.?, override_value);
-    freeManifest(gpa, base_owned.?);
-    base_owned = null;
+    // with override, so the arena holding base and override is disposable.
+    const merged = try merge.merge(gpa, base, override_value);
 
     if (!(try validate.validate(gpa, merged, optimize, capability_ids, diag)) or diag.hasErrors()) {
         freeManifest(gpa, merged);
@@ -300,21 +307,20 @@ pub fn freeManifest(gpa: std.mem.Allocator, m: Manifest) void {
 }
 
 fn freeStruct(comptime T: type, gpa: std.mem.Allocator, value: T) void {
-    const info = @typeInfo(T);
-    inline for (info.@"struct".fields) |f| {
-        freeField(f, gpa, @field(value, f.name));
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, FT, attrs| {
+        freeField(FT, attrs.default_value_ptr, gpa, @field(value, name));
     }
 }
 
-fn freeField(comptime f: std.builtin.Type.StructField, gpa: std.mem.Allocator, v: f.type) void {
-    const FT = f.type;
+fn freeField(comptime FT: type, comptime default_value_ptr: ?*const anyopaque, gpa: std.mem.Allocator, v: FT) void {
     const finfo = @typeInfo(FT);
     switch (finfo) {
         .pointer => |ptr| {
             if (ptr.size != .slice) return;
             // Static-default skip: if a comptime default exists and the
             // runtime `.ptr` matches the default's `.ptr`, leave it.
-            if (f.default_value_ptr) |dvp| {
+            if (default_value_ptr) |dvp| {
                 const default_val: *const FT = @ptrCast(@alignCast(dvp));
                 if (v.ptr == default_val.*.ptr) return;
             }
@@ -388,20 +394,14 @@ fn mirrorZonDiagnostic(
     message: []const u8,
 ) std.mem.Allocator.Error!void {
     // Render the std.zon diagnostic stream into a path string of the form
-    // "<file_path>: <zon-diag>". The Diagnostic contract says `path` is
+    // "<file_path>:<line>:<col>: error: <msg>". The Diagnostic contract says `path` is
     // heap-built and Diagnostics.deinit frees it; `message` is a static
     // template owned by the call site.
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     // Allocating writer surfaces OOM through writer.err; the only writer
     // error returned is WriteFailed, which we mirror as OutOfMemory.
-    aw.writer.writeAll(file_path) catch |err| switch (err) {
-        error.WriteFailed => return error.OutOfMemory,
-    };
-    aw.writer.writeAll(": ") catch |err| switch (err) {
-        error.WriteFailed => return error.OutOfMemory,
-    };
-    src.format(&aw.writer) catch |err| switch (err) {
+    aw.writer.print("{f}", .{src.fmt(file_path)}) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
     };
     const path_owned = try gpa.dupe(u8, aw.writer.buffered());
@@ -425,17 +425,23 @@ fn parsePipeline(
     diag: *Diagnostics,
 ) LoadError!Manifest {
     // Parse base.
-    var zon_diag: std.zon.parse.Diagnostics = .{};
-    defer zon_diag.deinit(gpa);
-    const base = std.zon.parse.fromSliceAlloc(Manifest, gpa, base_src, &zon_diag, .{}) catch |err| switch (err) {
+    // Parsed values live in this arena. merge() returns a gpa-owned copy, so
+    // base and override are disposable once the merge is done.
+    var parse_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer parse_arena.deinit();
+    var zon_diag: std.zon.parse.Diagnostics = undefined;
+    const base = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = gpa,
+        .arena = parse_arena.allocator(),
+        .source = base_src,
+        .diagnostics = &zon_diag,
+    }) catch |err| switch (err) {
         error.ParseZon => {
             try mirrorZonDiagnostic(gpa, diag, &zon_diag, "zigware.zon", "base manifest failed to parse");
             return error.ParseFailed;
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
-    var base_owned: ?Manifest = base;
-    errdefer if (base_owned) |b| freeManifest(gpa, b);
 
     // Parse override if selected.
     var override_value: ?OverrideManifest = null;
@@ -467,9 +473,13 @@ fn parsePipeline(
         };
         defer gpa.free(ov_src);
 
-        var ov_zon_diag: std.zon.parse.Diagnostics = .{};
-        defer ov_zon_diag.deinit(gpa);
-        override_value = std.zon.parse.fromSliceAlloc(OverrideManifest, gpa, ov_src, &ov_zon_diag, .{}) catch |err| switch (err) {
+        var ov_zon_diag: std.zon.parse.Diagnostics = undefined;
+        override_value = std.zon.parse.fromSlice(OverrideManifest, .{
+            .gpa = gpa,
+            .arena = parse_arena.allocator(),
+            .source = ov_src,
+            .diagnostics = &ov_zon_diag,
+        }) catch |err| switch (err) {
             error.ParseZon => {
                 try mirrorZonDiagnostic(gpa, diag, &ov_zon_diag, ov_name, "per-OS override failed to parse");
                 return error.ParseFailed;
@@ -477,7 +487,6 @@ fn parsePipeline(
             error.OutOfMemory => return error.OutOfMemory,
         };
     }
-    defer if (override_value) |ov| std.zon.parse.free(gpa, ov);
 
     const ids = try listCapabilityIds(gpa, io, root_dir);
     defer {
@@ -485,11 +494,8 @@ fn parsePipeline(
         gpa.free(ids);
     }
 
-    const merged = try merge.merge(gpa, base_owned.?, override_value);
-    // merge returns a fully gpa-owned deep-dup; the base allocation is
-    // disposable on the success path. (On error the errdefer above still fires.)
-    freeManifest(gpa, base_owned.?);
-    base_owned = null;
+    const merged = try merge.merge(gpa, base, override_value);
+    // merge returns a fully gpa-owned deep-dup; the arena holds base and override.
 
     if (!(try validate.validate(gpa, merged, optimize, ids, diag)) or diag.hasErrors()) {
         freeManifest(gpa, merged);
@@ -525,7 +531,7 @@ test "parseAtBuild returns FileNotFound when zigware.zon is absent" {
 
     try std.testing.expectError(
         error.FileNotFound,
-        parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag),
+        parseAtBuild(gpa, io, fixture, .macos, .debug, &diag),
     );
 }
 
@@ -555,7 +561,7 @@ test "parseAtBuildFromPaths selects the override matching target_os" {
             &overrides,
             &.{},
             .linux,
-            .Debug,
+            .debug,
             &diag,
         ),
     );
@@ -583,7 +589,7 @@ test "parseAtBuildFromPaths applies the selected override via merge" {
         &overrides,
         &.{},
         .linux,
-        .Debug,
+        .debug,
         &diag,
     );
     defer freeManifest(gpa, m);
@@ -608,7 +614,7 @@ test "parseAtBuild selects the override matching target_os" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const m = try parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    const m = try parseAtBuild(gpa, io, fixture, .macos, .debug, &diag);
     defer freeManifest(gpa, m);
 
     try std.testing.expectEqualStrings("MacOsProduct", m.productName);
@@ -632,7 +638,7 @@ test "parseAtBuild emits override_for_target_dropped per recognized override whe
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const m = try parseAtBuild(gpa, io, fixture, .freebsd, .Debug, &diag);
+    const m = try parseAtBuild(gpa, io, fixture, .freebsd, .debug, &diag);
     defer freeManifest(gpa, m);
 
     var dropped: usize = 0;
@@ -661,7 +667,7 @@ test "parseAtBuild silently ignores unrelated files in the dir" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const m = try parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    const m = try parseAtBuild(gpa, io, fixture, .macos, .debug, &diag);
     defer freeManifest(gpa, m);
 
     var dropped: usize = 0;
@@ -690,7 +696,7 @@ test "parseAtBuildFromPaths emits override_for_target_dropped per supplied overr
         &overrides,
         &.{},
         .freebsd,
-        .Debug,
+        .debug,
         &diag,
     );
     defer freeManifest(gpa, m);
@@ -719,7 +725,7 @@ test "parseAtBuildFromPaths returns ParseFailed with one mirrored zon Diagnostic
             &.{},
             &.{},
             .macos,
-            .Debug,
+            .debug,
             &diag,
         ),
     );
@@ -733,37 +739,44 @@ test "manifest round-trips an app-declared scoped permission through zon" {
         ".app = .{ .windows = .{ .{ .label = \"main\", .title = \"M\" } } }, " ++
         ".security = .{ .permissions = .{ .{ .identifier = \"app:hashFile\", " ++
         ".commandsAllow = .{ \"hashFile\" }, .scopeAllow = .{ .{ .path = \"$APPDATA/notes/**\" } } } } } }";
-    var zd: std.zon.parse.Diagnostics = .{};
-    defer zd.deinit(gpa);
-    const m = try std.zon.parse.fromSliceAlloc(types.Manifest, gpa, src, &zd, .{});
-    defer freeManifest(gpa, m); // also asserts the union free arm under the testing allocator
+    var zd: std.zon.parse.Diagnostics = undefined;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const parsed = try std.zon.parse.fromSlice(types.Manifest, .{
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .source = src,
+        .diagnostics = &zd,
+    });
+    // merge returns the gpa-owned copy that freeManifest frees; this also
+    // asserts the union free arm under the testing allocator.
+    const merged = try merge.merge(gpa, parsed, null);
+    defer freeManifest(gpa, merged);
+    const m = merged;
     try std.testing.expectEqual(@as(usize, 1), m.security.permissions.len);
     try std.testing.expectEqualStrings("app:hashFile", m.security.permissions[0].identifier);
     try std.testing.expectEqualStrings("$APPDATA/notes/**", m.security.permissions[0].scopeAllow[0].path);
 }
 
-test "std.zon.parse.free is safe on a parsed OverrideManifest" {
-    // The override path frees OverrideManifest via std.zon.parse.free; the
-    // Manifest crash condition (defaulted static-literal slices) does NOT
-    // apply because every OverrideManifest leaf defaults to null and arrays
-    // default to null too. Prove the safety empirically rather than relying
-    // on reasoning, since this code is run on the production override path
-    // before any Task 5 test selects a valid override.
+test "a per-OS override parsed through parseAtBuildFromPaths is merged and freed without leaking" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAllocOptions(
-        io,
-        "tests/manifest/override/zigware.linux.zon",
+    const overrides = [_][]const u8{"tests/manifest/override/zigware.linux.zon"};
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+    const m = try parseAtBuildFromPaths(
         gpa,
-        .limited(READ_LIMIT_BYTES),
-        .of(u8),
-        0,
+        io,
+        "tests/manifest/override/zigware.zon",
+        &overrides,
+        &.{},
+        .linux,
+        .debug,
+        &diag,
     );
-    defer gpa.free(src);
-    var zon_diag: std.zon.parse.Diagnostics = .{};
-    defer zon_diag.deinit(gpa);
-    const ov = try std.zon.parse.fromSliceAlloc(OverrideManifest, gpa, src, &zon_diag, .{});
-    std.zon.parse.free(gpa, ov);
+    defer freeManifest(gpa, m);
+    // Only the linux override sets this value.
+    try std.testing.expectEqualStrings("LinuxProduct", m.productName);
 }
 
 test "freeManifest skips static-default slices via pointer identity" {
@@ -775,7 +788,7 @@ test "freeManifest skips static-default slices via pointer identity" {
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const m = try parseAtBuild(gpa, io, fixture, .macos, .Debug, &diag);
+    const m = try parseAtBuild(gpa, io, fixture, .macos, .debug, &diag);
 
     // The fixture supplies only the required fields. The default static-literal
     // slices on Manifest (e.g. MacOsBundle.minimumSystemVersion = "11.0") must
@@ -829,7 +842,7 @@ test "old snake_case permission keys in a manifest are rejected" {
         var diag: Diagnostics = .{};
         defer diag.deinit(gpa);
 
-        if (parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag)) |parsed| {
+        if (parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .debug, &diag)) |parsed| {
             freeManifest(gpa, parsed);
             std.debug.print("accepted snake_case key {s}\n", .{case.key});
             return error.TestUnexpectedResult;
@@ -841,6 +854,42 @@ test "old snake_case permission keys in a manifest are rejected" {
             try std.testing.expectEqualStrings("base manifest failed to parse", diag.items.items[0].message);
         }
     }
+}
+
+test "a manifest parse failure diagnostic names the file, line, column and zon reason" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    // The unknown field `.bogus` sits on line 3. Its name starts after four
+    // spaces and the dot, so the name is at column 6.
+    const body =
+        \\.{
+        \\    .identifier = "com.example.bad",
+        \\    .bogus = 1,
+        \\}
+    ;
+    try td.dir.writeFile(io, .{ .sub_path = "zigware.zon", .data = body });
+
+    var path_buf: [512]u8 = undefined;
+    const path = cacheRel(&path_buf, &td, "zigware.zon");
+
+    var diag: Diagnostics = .{};
+    defer diag.deinit(gpa);
+
+    try std.testing.expectError(
+        error.ParseFailed,
+        parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .debug, &diag),
+    );
+    try std.testing.expectEqual(@as(usize, 1), diag.items.items.len);
+    try std.testing.expectEqual(types.Code.zon_parse_error, diag.items.items[0].code);
+
+    // Expected text is written by hand from the input: file, line 3, column 6, reason.
+    const expected = try std.fmt.allocPrint(gpa, "{s}:3:6: error: unexpected field 'bogus'", .{path});
+    defer gpa.free(expected);
+    try std.testing.expect(std.mem.indexOf(u8, diag.items.items[0].path.?, expected) != null);
 }
 
 test "camelCase permission keys in a manifest parse to the declared command and scope" {
@@ -864,7 +913,7 @@ test "camelCase permission keys in a manifest parse to the declared command and 
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
 
-    const parsed = try parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .Debug, &diag);
+    const parsed = try parseAtBuildFromPaths(gpa, io, path, &.{}, &.{}, .macos, .debug, &diag);
     defer freeManifest(gpa, parsed);
 
     try std.testing.expect(!diag.hasErrors());

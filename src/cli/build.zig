@@ -16,7 +16,7 @@ pub const Arch = package.Arch;
 
 pub const BuildOptions = struct {
     manifest: *const Manifest,
-    optimize: std.builtin.OptimizeMode = .ReleaseSafe, // NOT ReleaseFast; src/main.zig comptime-bans it
+    optimize: std.builtin.OptimizeMode = .safe, // NOT ReleaseFast; src/main.zig comptime-bans it
     out_dir: []const u8,
     builder: dev.BuildRunner,
     proc: proc.Spawner,
@@ -363,7 +363,7 @@ test "build: asset_table embeds the CSP-injected index.html, hashes present, no 
     try testing.expect(std.mem.indexOf(u8, staged, "ZIGWARE_DEV") == null);
 
     // The release compile ran at ReleaseSafe, not ReleaseFast, with dev=false.
-    try testing.expectEqual(std.builtin.OptimizeMode.ReleaseSafe, builder.last_optimize.?);
+    try testing.expectEqual(std.builtin.OptimizeMode.safe, builder.last_optimize.?);
     try testing.expectEqual(false, builder.last_dev.?);
 
     // run now returns the release binary path; Artifacts population (app name, bundle id,
