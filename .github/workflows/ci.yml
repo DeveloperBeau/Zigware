@@ -20,9 +20,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
-      - name: Install Zig 0.16.0
+      - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
@@ -51,9 +51,9 @@ jobs:
         run: ./tests/examples/gate.sh
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7.1.0
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Bundle gate
         run: ./tests/bundle/gate.sh
