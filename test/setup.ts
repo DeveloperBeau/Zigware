@@ -7,6 +7,6 @@ if (!existsSync(out)) {
   const root = new URL("..", import.meta.url).pathname;
   const run = Bun.spawnSync(["zig", "build", "dts"], { cwd: root });
   if (run.exitCode !== 0 || !existsSync(out)) {
-    throw new Error(`zig build dts failed (is Zig 0.16.0 on PATH?):\n${run.stderr.toString()}`);
+    throw new Error(`zig build dts failed (is Zig 0.17.1 on PATH?):\n${run.stderr.toString()}`);
   }
 }

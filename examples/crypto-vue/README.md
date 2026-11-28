@@ -20,7 +20,7 @@ The frontend collects a `password` and a `message` and calls one Zig command,
 
 ## Prerequisites
 
-- Zig 0.16 and Node.js 18+.
+- Zig 0.17.1 and Node.js 18+.
 
 ## Run
 

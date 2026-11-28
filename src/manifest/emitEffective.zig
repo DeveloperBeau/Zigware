@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer root_dir.close(io);
 
-    const m = parse.parseAtBuild(gpa, io, root_dir, tag, .Debug, &diagnostics) catch |e| {
+    const m = parse.parseAtBuild(gpa, io, root_dir, tag, .debug, &diagnostics) catch |e| {
         for (diagnostics.items.items) |d| {
             if (d.path) |p| {
                 log.err(d.message, &.{diag.str("path", p)});

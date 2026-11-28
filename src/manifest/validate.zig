@@ -268,8 +268,8 @@ fn emit(
 
 fn isReleaseMode(o: std.builtin.OptimizeMode) bool {
     return switch (o) {
-        .ReleaseFast, .ReleaseSafe, .ReleaseSmall => true,
-        .Debug => false,
+        .fast, .safe, .small => true,
+        .debug => false,
     };
 }
 
@@ -378,7 +378,7 @@ test "validate accepts a minimal valid manifest" {
     const gpa = std.testing.allocator;
     var diag: Diagnostics = .{};
     defer diag.deinit(gpa);
-    try std.testing.expect(try validate(gpa, baseValid(), .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, baseValid(), .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), diag.items.items.len);
 }
 
@@ -388,7 +388,7 @@ test "validate flags a missing identifier" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.identifier = "";
-    try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .missing_identifier));
     const d = findOne(diag, .missing_identifier).?;
     try std.testing.expectEqualStrings("identifier", d.path.?);
@@ -407,7 +407,7 @@ test "validate flags an invalid reverse-DNS identifier" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.identifier = id;
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_identifier));
         const d = findOne(diag, .invalid_identifier).?;
         try std.testing.expectEqualStrings("identifier", d.path.?);
@@ -420,7 +420,7 @@ test "validate accepts a valid reverse-DNS identifier" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.identifier = "com.example.app";
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_identifier));
 }
 
@@ -432,7 +432,7 @@ test "validate flags a non-semver version" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.version = v;
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_version));
         const d = findOne(diag, .invalid_version).?;
         try std.testing.expectEqualStrings("version", d.path.?);
@@ -447,7 +447,7 @@ test "validate accepts SemVer with pre-release and build metadata" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.version = v;
-        try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_version));
     }
 }
@@ -458,7 +458,7 @@ test "validate flags a missing main window" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.app = .{ .windows = &.{.{ .label = "secondary", .title = "S" }} };
-    try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .no_main_window));
     const d = findOne(diag, .no_main_window).?;
     try std.testing.expectEqualStrings("app.windows", d.path.?);
@@ -473,7 +473,7 @@ test "validate flags an empty window label" {
         .{ .label = "main", .title = "M" },
         .{ .label = "", .title = "Empty" },
     } };
-    try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .empty_window_label));
     const d = findOne(diag, .empty_window_label).?;
     try std.testing.expectEqualStrings("app.windows[1].label", d.path.?);
@@ -493,7 +493,7 @@ test "validate flags duplicate window labels at every duplicate index" {
         .{ .label = "x", .title = "X2" },
         .{ .label = "x", .title = "X3" },
     } };
-    try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
     // Two duplicates, at indices 2 and 3.
     try std.testing.expectEqual(@as(usize, 2), countCode(diag, .duplicate_window_label));
     var saw_2 = false;
@@ -515,7 +515,7 @@ test "validate flags unknown capability references at every offending index" {
     m.security = .{
         .grants = &.{ "missing.one", "missing.two" },
     };
-    try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 2), countCode(diag, .unknown_capability_ref));
     var saw_0 = false;
     var saw_1 = false;
@@ -535,13 +535,13 @@ test "validate accepts known capability references" {
     var m = baseValid();
     m.security = .{ .grants = &.{ "fs.read", "shell.exec" } };
     const present: []const []const u8 = &.{ "fs.read", "shell.exec", "net.http" };
-    try std.testing.expect(try validate(gpa, m, .Debug, present, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, present, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .unknown_capability_ref));
 }
 
 test "inspector in release is rejected for every Release mode and allowed in Debug" {
     const gpa = std.testing.allocator;
-    for ([_]std.builtin.OptimizeMode{ .ReleaseSafe, .ReleaseFast, .ReleaseSmall }) |mode| {
+    for ([_]std.builtin.OptimizeMode{ .safe, .fast, .small }) |mode| {
         var diag: Diagnostics = .{};
         defer diag.deinit(gpa);
         var m = baseValid();
@@ -556,7 +556,7 @@ test "inspector in release is rejected for every Release mode and allowed in Deb
     defer diag.deinit(gpa);
     var m = baseValid();
     m.security = .{ .fuses = .{ .debugInspector = true } };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .inspector_in_release));
 }
 
@@ -566,7 +566,7 @@ test "validate emits dev_url_without_command as a warning that does not fail" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.frontend = .{ .serveUrl = "http://localhost:5173" };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 1), countCode(diag, .dev_url_without_command));
     try std.testing.expect(!diag.hasErrors());
     const d = findOne(diag, .dev_url_without_command).?;
@@ -580,7 +580,7 @@ test "validate does not emit dev_url_without_command when both fields are set" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.frontend = .{ .serveUrl = "http://localhost:5173", .dev = "bun run dev" };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .dev_url_without_command));
 }
 
@@ -592,7 +592,7 @@ test "validate flags an invalid team id and accepts a valid one" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.bundle = .{ .macos = .{ .teamId = t } };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_team_id));
         const d = findOne(diag, .invalid_team_id).?;
         try std.testing.expectEqualStrings("bundle.macos.teamId", d.path.?);
@@ -601,7 +601,7 @@ test "validate flags an invalid team id and accepts a valid one" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.bundle = .{ .macos = .{ .teamId = "ABCDE12345" } };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_team_id));
 }
 
@@ -612,7 +612,7 @@ test "validate flags empty or leading-hyphen bundleVersion and displayName" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.bundle = .{ .bundleVersion = "-1" };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_bundle_version));
         try std.testing.expectEqualStrings("bundle.bundleVersion", findOne(diag, .invalid_bundle_version).?.path.?);
     }
@@ -621,7 +621,7 @@ test "validate flags empty or leading-hyphen bundleVersion and displayName" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.bundle = .{ .displayName = "-bad" };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_display_name));
         try std.testing.expectEqualStrings("bundle.displayName", findOne(diag, .invalid_display_name).?.path.?);
     }
@@ -630,7 +630,7 @@ test "validate flags empty or leading-hyphen bundleVersion and displayName" {
     defer diag.deinit(gpa);
     var m = baseValid();
     m.bundle = .{ .bundleVersion = "42", .displayName = "My App" };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
 }
 
 test "validate accepts lenient minimumSystemVersion and rejects malformed ones" {
@@ -641,7 +641,7 @@ test "validate accepts lenient minimumSystemVersion and rejects malformed ones" 
         defer diag.deinit(gpa);
         var m = baseValid();
         m.bundle = .{ .macos = .{ .minimumSystemVersion = v } };
-        try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 0), countCode(diag, .invalid_minimum_system_version));
     }
     const bad = [_][]const u8{ "11.0.0.1", "11.", ".11", "11-beta", "11..0", "-11", "" };
@@ -650,7 +650,7 @@ test "validate accepts lenient minimumSystemVersion and rejects malformed ones" 
         defer diag.deinit(gpa);
         var m = baseValid();
         m.bundle = .{ .macos = .{ .minimumSystemVersion = v } };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .invalid_minimum_system_version));
         try std.testing.expectEqualStrings("bundle.macos.minimumSystemVersion", findOne(diag, .invalid_minimum_system_version).?.path.?);
     }
@@ -680,7 +680,7 @@ fn oomTestImpl(gpa: std.mem.Allocator) !void {
     };
     m.frontend = .{ .serveUrl = "http://localhost:5173" };
 
-    _ = try validate(gpa, m, .Debug, &.{}, &diag);
+    _ = try validate(gpa, m, .debug, &.{}, &diag);
 }
 
 test "validate under checkAllAllocationFailures has zero leaks" {
@@ -701,7 +701,7 @@ test "validate accepts an app permission confined to $APPDATA" {
             .scopeAllow = &.{ .{ .path = "$APPDATA" }, .{ .path = "$APPDATA/notes/**" } },
         }},
     };
-    try std.testing.expect(try validate(gpa, m, .Debug, &.{}, &diag));
+    try std.testing.expect(try validate(gpa, m, .debug, &.{}, &diag));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_scope_unconfined));
     try std.testing.expectEqual(@as(usize, 0), countCode(diag, .permission_not_app_namespaced));
 }
@@ -723,7 +723,7 @@ test "validate rejects an app permission scoped outside $APPDATA" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.security = .{ .permissions = &.{.{ .identifier = "app:hashFile", .scopeAllow = &.{sc} }} };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .permission_scope_unconfined));
         try std.testing.expectEqualStrings(
             "security.permissions[0].scopeAllow[0]",
@@ -740,7 +740,7 @@ test "validate rejects an app permission whose id is not app: namespaced" {
         defer diag.deinit(gpa);
         var m = baseValid();
         m.security = .{ .permissions = &.{.{ .identifier = id }} };
-        try std.testing.expect(!try validate(gpa, m, .Debug, &.{}, &diag));
+        try std.testing.expect(!try validate(gpa, m, .debug, &.{}, &diag));
         try std.testing.expectEqual(@as(usize, 1), countCode(diag, .permission_not_app_namespaced));
         try std.testing.expectEqualStrings(
             "security.permissions[0].identifier",

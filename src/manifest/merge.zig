@@ -150,9 +150,10 @@ fn isStaticDefault(
     return false;
 }
 
-fn fieldInfo(comptime T: type, comptime field_name: []const u8) std.builtin.Type.StructField {
-    inline for (@typeInfo(T).@"struct".fields) |f| {
-        if (comptime std.mem.eql(u8, f.name, field_name)) return f;
+fn fieldInfo(comptime T: type, comptime field_name: []const u8) struct { type: type, default_value_ptr: ?*const anyopaque } {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, ftype, attrs| {
+        if (comptime std.mem.eql(u8, name, field_name)) return .{ .type = ftype, .default_value_ptr = attrs.default_value_ptr };
     }
     @compileError("no such field: " ++ field_name);
 }

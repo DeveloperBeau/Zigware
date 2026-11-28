@@ -542,7 +542,7 @@ const FUZZ_ITERS: usize = 10_000;
 // it into the JSON envelope via protocol.jsString, so the decoded label/url/
 // title receives these exact bytes. The handler/gate chain must tolerate all of
 // them without a panic or a double-settle.
-const oversized_label = "x" ** 4097; // > JSON_PARSE_OPTIONS.max_value_len (4096)
+const oversized_label = &@as([4097]u8, @splat('x')); // > JSON_PARSE_OPTIONS.max_value_len (4096)
 const adversarial_fragments = [_][]const u8{
     "viewer", // in-scope label -> resolve (first) / label_in_use (rest)
     "Viewer", // duplicate-different-case: NOT the same key as "viewer"

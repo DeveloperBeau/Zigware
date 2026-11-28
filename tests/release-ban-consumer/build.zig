@@ -3,7 +3,7 @@ const zigware = @import("zigware");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const dep = b.dependency("zigware", .{ .target = target, .optimize = .ReleaseFast });
+    const dep = b.dependency("zigware", .{ .target = target, .optimize = .fast });
     _ = zigware.addApp(b, dep, .{
         .name = "release-ban-consumer",
         .manifest = b.path("zigware.zon"),
@@ -17,6 +17,6 @@ pub fn build(b: *std.Build) void {
         // Force ReleaseFast directly: a scaffold-shaped build.zig registers
         // -Drelease (bool), so -Doptimize=ReleaseFast is an unknown option and
         // never reaches the comptime ban. The mode must be set on the module.
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
     });
 }

@@ -9,7 +9,7 @@ const builtin_target = @import("builtin");
 // without the barrel (e.g. a future headless app harness) still inherits the
 // ban. The barrel carries the authoritative copy.
 comptime {
-    if (builtin_target.mode == .ReleaseFast or builtin_target.mode == .ReleaseSmall) {
+    if (builtin_target.mode == .fast or builtin_target.mode == .small) {
         @compileError("Zigware ships ReleaseSafe or Debug only");
     }
 }
@@ -39,7 +39,7 @@ const embedded_caps: []const security_cap.Capability = @import("zigware_grants_z
 /// GrantTable.compile and the runtime is_debug gate in gates.originTrusted are
 /// the further belts). In Debug the input is returned unchanged.
 fn dropDevUrlInRelease(comptime caps: []const security_cap.Capability) []const security_cap.Capability {
-    if (builtin_target.mode == .Debug) return caps;
+    if (builtin_target.mode == .debug) return caps;
     comptime {
         var out: []const security_cap.Capability = &.{};
         for (caps) |c| {
@@ -74,7 +74,7 @@ const Lifecycle = window_lifecycle.Lifecycle;
 /// freed before return, so the caller frees the dupe. `@import("builtin")` is referenced
 /// inline because the file-scope `builtin` alias is the command surface, not the std module.
 fn devUrlOverride(gpa: std.mem.Allocator) !?[]const u8 {
-    if (comptime @import("builtin").mode != .Debug) return null;
+    if (comptime @import("builtin").mode != .debug) return null;
     // No `init` is in scope here (app.zig's main() is zero-param), and the
     // `.{ .block = .global }` form does not compile on macOS, so build a PosixBlock
     // straight from the libc environ. std.c.environ is `[*:null]?[*:0]u8`; PosixBlock.slice
@@ -360,7 +360,7 @@ pub fn App(comptime B: type) type {
                 grants,
                 bases,
                 std.Io.Dir.cwd(),
-                (@import("builtin").mode == .Debug),
+                (@import("builtin").mode == .debug),
                 true,
                 windows,
                 manifest.app.quitOnLastWindowClosed,
@@ -398,7 +398,7 @@ pub fn App(comptime B: type) type {
                 grants,
                 bases,
                 std.Io.Dir.cwd(),
-                (@import("builtin").mode == .Debug),
+                (@import("builtin").mode == .debug),
                 true,
                 windows,
                 manifest.app.quitOnLastWindowClosed,
@@ -986,7 +986,7 @@ test "M6: navigation denies by default, allows only the app://localhost origin" 
 }
 
 test "dev mode: ZIGWARE_DEV_URL overrides the main window URL and is a trusted nav origin" {
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    if (@import("builtin").mode != .debug) return error.SkipZigTest;
     // devUrlOverride(gpa) reads the env under the Debug gate (re-signatured to take an
     // allocator + be fallible, since 0.16 has no std.posix.getenv). CI Debug runs with the
     // var unset, so assert the null path here and cover the set path via the pure helper below.
@@ -1163,7 +1163,7 @@ test "dropDevUrlInRelease strips devUrl origins outside Debug, keeps them in Deb
         else => {},
     };
     try std.testing.expect(has_app); // appScheme always survives
-    if (builtin_target.mode == .Debug) {
+    if (builtin_target.mode == .debug) {
         try std.testing.expect(has_dev);
     } else {
         try std.testing.expect(!has_dev); // release binary carries no dev origin
@@ -1207,7 +1207,7 @@ test "buildGrantsFromCaps trusts a declared dev origin only in Debug" {
     for (grants.originsFor("main")) |o| if (o == .devUrl) {
         has_dev = true;
     };
-    if (@import("builtin").mode == .Debug) {
+    if (@import("builtin").mode == .debug) {
         try std.testing.expect(has_dev);
     } else {
         try std.testing.expect(!has_dev);

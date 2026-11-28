@@ -132,8 +132,8 @@ const SystemSpawner = struct {
         const term = try child.inner.wait(io);
         return switch (term) {
             .exited => |code| .{ .exited = code },
-            .signal => |sig| .{ .signal = @intFromEnum(sig) },
-            .stopped => |sig| .{ .signal = @intFromEnum(sig) },
+            .signal => |sig| .{ .signal = @backingInt(sig) },
+            .stopped => |sig| .{ .signal = @backingInt(sig) },
             .unknown => .unknown,
         };
     }

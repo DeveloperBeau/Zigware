@@ -58,7 +58,7 @@ const Harness = struct {
         defer example_dir.close(io);
         var diag: z.manifest.Diagnostics = .{};
         defer diag.deinit(a);
-        const m = try z.parse.parseAtBuild(a, io, example_dir, .macos, .Debug, &diag);
+        const m = try z.parse.parseAtBuild(a, io, example_dir, .macos, .debug, &diag);
         defer z.parse.freeManifest(a, m);
         try std.testing.expect(m.app.windows.len >= 1);
         try std.testing.expectEqualStrings("main", m.app.windows[0].label);

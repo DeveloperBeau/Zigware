@@ -4,7 +4,7 @@ A Zigware desktop app with a React + Vite frontend.
 
 ## Prerequisites
 
-- [Zig 0.16](https://ziglang.org/download/)
+- [Zig 0.17.1](https://ziglang.org/download/)
 - The `zigware` CLI on your `PATH`
 - Node.js 18+ (for the Vite dev server and production build)
 

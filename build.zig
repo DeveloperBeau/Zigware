@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     // -Doptimize=<mode>. Accept it here alongside -Drelease so addApp-based
     // consumers can forward their own optimize mode to the dependency.
     const optimize_override = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (forwarded from consumer via .optimize =)");
-    const optimize = optimize_override orelse b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    const optimize = optimize_override orelse b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
 
     if (target.result.os.tag != .macos) {
         std.debug.print("zigware PoC targets macOS only\n", .{});
@@ -170,7 +170,7 @@ pub fn build(b: *std.Build) void {
     const zw_exe = b.addExecutable(.{ .name = "zw", .root_module = cli_mod });
     b.installArtifact(zw_exe);
     const cli_run = b.addRunArtifact(cli_exe);
-    if (b.args) |args| cli_run.addArgs(args);
+    cli_run.addPassthruArgs();
     const cli_step = b.step("cli", "Run the zigware CLI");
     cli_step.dependOn(&cli_run.step);
 
@@ -444,9 +444,9 @@ pub fn build(b: *std.Build) void {
     // argv[3] = base manifest path; pinned via addFileArg so an edit invalidates the cache.
     emit_eff_run.addFileArg(b.path("zigware.zon"));
     // argv[4..] = per-OS override paths; pin every existing one. build.zig's
-    // configure-phase filesystem reads use b.build_root.handle + b.graph.io;
+    // configure-phase filesystem reads use b.root.root_dir.handle + b.graph.io;
     // std.fs.cwd() is not in 0.16.
-    const root = b.build_root.handle;
+    const root = b.root.root_dir.handle;
     const bio = b.graph.io;
     for ([_][]const u8{ "zigware.macos.zon", "zigware.linux.zon", "zigware.windows.zon" }) |name| {
         if (root.access(bio, name, .{})) {
@@ -673,7 +673,7 @@ const template_root = "src/cli/template";
 /// per-template build.zig edit. Returns an empty slice if the dir is absent.
 fn walkTemplateTree(b: *std.Build) []const []const u8 {
     const io = b.graph.io;
-    var dir = b.build_root.handle.openDir(io, template_root, .{ .iterate = true }) catch return &.{};
+    var dir = b.root.root_dir.handle.openDir(io, template_root, .{ .iterate = true }) catch return &.{};
     defer dir.close(io);
 
     var list: std.ArrayList([]const u8) = .empty;
@@ -683,7 +683,7 @@ fn walkTemplateTree(b: *std.Build) []const []const u8 {
         if (entry.kind != .file) continue;
         // entry.path aliases the walker's name_buffer (invalidated on next()), so
         // dupe immediately. Normalise to forward slashes for the embed name.
-        const rel = b.dupe(entry.path);
+        const rel = b.allocator.dupe(u8, entry.path) catch @panic("OOM");
         std.mem.replaceScalar(u8, rel, std.fs.path.sep, '/');
         list.append(b.allocator, rel) catch @panic("OOM");
     }

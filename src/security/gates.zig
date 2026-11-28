@@ -199,7 +199,7 @@ test "G1: devUrl honored only in debug" {
     // is the deciding factor. In ReleaseSafe: devUrl is dropped from the compiled
     // trust set at compile time (belt beyond the runtime gate), so even is_debug=true
     // at runtime denies.
-    if (comptime builtin.mode == .Debug) {
+    if (comptime builtin.mode == .debug) {
         try std.testing.expect(evaluate(&table, ctxFor("http://localhost:1420", "window.setTitle", true), bases, std.testing.io, std.Io.Dir.cwd()) == .allow);
     }
     const d = evaluate(&table, ctxFor("http://localhost:1420", "window.setTitle", false), bases, std.testing.io, std.Io.Dir.cwd());
