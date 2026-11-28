@@ -50,4 +50,11 @@ if [ ! -f "$proj/zig-out/bin/zw-vanilla" ]; then
   echo "FAIL [vanilla]: release exe zig-out/bin/zw-vanilla not produced"; exit 1
 fi
 
+echo "gate: zig build cli forwards its arguments to the CLI (addPassthruArgs)"
+# Without passthrough the CLI gets no verb and prints usage, not the version line.
+cli_out="$(zig build cli -- version 2>&1)" || true
+if ! printf '%s\n' "$cli_out" | grep -qx 'zigware 0.2.0'; then
+  echo "FAIL: zig build cli -- version did not print 'zigware 0.2.0' (passthrough args lost?): $cli_out"; exit 1
+fi
+
 echo "all scaffold-init gates passed"

@@ -74,7 +74,13 @@ pub fn loadCapabilities(
             else => return error.ParseFailed,
         };
 
-        const c = std.zon.parse.fromSliceAlloc(Capability, arena, src, null, .{}) catch |err| switch (err) {
+        var zon_diag: std.zon.parse.Diagnostics = undefined;
+        const c = std.zon.parse.fromSlice(Capability, .{
+            .gpa = arena,
+            .arena = arena,
+            .source = src,
+            .diagnostics = &zon_diag,
+        }) catch |err| switch (err) {
             error.ParseZon => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         };
@@ -184,13 +190,14 @@ test "old app_scheme origin tag in a grant file is rejected" {
     try std.testing.expectError(error.ParseFailed, loadGrantSource(arena, body));
 
     const src: [:0]const u8 = body;
-    var zon_diag: std.zon.parse.Diagnostics = .{};
-    defer zon_diag.deinit(arena);
-    try std.testing.expectError(
-        error.ParseZon,
-        std.zon.parse.fromSliceAlloc(Capability, arena, src, &zon_diag, .{}),
-    );
-    const msg = try std.fmt.allocPrint(arena, "{f}", .{zon_diag});
+    var zon_diag: std.zon.parse.Diagnostics = undefined;
+    try std.testing.expectError(error.ParseZon, std.zon.parse.fromSlice(Capability, .{
+        .gpa = arena,
+        .arena = arena,
+        .source = src,
+        .diagnostics = &zon_diag,
+    }));
+    const msg = try std.fmt.allocPrint(arena, "{f}", .{zon_diag.fmt("grant.zon")});
     // Hand-written from the std.zon union-tag error: the old tag is named as
     // unexpected, and the note lists the camelCase tags that are supported.
     try std.testing.expect(std.mem.indexOf(u8, msg, "error: unexpected field 'app_scheme'") != null);

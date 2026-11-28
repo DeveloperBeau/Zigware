@@ -47,9 +47,11 @@ Each example is its own package. Run its tests from its folder, for example
     bash scripts/coverage.sh # kcov HTML report, or a documented fallback if kcov is absent
 
 CI (GitHub Actions, macOS) runs `zig fmt --check`, `zig build`, and the per-suite
-tests on every PR to `develop`/`main`. `zig build test --fuzz` does not work on
-the Zig 0.16.0 toolchain (a test-runner bug); each fuzz body ships a manual driver
-instead. See [docs/SMOKE.md](docs/SMOKE.md) for the manual GUI checklist.
+tests on every PR to `develop`/`main`. `zig build test --fuzz` last failed to work
+on the Zig 0.16.0 toolchain (a test-runner bug). A short check on 0.17.1 did not
+finish, because the combined `zig build test` step does not terminate. Each fuzz
+body ships a manual driver instead. See [docs/SMOKE.md](docs/SMOKE.md) for the
+manual GUI checklist.
 
 ## Security posture
 

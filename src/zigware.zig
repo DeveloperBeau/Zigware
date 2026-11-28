@@ -19,7 +19,7 @@ const builtin = @import("builtin");
 // Lives here so ANY consumer compiling against the framework barrel inherits
 // the ban; a scaffolded main.zig keeps a documentation-only mirror.
 comptime {
-    if (builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall) {
+    if (builtin.mode == .fast or builtin.mode == .small) {
         @compileError("Zigware ships ReleaseSafe or Debug only");
     }
 }

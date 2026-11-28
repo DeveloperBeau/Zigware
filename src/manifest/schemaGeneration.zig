@@ -34,15 +34,16 @@ pub fn writeSchema(writer: *std.Io.Writer) std.Io.Writer.Error!void {
 /// `$schema` / `title`. `indent` is the indentation level of the enclosing
 /// object's keys (in two-space units).
 fn writeStructBody(writer: *std.Io.Writer, comptime T: type, comptime indent: usize) std.Io.Writer.Error!void {
-    const fields = @typeInfo(T).@"struct".fields;
+    const info = @typeInfo(T).@"struct";
+    const fields = info.field_names;
     try writeIndent(writer, indent);
     try writer.writeAll("\"type\": \"object\",\n");
     try writeIndent(writer, indent);
     try writer.writeAll("\"properties\": {\n");
-    inline for (fields, 0..) |f, i| {
+    inline for (fields, info.field_types, 0..) |f_name, f_type, i| {
         try writeIndent(writer, indent + 1);
-        try writer.print("\"{s}\": ", .{f.name});
-        try writeType(writer, unwrapOptional(f.type), indent + 1);
+        try writer.print("\"{s}\": ", .{f_name});
+        try writeType(writer, unwrapOptional(f_type), indent + 1);
         if (i + 1 < fields.len) try writer.writeAll(",");
         try writer.writeAll("\n");
     }
@@ -51,13 +52,13 @@ fn writeStructBody(writer: *std.Io.Writer, comptime T: type, comptime indent: us
     try writeIndent(writer, indent);
     try writer.writeAll("\"required\": [");
     comptime var first_required = true;
-    inline for (fields) |f| {
+    inline for (fields, info.field_types, info.field_attrs) |f_name, f_type, f_attrs| {
         // A field is required iff it has no default value AND is not optional.
         // The omit-from-required convention for `?T` means optional fields are
         // implicitly absent-allowed regardless of whether they carry a default.
-        if (f.default_value_ptr == null and @typeInfo(f.type) != .optional) {
+        if (f_attrs.default_value_ptr == null and @typeInfo(f_type) != .optional) {
             if (!first_required) try writer.writeAll(", ");
-            try writer.print("\"{s}\"", .{f.name});
+            try writer.print("\"{s}\"", .{f_name});
             first_required = false;
         }
     }
@@ -90,9 +91,9 @@ fn writeType(writer: *std.Io.Writer, comptime T: type, comptime indent: usize) s
         .optional => |o| try writeType(writer, o.child, indent),
         .@"enum" => |e| {
             try writer.writeAll("{\"enum\": [");
-            inline for (e.fields, 0..) |ef, i| {
+            inline for (e.field_names, 0..) |ef_name, i| {
                 if (i != 0) try writer.writeAll(", ");
-                try writer.print("\"{s}\"", .{ef.name});
+                try writer.print("\"{s}\"", .{ef_name});
             }
             try writer.writeAll("]}");
         },
@@ -116,12 +117,12 @@ fn writeType(writer: *std.Io.Writer, comptime T: type, comptime indent: usize) s
             // A zon tagged union serializes as `.{ .<tag> = <payload> }`, so
             // each variant is an object with exactly that one property.
             try writer.writeAll("{\"oneOf\": [");
-            inline for (u.fields, 0..) |uf, i| {
+            inline for (u.field_names, u.field_types, 0..) |uf_name, uf_type, i| {
                 if (i != 0) try writer.writeAll(", ");
                 try writer.writeAll("{\"type\": \"object\", \"properties\": {");
-                try writer.print("\"{s}\": ", .{uf.name});
-                try writeType(writer, uf.type, indent + 1);
-                try writer.print("}}, \"required\": [\"{s}\"], \"additionalProperties\": false}}", .{uf.name});
+                try writer.print("\"{s}\": ", .{uf_name});
+                try writeType(writer, uf_type, indent + 1);
+                try writer.print("}}, \"required\": [\"{s}\"], \"additionalProperties\": false}}", .{uf_name});
             }
             try writer.writeAll("]}");
         },
@@ -162,8 +163,8 @@ test "schema reflects every Manifest top-level field (drift guard)" {
     defer aw.deinit();
     try writeSchema(&aw.writer);
     const out = aw.writer.buffered();
-    inline for (@typeInfo(types.Manifest).@"struct".fields) |f| {
-        const needle = "\"" ++ f.name ++ "\"";
+    inline for (@typeInfo(types.Manifest).@"struct".field_names) |f_name| {
+        const needle = "\"" ++ f_name ++ "\"";
         try std.testing.expect(std.mem.indexOf(u8, out, needle) != null);
     }
     // required-set check (robust to whitespace + field ordering): the schema

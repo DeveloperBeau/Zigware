@@ -99,7 +99,7 @@ pub const GrantTable = struct {
                         diags.report(gpa, .{ .code = .fuse_requires_capability, .message = "https origin dropped: allowRemoteContent is off" });
                         continue;
                     },
-                    .devUrl => if (comptime builtin.mode != .Debug) {
+                    .devUrl => if (comptime builtin.mode != .debug) {
                         continue;
                     },
                     else => {},
@@ -488,7 +488,7 @@ test "devUrl origin is dropped from the compiled trust set outside Debug" {
     for (gt.originsFor("main")) |o| if (o == .devUrl) {
         has_dev = true;
     };
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         try std.testing.expect(has_dev);
     } else {
         try std.testing.expect(!has_dev);

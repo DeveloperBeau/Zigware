@@ -40,7 +40,7 @@ pub fn waitForUrl(io: std.Io, gpa: std.mem.Allocator, url: []const u8, opts: Wai
 
         // The server answered. Anything below 500 means it is serving (4xx is
         // still "up" for our purposes); 5xx means it is starting but not ready.
-        if (@intFromEnum(result.status) < 500) return;
+        if (@backingInt(result.status) < 500) return;
 
         try backoff(io, opts.poll_interval_ms, deadline, shutdown);
     }

@@ -24,11 +24,11 @@ fn asyncInner(comptime T: type) ?type {
     const info = @typeInfo(T);
     if (info != .@"struct") return null;
     const s = info.@"struct";
-    if (s.fields.len != 1) return null;
-    if (!std.mem.eql(u8, s.fields[0].name, "inner")) return null;
+    if (s.field_names.len != 1) return null;
+    if (!std.mem.eql(u8, s.field_names[0], "inner")) return null;
     // Confirm it is literally Async(field type), not a coincidental {inner: X}.
-    if (T != Async(s.fields[0].type)) return null;
-    return s.fields[0].type;
+    if (T != Async(s.field_types[0])) return null;
+    return s.field_types[0];
 }
 
 /// True if `T` is `compute.Sink(P)` for some progress payload P. `Sink(P)` stores
@@ -44,8 +44,8 @@ fn isSink(comptime T: type) bool {
         // would otherwise fault with an internal comptime error instead of the
         // clean "third param must be z.Sink(P)" message the caller emits.
         const prog = @typeInfo(@TypeOf(T.progress));
-        if (prog != .@"fn" or prog.@"fn".params.len < 2) return false;
-        const P = prog.@"fn".params[1].type.?;
+        if (prog != .@"fn" or prog.@"fn".param_types.len < 2) return false;
+        const P = prog.@"fn".param_types[1].?;
         return T == compute.Sink(P);
     }
 }
@@ -127,18 +127,18 @@ fn declFns(comptime UserCommands: anytype) []const FnDecl {
     comptime {
         var list: []const FnDecl = &.{};
         for (nsTypes(UserCommands)) |Ns| {
-            for (@typeInfo(Ns).@"struct".decls) |d| {
-                const f = @field(Ns, d.name);
+            for (@typeInfo(Ns).@"struct".decl_names) |d_name| {
+                const f = @field(Ns, d_name);
                 if (@typeInfo(@TypeOf(f)) != .@"fn") continue;
                 // A command name shared by two namespaces would let the dispatcher
                 // silently bind one handler while the gate allowlist carries an
                 // ambiguous entry. Reject the collision at comptime rather than
                 // shadow it. The registry never resolves a command name by luck.
                 for (list) |existing| {
-                    if (std.mem.eql(u8, existing.name, d.name))
-                        @compileError("duplicate command '" ++ d.name ++ "' across command namespaces");
+                    if (std.mem.eql(u8, existing.name, d_name))
+                        @compileError("duplicate command '" ++ d_name ++ "' across command namespaces");
                 }
-                list = list ++ &[_]FnDecl{.{ .ns = Ns, .name = d.name }};
+                list = list ++ &[_]FnDecl{.{ .ns = Ns, .name = d_name }};
             }
         }
         return list;
@@ -174,22 +174,22 @@ fn validate(comptime State: type, comptime UserCommands: anytype) void {
         for (declFns(UserCommands)) |d| {
             const FT = @TypeOf(@field(d.ns, d.name));
             const fn_info = @typeInfo(FT).@"fn";
-            if (fn_info.params.len < 1 or fn_info.params.len > 3)
+            if (fn_info.param_types.len < 1 or fn_info.param_types.len > 3)
                 @compileError("command '" ++ d.name ++ "' must take *Ctx(State), an optional args struct, and an optional sink: z.Sink(P)");
-            const P0 = fn_info.params[0].type.?;
+            const P0 = fn_info.param_types[0].?;
             if (P0 != *Ctx(State))
                 @compileError("command '" ++ d.name ++ "' first param must be *Ctx(State)");
             // Param 1 is ALWAYS the args struct when present (for both the 2-param
             // and 3-param forms), so validate it for len >= 2 to surface the clean
             // "must be a struct" message rather than a deeper JSON-decode error. A
             // stream-only command with no args must still declare an empty `struct {}`.
-            if (fn_info.params.len >= 2) {
-                const ArgsT = fn_info.params[1].type.?;
+            if (fn_info.param_types.len >= 2) {
+                const ArgsT = fn_info.param_types[1].?;
                 if (@typeInfo(ArgsT) != .@"struct")
                     @compileError("command '" ++ d.name ++ "' second param must be a struct of JSON-decodable fields");
             }
-            if (fn_info.params.len == 3) {
-                const SinkT = fn_info.params[2].type.?;
+            if (fn_info.param_types.len == 3) {
+                const SinkT = fn_info.param_types[2].?;
                 if (!isSink(SinkT))
                     @compileError("command '" ++ d.name ++ "' third param must be z.Sink(P)");
             }
@@ -333,8 +333,8 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 
     // Decode args if the handler declares an args struct.
     const result: Inner = blk: {
-        if (fn_info.params.len >= 2) {
-            const ArgsT = fn_info.params[1].type.?;
+        if (fn_info.param_types.len >= 2) {
+            const ArgsT = fn_info.param_types[1].?;
             const parsed_args = std.json.parseFromSliceLeaky(ArgsT, a, args_json, protocol.JSON_PARSE_OPTIONS) catch {
                 bridge.emitErrorReject(route, id, "bad_args", "could not decode arguments", null);
                 return;
@@ -352,14 +352,14 @@ fn runHandler(comptime handler: anytype, comptime Inner: type, bridge: anytype, 
 fn callMaybeAsync(comptime handler: anytype, comptime Inner: type, ctx: anytype, args: anytype) Inner {
     const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
     const Ret = fn_info.return_type.?;
-    const raw = switch (fn_info.params.len) {
+    const raw = switch (fn_info.param_types.len) {
         1 => handler(ctx),
         2 => handler(ctx, args),
         // The framework owns sink construction: project Sink(P) off the live
         // *Ctx (exactly what handlers used to do via `z.Sink(P).from(ctx)`) and
         // pass it third. `ctx` is already a `*Ctx`, which `from` duck-types.
         3 => blk: {
-            const SinkT = fn_info.params[2].type.?;
+            const SinkT = fn_info.param_types[2].?;
             break :blk handler(ctx, args, SinkT.from(ctx));
         },
         else => unreachable, // validate caps params at 3
@@ -413,9 +413,9 @@ fn emitBytes(ctx: anytype, bridge: anytype, label: []const u8, id: u64, b: ctxmo
 fn isResult(comptime T: type) bool {
     const info = @typeInfo(T);
     if (info != .@"union") return false;
-    if (info.@"union".fields.len != 2) return false;
-    const f = info.@"union".fields;
-    return std.mem.eql(u8, f[0].name, "ok") and std.mem.eql(u8, f[1].name, "err") and f[1].type == CommandError;
+    const u = info.@"union";
+    if (u.field_names.len != 2) return false;
+    return std.mem.eql(u8, u.field_names[0], "ok") and std.mem.eql(u8, u.field_names[1], "err") and u.field_types[1] == CommandError;
 }
 
 /// Serialize a success value to JSON and emit a _resolve via the bridge.
@@ -459,26 +459,40 @@ const StubBridge = struct {
     streamed: std.ArrayList(u8) = .empty,
     backend_label: []const u8 = "main",
     stub_flag: std.atomic.Value(bool) = .{ .raw = false },
+    /// Allocator for the stub's own recording buffers. Lets a test point `alloc`
+    /// (what the registry uses) at a FailingAllocator while the recorded reject
+    /// still gets stored.
+    emit_alloc: ?std.mem.Allocator = null,
+    /// When true, armCancel reports OutOfMemory.
+    arm_fails: bool = false,
+    released: usize = 0,
+
+    fn ea(self: *StubBridge) std.mem.Allocator {
+        return self.emit_alloc orelse self.alloc;
+    }
 
     fn emitResolve(self: *StubBridge, _: []const u8, id: u64, json: []const u8) void {
-        var aw: std.Io.Writer.Allocating = .init(self.alloc);
+        var aw: std.Io.Writer.Allocating = .init(self.ea());
         defer aw.deinit();
         protocol.encodeResolve(&aw.writer, id, json) catch return;
         self.last.clearRetainingCapacity();
-        self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
+        self.last.appendSlice(self.ea(), aw.writer.buffered()) catch {};
     }
     fn emitErrorReject(self: *StubBridge, _: []const u8, id: u64, code: []const u8, message: []const u8, payload: ?[]const u8) void {
-        var aw: std.Io.Writer.Allocating = .init(self.alloc);
+        var aw: std.Io.Writer.Allocating = .init(self.ea());
         defer aw.deinit();
         protocol.encodeErrorReject(&aw.writer, id, code, message, payload) catch return;
         self.last.clearRetainingCapacity();
-        self.last.appendSlice(self.alloc, aw.writer.buffered()) catch {};
+        self.last.appendSlice(self.ea(), aw.writer.buffered()) catch {};
     }
-    fn releaseCall(_: *StubBridge, _: u64) void {}
+    fn releaseCall(self: *StubBridge, _: u64) void {
+        self.released += 1;
+    }
     /// Stub arm: return a ptr to a stub-owned flag so the async branch compiles
     /// and threads a valid (never-cancelled) flag into the worker. No real
     /// per-id registry here; the registry tests do not drive cancellation.
     fn armCancel(self: *StubBridge, _: u64) !*std.atomic.Value(bool) {
+        if (self.arm_fails) return error.OutOfMemory;
         return &self.stub_flag;
     }
     fn cancelId(self: *StubBridge, _: u64) void {
@@ -626,6 +640,103 @@ test "Result.err produces a structured reject" {
     defer b.last.deinit(std.testing.allocator);
     Reg.dispatch(&b, &st, "main", "readNote", 3, "{\"id\":0}");
     try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"not_found\"") != null);
+}
+
+test "isAsync is false for a name that is not a command" {
+    try std.testing.expect(!Reg.isAsync("noSuchCommand"));
+}
+
+test "dispatch of an unknown name rejects unknown_command and releases the call" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "noSuchCommand", 21, "{}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"unknown_command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "no such command") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+test "readNote resolves the note title when the id is non-zero" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "readNote", 22, "{\"id\":7}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "window.Zigware._resolve(22, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "{\"title\":\"ok\"}") != null);
+}
+
+test "async dispatch rejects internal out of memory when the cancel flag cannot be armed" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    b.arm_fails = true;
+    Reg.dispatch(&b, &st, "main", "slowAdd", 23, "{\"a\":1,\"b\":2}");
+    pool.waitIdle();
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "out of memory") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+test "async dispatch rolls back and rejects internal when the args copy cannot be allocated" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    // Allocation 0 is the job ctx, allocation 1 is the args copy, which fails.
+    // testing.allocator under the wrapper proves the job ctx is not leaked.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var b = stubBridge(failing.allocator(), pool);
+    b.emit_alloc = std.testing.allocator;
+    defer b.last.deinit(std.testing.allocator);
+    Reg.dispatch(&b, &st, "main", "slowAdd", 24, "{\"a\":1,\"b\":2}");
+    pool.waitIdle();
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "out of memory") != null);
+    try std.testing.expectEqual(@as(usize, 1), b.released);
+}
+
+/// Fixtures kept out of `Fixture` so the command counts asserted above stay put.
+const WideFixture = struct {
+    const big: [5000]u8 = @as([5000]u8, @splat('x'));
+    pub fn bigText(_: *Ctx(TestState)) []const u8 {
+        return &big;
+    }
+    pub fn blob(_: *Ctx(TestState)) ctxmod.Bytes {
+        return .{ .data = "abc", .mime = "text/plain" };
+    }
+};
+const RegWide = Commands(@import("platform/null.zig").NullBackend, TestState, WideFixture);
+
+test "a result that cannot be encoded becomes an internal reject" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    // Allocation 0 is the first arena block. The 5000-byte result outgrows it,
+    // so the JSON writer asks for a second block, which fails.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var b = stubBridge(failing.allocator(), pool);
+    b.emit_alloc = std.testing.allocator;
+    defer b.last.deinit(std.testing.allocator);
+    RegWide.dispatch(&b, &st, "main", "bigText", 25, "{}");
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "\"code\":\"internal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b.last.items, "could not encode result") != null);
+}
+
+test "a Bytes result is parked, announced as a _bin frame, and resolves null" {
+    var pool = try jobs.Pool.init(std.testing.allocator, .{ .workers = 1, .max_queue = 8, .io = std.testing.io });
+    defer pool.deinit();
+    var st = TestState{};
+    var b = stubBridge(std.testing.allocator, pool);
+    defer b.last.deinit(std.testing.allocator);
+    defer b.streamed.deinit(std.testing.allocator);
+    RegWide.dispatch(&b, &st, "main", "blob", 26, "{}");
+    try std.testing.expectEqualStrings("window.Zigware._bin(26, 0, 3, \"text\\/plain\");", b.streamed.items);
+    try std.testing.expectEqualStrings("window.Zigware._resolve(26, null);", b.last.items);
 }
 
 test "malformed args become a bad_args reject" {

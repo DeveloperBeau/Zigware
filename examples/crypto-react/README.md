@@ -24,7 +24,7 @@ round-trip flag — all hex-encoded except the recovered text.
 
 ## Prerequisites
 
-- Zig 0.16 and Node.js 18+.
+- Zig 0.17.1 and Node.js 18+.
 
 ## Run
 

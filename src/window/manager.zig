@@ -85,9 +85,9 @@ pub fn WindowManager(comptime B: type) type {
             errdefer self.gpa.free(label_copy);
 
             const url_src = opts.url orelse "app://localhost/index.html";
-            const url_z = try self.gpa.dupeZ(u8, url_src);
+            const url_z = try self.gpa.dupeSentinel(u8, url_src, 0);
             defer self.gpa.free(url_z);
-            const title_z = try self.gpa.dupeZ(u8, opts.title);
+            const title_z = try self.gpa.dupeSentinel(u8, opts.title, 0);
             defer self.gpa.free(title_z);
 
             // Per-window injected scripts: the embedded bridge + window helper,
@@ -202,7 +202,7 @@ pub fn WindowManager(comptime B: type) type {
         }
         pub fn setTitle(self: *Self, label: []const u8, title: []const u8) Error!void {
             const e = self.lookup(label) orelse return error.UnknownLabel;
-            const z = try self.gpa.dupeZ(u8, title);
+            const z = try self.gpa.dupeSentinel(u8, title, 0);
             defer self.gpa.free(z);
             self.backend.setTitle(e.handle, z) catch return error.BackendFailure;
         }

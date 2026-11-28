@@ -419,7 +419,7 @@ test "attack: a 100 MB string args field is bounded by max_value_len, rejected" 
 // ─── Attack vector 12: oversize asset path falls through cleanly ────────────
 
 test "attack: oversize asset path returns 404, no panic" {
-    const long_path = "/" ++ "a" ** 8000;
+    const long_path = "/" ++ &@as([8000]u8, @splat('a'));
     const r = assets.serveAsset(long_path);
     try std.testing.expectEqual(@as(u16, 404), r.status);
 }
